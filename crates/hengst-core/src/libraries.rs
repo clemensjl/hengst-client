@@ -47,6 +47,27 @@ fn is_native_classifier(name: &str) -> bool {
         .is_some_and(|c| c.starts_with("natives-"))
 }
 
+/// Architecture a `natives-*` classifier is built for. Mojang's rules only carry the OS for these
+/// (e.g. all three `natives-windows*` LWJGL jars allow "windows"), so the suffix decides.
+fn native_classifier_arch(name: &str) -> Option<&'static str> {
+    let coords = name.split('@').next().unwrap_or(name);
+    let classifier = coords.split(':').nth(3)?;
+    if !classifier.starts_with("natives-") {
+        return None;
+    }
+    Some(
+        if classifier.ends_with("-arm64") || classifier.ends_with("-aarch64") {
+            "arm64"
+        } else if classifier.ends_with("-x86") {
+            "x86"
+        } else if classifier.ends_with("-arm32") {
+            "arm32"
+        } else {
+            "x86_64"
+        },
+    )
+}
+
 pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries {
     let lib_dir = paths.libraries();
     let mut out = ResolvedLibraries::default();
@@ -59,6 +80,9 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries 
 
     for lib in libs {
         if !rules_allow(&lib.rules, env) {
+            continue;
+        }
+        if native_classifier_arch(&lib.name).is_some_and(|arch| arch != env.arch) {
             continue;
         }
         let exclude = lib.extract.clone().unwrap_or_default().exclude;
@@ -233,6 +257,35 @@ mod tests {
         assert_eq!(fabric.sha1, None);
         assert!(!r.downloads.iter().any(|d| d.url.contains("objc")));
         assert_eq!(r.downloads.len(), 4);
+    }
+
+    #[test]
+    fn skips_natives_of_other_architectures() {
+        let paths = Paths::new("C:/h");
+        let native = |classifier: &str, os: &str| {
+            let file = format!("lwjgl-3.3.3-{classifier}.jar");
+            json!({"name": format!("org.lwjgl:lwjgl:3.3.3:{classifier}"),
+             "rules": [{"action": "allow", "os": {"name": os}}],
+             "downloads": {"artifact": {"path": format!("org/lwjgl/lwjgl/3.3.3/{file}"), "sha1": "s", "size": 1, "url": format!("http://x/{file}")}}})
+        };
+        let list = libs(json!([
+            native("natives-windows", "windows"),
+            native("natives-windows-arm64", "windows"),
+            native("natives-windows-x86", "windows"),
+            native("natives-linux", "linux"),
+            native("natives-linux-arm64", "linux"),
+            native("natives-macos", "osx"),
+            native("natives-macos-arm64", "osx"),
+        ]));
+        let r = resolve(&list, &Env::windows_x64(), &paths);
+        let expected = paths
+            .libraries()
+            .join("org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar");
+        assert_eq!(r.classpath, vec![expected.clone()]);
+        assert_eq!(r.natives.len(), 1);
+        assert_eq!(r.natives[0].path, expected);
+        assert_eq!(r.downloads.len(), 1);
+        assert_eq!(r.downloads[0].path, expected);
     }
 
     #[test]
