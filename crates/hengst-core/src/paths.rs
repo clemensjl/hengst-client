@@ -91,15 +91,19 @@ pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
 }
 
 /// Version, asset index, runtime and instance ids end up in file names: ASCII alphanumerics and
-/// `. _ - +` only (e.g. `1.21.11`, `26.4-snapshot-6`, `3.3.3+5`).
+/// `. _ - +` only (e.g. `1.21.11`, `26.4-snapshot-6`, `3.3.3+5`). Inner spaces are allowed because
+/// some Mojang ids have them (`1.14 Pre-Release 1`); leading or trailing ones are not, since
+/// Windows strips them.
 pub fn validate_id(id: &str) -> Result<()> {
     let ok = !id.is_empty()
         && id.len() <= 128
         && id != "."
         && id != ".."
+        && !id.starts_with(' ')
+        && !id.ends_with(' ')
         && id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+'));
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-' | b'+' | b' '));
     if ok {
         Ok(())
     } else {
@@ -149,11 +153,15 @@ mod tests {
             "client-1.12.xml",
             "java-runtime-epsilon",
             "3.3.3+5",
+            "1.14 Pre-Release 1",
+            "3D Shareware v1.34",
         ] {
             validate_id(ok).unwrap();
         }
         let long = "a".repeat(129);
-        for bad in ["", ".", "..", "a/b", "a\\b", "a:b", "a b", "\u{e4}", &long] {
+        for bad in [
+            "", ".", "..", "a/b", "a\\b", "a:b", " 1.8.9", "1.8.9 ", "\u{e4}", &long,
+        ] {
             assert!(validate_id(bad).is_err(), "{bad:?} must be rejected");
         }
     }
