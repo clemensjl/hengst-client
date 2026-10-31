@@ -1,5 +1,5 @@
 use crate::download::{Download, Downloader};
-use crate::paths::Paths;
+use crate::paths::{join_relative, validate_id, validate_sha1, Paths};
 use crate::version::AssetIndexRef;
 use crate::Result;
 use serde::Deserialize;
@@ -38,6 +38,7 @@ pub async fn install_assets(
     game_dir: &Path,
     base_url: &str,
 ) -> Result<AssetsLayout> {
+    validate_id(&index.id)?;
     let index_path = paths.asset_index(&index.id);
     dl.fetch_one(&Download {
         url: index.url.clone(),
@@ -49,16 +50,17 @@ pub async fn install_assets(
 
     let base = base_url.trim_end_matches('/');
     let mut seen = HashSet::new();
-    let downloads: Vec<Download> = parsed
-        .objects
-        .values()
-        .filter(|o| o.hash.len() > 2 && seen.insert(o.hash.clone()))
-        .map(|o| Download {
-            url: format!("{base}/{}/{}", &o.hash[..2], o.hash),
-            path: paths.asset_object(&o.hash),
-            sha1: Some(o.hash.clone()),
-        })
-        .collect();
+    let mut downloads = Vec::new();
+    for o in parsed.objects.values() {
+        validate_sha1(&o.hash)?;
+        if seen.insert(o.hash.clone()) {
+            downloads.push(Download {
+                url: format!("{base}/{}/{}", &o.hash[..2], o.hash),
+                path: paths.asset_object(&o.hash),
+                sha1: Some(o.hash.clone()),
+            });
+        }
+    }
     dl.fetch_all(downloads).await?;
 
     let assets_root = paths.assets();
@@ -83,10 +85,7 @@ pub async fn install_assets(
 /// Old versions read assets by name, so copy hashed objects to readable paths.
 fn copy_named(index: &AssetIndex, paths: &Paths, dest: &Path) -> Result<()> {
     for (name, obj) in &index.objects {
-        if name.contains("..") {
-            continue;
-        }
-        let target = dest.join(name);
+        let target = join_relative(dest, name)?;
         if target.is_file() {
             continue;
         }
@@ -133,6 +132,42 @@ mod tests {
     fn objects() -> serde_json::Value {
         let hash = sha1_hex(b"sound");
         json!({"a/b.ogg": {"hash": hash, "size": 5}, "copy/b.ogg": {"hash": hash, "size": 5}})
+    }
+
+    #[tokio::test]
+    async fn malicious_names_and_hashes_are_rejected() {
+        let hash = sha1_hex(b"sound");
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path().join("home"));
+        let dl = Downloader::new(http_client());
+        for index in [
+            json!({"virtual": true, "objects": {"../../evil.dll": {"hash": hash, "size": 5}}}),
+            json!({"objects": {"a.ogg": {"hash": "../../../x", "size": 5}}}),
+        ] {
+            let server = MockServer::start().await;
+            let body = serde_json::to_vec(&index).unwrap();
+            Mock::given(method("GET"))
+                .and(path("/index.json"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(body.clone()))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path(format!("/{}/{}", &hash[..2], hash)))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(b"sound".to_vec()))
+                .mount(&server)
+                .await;
+            let r = AssetIndexRef {
+                id: "legacy".into(),
+                sha1: sha1_hex(&body),
+                size: body.len() as u64,
+                url: format!("{}/index.json", server.uri()),
+            };
+            let err = install_assets(&dl, &paths, &r, &dir.path().join("game"), &server.uri())
+                .await
+                .unwrap_err();
+            assert!(matches!(err, crate::Error::UnsafePath(_)), "{err}");
+        }
+        assert!(!dir.path().join("evil.dll").exists());
     }
 
     #[tokio::test]

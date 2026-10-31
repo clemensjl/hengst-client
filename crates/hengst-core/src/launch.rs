@@ -4,7 +4,7 @@ use crate::download::{http_client, Download, Downloader};
 use crate::java::{component_for, ensure_runtime, RUNTIME_INDEX_URL};
 use crate::libraries;
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
-use crate::paths::Paths;
+use crate::paths::{validate_id, Paths};
 use crate::rules::Env;
 use crate::version::fetch_version;
 use crate::{Error, Result};
@@ -57,12 +57,17 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
         .find(&opts.version)
         .ok_or_else(|| Error::UnknownVersion(opts.version.clone()))?
         .clone();
+    validate_id(&entry.id)?;
     let v = fetch_version(&dl, paths, &entry).await?;
 
+    validate_id(&v.id)?;
+    if let Some(name) = &opts.instance {
+        validate_id(name)?;
+    }
     let game_dir = paths.instance(opts.instance.as_deref().unwrap_or(&v.id));
     tokio::fs::create_dir_all(&game_dir).await?;
 
-    let libs = libraries::resolve(&v.libraries, &env, paths);
+    let libs = libraries::resolve(&v.libraries, &env, paths)?;
     let mut downloads = libs.downloads.clone();
     let mut classpath = libs.classpath.clone();
     if let Some(client) = v.downloads.as_ref().and_then(|d| d.client.as_ref()) {
@@ -74,15 +79,19 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
         });
         classpath.push(jar);
     }
-    let log_config = v.logging.as_ref().and_then(|l| l.client.as_ref()).map(|c| {
-        let p = paths.log_config(&c.file.id);
-        downloads.push(Download {
-            url: c.file.url.clone(),
-            path: p.clone(),
-            sha1: Some(c.file.sha1.clone()),
-        });
-        p
-    });
+    let log_config = match v.logging.as_ref().and_then(|l| l.client.as_ref()) {
+        Some(c) => {
+            validate_id(&c.file.id)?;
+            let p = paths.log_config(&c.file.id);
+            downloads.push(Download {
+                url: c.file.url.clone(),
+                path: p.clone(),
+                sha1: Some(c.file.sha1.clone()),
+            });
+            Some(p)
+        }
+        None => None,
+    };
     dl.fetch_all(downloads).await?;
 
     let assets = match &v.asset_index {

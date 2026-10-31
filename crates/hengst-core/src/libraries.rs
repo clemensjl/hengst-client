@@ -1,5 +1,5 @@
 use crate::download::Download;
-use crate::paths::Paths;
+use crate::paths::{join_relative, Paths};
 use crate::rules::{rules_allow, Env};
 use crate::version::Library;
 use crate::Result;
@@ -68,7 +68,7 @@ fn native_classifier_arch(name: &str) -> Option<&'static str> {
     )
 }
 
-pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries {
+pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLibraries> {
     let lib_dir = paths.libraries();
     let mut out = ResolvedLibraries::default();
     let mut queued = HashSet::new();
@@ -96,7 +96,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries 
                 .and_then(|d| d.classifiers.as_ref())
                 .and_then(|c| c.get(&classifier));
             if let Some(a) = artifact {
-                let path = lib_dir.join(&a.path);
+                let path = join_relative(&lib_dir, &a.path)?;
                 push(
                     &mut out,
                     Download {
@@ -128,7 +128,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries 
             }),
         };
         if let Some((rel, url, sha1)) = artifact {
-            let path = lib_dir.join(&rel);
+            let path = join_relative(&lib_dir, &rel)?;
             push(
                 &mut out,
                 Download {
@@ -148,7 +148,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> ResolvedLibraries 
             }
         }
     }
-    out
+    Ok(out)
 }
 
 fn is_native_file(name: &str) -> bool {
@@ -229,7 +229,7 @@ mod tests {
              "downloads": {"artifact": {"path": "org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar", "sha1": "m", "size": 1, "url": "http://x/m.jar"}}},
             {"name": "net.fabricmc:fabric-loader:0.16.0", "url": "https://maven.fabricmc.net"}
         ]));
-        let r = resolve(&list, &Env::windows_x64(), &paths);
+        let r = resolve(&list, &Env::windows_x64(), &paths).unwrap();
         let lib = paths.libraries();
         assert_eq!(
             r.classpath,
@@ -277,7 +277,7 @@ mod tests {
             native("natives-macos", "osx"),
             native("natives-macos-arm64", "osx"),
         ]));
-        let r = resolve(&list, &Env::windows_x64(), &paths);
+        let r = resolve(&list, &Env::windows_x64(), &paths).unwrap();
         let expected = paths
             .libraries()
             .join("org/lwjgl/lwjgl/3.3.3/lwjgl-3.3.3-natives-windows.jar");
@@ -286,6 +286,16 @@ mod tests {
         assert_eq!(r.natives[0].path, expected);
         assert_eq!(r.downloads.len(), 1);
         assert_eq!(r.downloads[0].path, expected);
+    }
+
+    #[test]
+    fn rejects_library_paths_that_escape() {
+        let list = libs(json!([
+            {"name": "evil:lib:1",
+             "downloads": {"artifact": {"path": "../../evil.jar", "sha1": "s", "size": 1, "url": "http://x/e.jar"}}}
+        ]));
+        let err = resolve(&list, &Env::windows_x64(), &Paths::new("C:/h")).unwrap_err();
+        assert!(matches!(err, crate::Error::UnsafePath(_)));
     }
 
     #[test]

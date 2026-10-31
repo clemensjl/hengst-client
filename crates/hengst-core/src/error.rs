@@ -16,6 +16,8 @@ pub enum Error {
         expected: String,
         actual: String,
     },
+    #[error("unsafe path from metadata: {0}")]
+    UnsafePath(String),
     #[error("unknown Minecraft version: {0}")]
     UnknownVersion(String),
     #[error("no Java runtime '{component}' available for {platform}")]

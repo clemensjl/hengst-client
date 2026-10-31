@@ -1,5 +1,5 @@
 use crate::download::{get_bytes, Download, Downloader};
-use crate::paths::Paths;
+use crate::paths::{join_relative, validate_id, Paths};
 use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
@@ -81,6 +81,7 @@ pub async fn ensure_runtime(
     component: &str,
     index_url: &str,
 ) -> Result<PathBuf> {
+    validate_id(component)?;
     let exe = java_executable(paths, env, component);
     let index: HashMap<String, HashMap<String, Vec<RuntimeEntry>>> =
         match get_bytes(dl.client(), index_url).await {
@@ -113,14 +114,12 @@ pub async fn ensure_runtime(
 
     let mut downloads = Vec::new();
     for (rel, file) in &manifest.files {
-        if rel.contains("..") {
-            continue;
-        }
+        let target = join_relative(&root, rel)?;
         match (file.kind.as_str(), &file.downloads) {
-            ("directory", _) => tokio::fs::create_dir_all(root.join(rel)).await?,
+            ("directory", _) => tokio::fs::create_dir_all(target).await?,
             ("file", Some(d)) => downloads.push(Download {
                 url: d.raw.url.clone(),
-                path: root.join(rel),
+                path: target,
                 sha1: Some(d.raw.sha1.clone()),
             }),
             // Links only matter on macOS/Linux, which are out of MVP scope.
@@ -217,6 +216,50 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, Error::NoRuntime { .. }));
+    }
+
+    #[tokio::test]
+    async fn malicious_runtime_file_names_are_rejected() {
+        let s = MockServer::start().await;
+        let manifest = serde_json::to_vec(&json!({"files": {
+            "../../evil.dll": {"type": "file", "downloads": {
+                "raw": {"sha1": sha1_hex(b"x"), "size": 1, "url": format!("{}/x", s.uri())}}}
+        }}))
+        .unwrap();
+        let index = json!({"windows-x64": {"jre-legacy": [{"manifest": {
+            "sha1": sha1_hex(&manifest), "size": manifest.len(), "url": format!("{}/manifest.json", s.uri())},
+            "version": {"name": "8", "released": "x"}}]}});
+        Mock::given(method("GET"))
+            .and(path("/all.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(index))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/manifest.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(manifest))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let err = ensure_runtime(
+            &Downloader::new(http_client()),
+            &Paths::new(dir.path()),
+            &Env::windows_x64(),
+            "jre-legacy",
+            &format!("{}/all.json", s.uri()),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::UnsafePath(_)));
+        let err = ensure_runtime(
+            &Downloader::new(http_client()),
+            &Paths::new(dir.path()),
+            &Env::windows_x64(),
+            "../x",
+            "http://127.0.0.1:9/all.json",
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::UnsafePath(_)));
     }
 
     #[tokio::test]
