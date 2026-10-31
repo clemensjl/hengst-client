@@ -15,7 +15,7 @@ pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
         .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(300))
+        .read_timeout(Duration::from_secs(30))
         .build()
         .expect("static reqwest configuration is valid")
 }
