@@ -1,0 +1,19 @@
+[package]
+name = "hengst-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "hengst"
+path = "src/main.rs"
+
+[features]
+dev-offline = []
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+hengst-core = { path = "../../crates/hengst-core" }
+tokio.workspace = true
