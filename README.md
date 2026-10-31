@@ -2,7 +2,7 @@
 
 An open-source Minecraft: Java Edition launcher focused on a clean interface and maximum FPS on every game version, with mods and modpacks from Modrinth and CurseForge.
 
-**Status:** pre-alpha. The core can download and start any vanilla version from the command line. The desktop app, Microsoft login and mod support are in progress, see [docs/PLAN.md](docs/PLAN.md) (German).
+**Status:** pre-alpha. The core can download and prepare any vanilla version from the command line (`hengst launch <version> --dry-run`). Starting the game needs Microsoft login, which is in progress, as are the desktop app and mod support, see [docs/PLAN.md](docs/PLAN.md) (German).
 
 ## Build
 
