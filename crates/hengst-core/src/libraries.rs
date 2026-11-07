@@ -168,7 +168,10 @@ pub fn extract_natives(natives: &[NativeJar], dest: &Path) -> Result<()> {
             if entry.is_dir() {
                 continue;
             }
-            let name = entry.name().to_string();
+            // zip 9: Namen mit ungueltigem UTF-8 liefern Err, die sind keine Natives.
+            let Ok(name) = entry.name().map(|n| n.into_owned()) else {
+                continue;
+            };
             if name.starts_with("META-INF/")
                 || jar.exclude.iter().any(|e| name.starts_with(e.as_str()))
             {
