@@ -20,5 +20,6 @@ public interface Platform {
     /** Replaces the current screen. */
     void openScreen(UiScreen screen);
 
+    /** Closes only the mod's own screen, and only if that screen is still the current one; otherwise does nothing. */
     void closeScreen();
 }
