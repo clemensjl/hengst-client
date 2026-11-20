@@ -1,5 +1,6 @@
 use crate::assets::AssetsLayout;
 use crate::rules::{rules_allow, Env};
+use crate::secret::Secret;
 use crate::version::{ArgValue, Argument, VersionJson};
 use md5::{Digest, Md5};
 use std::collections::HashMap;
@@ -15,7 +16,7 @@ pub enum AccountKind {
 pub struct Account {
     name: String,
     uuid: String,
-    access_token: String,
+    access_token: Secret,
     kind: AccountKind,
     xuid: String,
 }
@@ -30,7 +31,7 @@ impl Account {
         Self {
             name: name.to_string(),
             uuid: hex::encode(d),
-            access_token: "0".into(),
+            access_token: Secret::new("0"),
             kind: AccountKind::Offline,
             xuid: "0".into(),
         }
@@ -41,7 +42,7 @@ impl Account {
     pub(crate) fn microsoft(
         name: String,
         uuid: String,
-        access_token: String,
+        access_token: Secret,
         xuid: String,
     ) -> Self {
         Self {
@@ -59,6 +60,10 @@ impl Account {
 
     pub fn uuid(&self) -> &str {
         &self.uuid
+    }
+
+    pub(crate) fn access_token(&self) -> &Secret {
+        &self.access_token
     }
 
     pub fn kind(&self) -> AccountKind {
@@ -160,10 +165,10 @@ fn variables(v: &VersionJson, ctx: &LaunchContext) -> HashMap<&'static str, Stri
     HashMap::from([
         ("auth_player_name", a.name.clone()),
         ("auth_uuid", a.uuid.clone()),
-        ("auth_access_token", a.access_token.clone()),
+        ("auth_access_token", a.access_token().expose().to_string()),
         (
             "auth_session",
-            format!("token:{}:{}", a.access_token, a.uuid),
+            format!("token:{}:{}", a.access_token().expose(), a.uuid),
         ),
         ("auth_xuid", a.xuid.clone()),
         ("clientid", "0".to_string()),
@@ -224,6 +229,17 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn account_debug_hides_token() {
+        let a = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok-123"),
+            "1".into(),
+        );
+        assert!(!format!("{a:?}").contains("tok-123"));
+    }
+
     fn ctx() -> LaunchContext {
         LaunchContext {
             account: Account::offline("Dev"),
@@ -266,7 +282,12 @@ mod tests {
 
     #[test]
     fn user_type_follows_account_kind() {
-        let ms = Account::microsoft("Steve".into(), "a".repeat(32), "tok".into(), "123".into());
+        let ms = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok"),
+            "123".into(),
+        );
         assert_eq!(ms.kind(), AccountKind::Microsoft);
         assert_eq!(ms.user_type(), "msa");
         assert_eq!(Account::offline("Dev").user_type(), "legacy");
@@ -283,7 +304,12 @@ mod tests {
         }))
         .unwrap();
         let mut c = ctx();
-        c.account = Account::microsoft("Steve".into(), "a".repeat(32), "tok".into(), "123".into());
+        c.account = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok"),
+            "123".into(),
+        );
         let args = build_args(&v, &c);
         let main = args
             .iter()

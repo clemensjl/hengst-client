@@ -104,7 +104,7 @@ async fn main() -> anyhow::Result<()> {
             let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
             if dry_run {
                 println!("{}", prepared.java.display());
-                for arg in &prepared.args {
+                for arg in &prepared.redacted_args() {
                     println!("  {arg}");
                 }
                 return Ok(());

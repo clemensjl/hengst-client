@@ -11,6 +11,7 @@ pub mod libraries;
 pub mod manifest;
 pub mod paths;
 pub mod rules;
+pub mod secret;
 pub mod version;
 
 pub use error::{Error, Result};
