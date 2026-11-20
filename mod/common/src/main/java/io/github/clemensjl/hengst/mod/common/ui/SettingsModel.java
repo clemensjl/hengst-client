@@ -41,6 +41,9 @@ public final class SettingsModel {
     private boolean dirty;
     private BooleanSupplier settingsLoadFailed;
     private String failureKey;
+    // True after "default" was selected following a deleted profile but the switch hook failed: the active Profile
+    // object still holds the deleted profile's data, so nothing may be saved until a switch succeeds.
+    private boolean detached;
 
     public SettingsModel(
             FeatureRegistry registry,
@@ -102,7 +105,11 @@ public final class SettingsModel {
     /** Called by the UI after every change of a value: marks the profile dirty and calls the changed hook. */
     public void markChanged() {
         dirty = true;
-        changed.run();
+        try {
+            changed.run();
+        } catch (RuntimeException e) {
+            log("The change hook failed: " + e);
+        }
     }
 
     public boolean dirty() {
@@ -133,11 +140,23 @@ public final class SettingsModel {
         return !dirty || save();
     }
 
+    /** A successful action clears its own warning; the two load-failure warnings stay until the screen closes. */
+    private void clearFailure() {
+        if (!KEY_PROFILE_LOAD_FAILED.equals(failureKey) && !KEY_SETTINGS_LOAD_FAILED.equals(failureKey)) {
+            failureKey = null;
+        }
+    }
+
     private boolean save() {
+        if (detached) {
+            fail(KEY_SWITCH_FAILED, "Not saving: the switch to the default profile after a delete failed, "
+                    + "the loaded data belongs to the deleted profile");
+            return false;
+        }
         try {
             saveNow.run();
             dirty = false;
-            failureKey = null;
+            clearFailure();
             return true;
         } catch (RuntimeException e) {
             String name = activeProfileName();
@@ -174,22 +193,24 @@ public final class SettingsModel {
      * active profile could not be loaded its file is never overwritten: the switch then proceeds without saving.
      */
     public void switchTo(String name) {
-        if (name == null || ProfileStore.sameName(name, activeProfileName())) {
+        if (name == null || !detached && ProfileStore.sameName(name, activeProfileName())) {
             return;
         }
-        boolean blocked = profiles.loadFailed(activeProfileName());
+        boolean blocked = detached || profiles.loadFailed(activeProfileName());
         if (!blocked && !saveIfDirty()) {
             return;
         }
         boolean lost = blocked && dirty;
+        String lostKey = detached ? KEY_SWITCH_FAILED : KEY_PROFILE_LOAD_FAILED;
         if (!doSwitch(name)) {
             return;
         }
         dirty = false;
+        detached = false;
         if (lost) {
-            fail(KEY_PROFILE_LOAD_FAILED, "Dropped the unsaved changes of the unreadable profile when switching to " + name);
+            fail(lostKey, "Dropped the unsaved changes of the unreadable profile when switching to " + name);
         } else {
-            failureKey = null;
+            clearFailure();
         }
     }
 
@@ -209,7 +230,7 @@ public final class SettingsModel {
         if (!doSwitch(copy)) {
             return current;
         }
-        failureKey = null;
+        clearFailure();
         return copy;
     }
 
@@ -229,9 +250,14 @@ public final class SettingsModel {
             fail(KEY_DELETE_FAILED, "Could not delete profile " + name + ": " + e.getMessage());
             return;
         }
+        // The file is gone: select "default" in memory and drop the deleted profile's edits before the hook runs, so
+        // a failing hook cannot leave a state that writes the deleted data anywhere.
+        settings.setActiveProfile(ProfileStore.DEFAULT);
+        dirty = false;
         if (doSwitch(ProfileStore.DEFAULT)) {
-            dirty = false;
-            failureKey = null;
+            clearFailure();
+        } else {
+            detached = true;
         }
     }
 
