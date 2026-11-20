@@ -2,13 +2,16 @@ package io.github.clemensjl.hengst.mod.common.ui;
 
 import io.github.clemensjl.hengst.mod.common.I18n;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
+import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 import java.util.function.DoubleConsumer;
@@ -26,12 +29,14 @@ public final class SettingsScreen implements UiScreen {
     private static final int ROW = 20;
     private static final int GAP = 4;
     private static final int HEADER_Y = 8;
-    private static final int HEADER_H = 18;
+    private static final int HEADER_H = 20;
     private static final int LIST_Y = 36;
-    private static final int BOTTOM = 36;
-    private static final int DONE_H = 18;
+    private static final int DONE_H = 20;
     private static final int TOGGLE_W = 20;
     private static final int DIM = 0xC0101010;
+    private static final int WARNING = 0xFFFF5555;
+    private static final int NOTICE = 0xFFAAAAAA;
+    private static final String[] NO_LINES = new String[0];
 
     private static final String[] COLOR_KEYS = {"white", "yellow", "lime", "aqua", "red", "orange", "gray", "black"};
     private static final int[] COLORS = {
@@ -47,12 +52,22 @@ public final class SettingsScreen implements UiScreen {
     private final ScrollList optionList = new ScrollList(0, 0, 0, 0);
     private final List<Widget> header = new ArrayList<Widget>();
     private final ButtonWidget done;
+    private final String deleteLabel;
+    private final String confirmLabel;
+    private final Set<String> unsupportedWarned = new HashSet<String>();
+    private ButtonWidget deleteButton;
+    private boolean confirmDelete;
     private boolean closed;
 
     private int sw;
     private int sh;
-    private float noticeScale = 1f;
-    private float noticeY;
+    // Wrapped texts and their positions: rebuilt when the width changes or the failure sentence changes.
+    private String shownFailure;
+    private String[] noticeLines = NO_LINES;
+    private String[] warnLines = NO_LINES;
+    private int lineHeight;
+    private int noticeY;
+    private int warnY;
 
     public SettingsScreen(SettingsModel model, I18n i18n, Runnable onClose) {
         this.model = model;
@@ -62,6 +77,8 @@ public final class SettingsScreen implements UiScreen {
         for (int i = 0; i < COLORS.length; i++) {
             colorNames[i] = i18n.get("hengst.color." + COLOR_KEYS[i]);
         }
+        this.deleteLabel = i18n.get("hengst.button.delete_profile");
+        this.confirmLabel = i18n.get("hengst.button.confirm_delete");
         this.done = new ButtonWidget(i18n.get("hengst.button.done"), new Runnable() {
             @Override
             public void run() {
@@ -88,6 +105,7 @@ public final class SettingsScreen implements UiScreen {
 
     private void buildHeader() {
         header.clear();
+        confirmDelete = false;
         List<String> names = model.profiles();
         header.add(new ChoiceWidget(i18n.get("hengst.profile"), names.toArray(new String[0]),
                 new Supplier<String>() {
@@ -110,21 +128,44 @@ public final class SettingsScreen implements UiScreen {
                 refresh();
             }
         }));
-        header.add(new ButtonWidget(i18n.get("hengst.button.delete_profile"), new Runnable() {
+        deleteButton = new ButtonWidget(deleteLabel, new Runnable() {
             @Override
             public void run() {
-                model.deleteActive();
-                refresh();
+                onDeleteClicked();
             }
-        }));
+        });
+        header.add(deleteButton);
         header.add(new ButtonWidget(i18n.get("hengst.button.edit_hud"), new Runnable() {
             @Override
             public void run() {
                 // The editor replaces this screen; the adapter's closed() for it must not close the editor.
                 closed = true;
-                model.openHudEditor();
+                try {
+                    model.openHudEditor();
+                } catch (RuntimeException e) {
+                    closed = false;
+                    model.fail(SettingsModel.KEY_EDITOR_FAILED, "Could not open the HUD editor: " + e);
+                }
             }
         }));
+    }
+
+    /** First click asks, the second click deletes; any other click or key cancels. */
+    private void onDeleteClicked() {
+        if (confirmDelete) {
+            confirmDelete = false;
+            model.deleteActive();
+            refresh();
+        } else if (!ProfileStore.sameName(ProfileStore.DEFAULT, model.activeProfileName())
+                && model.profiles().size() > 1) {
+            confirmDelete = true;
+            deleteButton.setLabel(confirmLabel);
+        }
+    }
+
+    private void cancelConfirm() {
+        confirmDelete = false;
+        deleteButton.setLabel(deleteLabel);
     }
 
     private void buildOptions() {
@@ -158,7 +199,10 @@ public final class SettingsScreen implements UiScreen {
             }));
             out.add(colorChoice(id));
             for (OptionSpec spec : f.options()) {
-                out.add(optionWidget(id, spec));
+                Widget w = optionWidget(id, spec);
+                if (w != null) {
+                    out.add(w);
+                }
             }
         }
         optionList.setWidgets(out, ROW);
@@ -222,7 +266,8 @@ public final class SettingsScreen implements UiScreen {
                         model.markChanged();
                     }
                 });
-            default:
+            case INT_RANGE:
+            case FLOAT_RANGE:
                 // The slider reads a cached value: option() boxes a number on every call.
                 final double[] cache = {((Number) model.config(id).option(spec)).doubleValue()};
                 return new SliderWidget(label, spec.min(), spec.max(), spec.step(),
@@ -242,31 +287,38 @@ public final class SettingsScreen implements UiScreen {
                                 model.markChanged();
                             }
                         });
+            default:
+                if (unsupportedWarned.add(spec.kind().name())) {
+                    model.log("Settings screen: option kind " + spec.kind() + " of " + id + "." + spec.key() + " is not supported");
+                }
+                return null;
         }
     }
-
     private void layout(Canvas c) {
         sw = c.width();
         sh = c.height();
         int leftW = sw * 40 / 100;
-        int bottomY = sh - BOTTOM;
-        featureList.setBounds(MARGIN, LIST_Y, leftW, bottomY - LIST_Y);
-        int rightX = MARGIN + leftW + MARGIN;
-        optionList.setBounds(rightX, LIST_Y, sw - MARGIN - rightX, bottomY - LIST_Y);
+        int textW = sw - 2 * MARGIN;
+        lineHeight = c.fontHeight() + 1;
+        shownFailure = model.failureKey();
+        noticeLines = TextWrap.wrap(c, notice, textW);
+        warnLines = shownFailure == null ? NO_LINES : TextWrap.wrap(c, i18n.get(shownFailure), textW);
         done.w = Math.min(100, sw - 2 * MARGIN);
         done.h = DONE_H;
         done.x = sw - MARGIN - done.w;
         done.y = sh - MARGIN - DONE_H;
-        // The legal notice is one line; it is scaled down to the screen width instead of being cut.
-        int nw = c.textWidth(notice);
-        int avail = sw - 2 * MARGIN;
-        noticeScale = nw > avail && nw > 0 ? avail / (float) nw : 1f;
-        noticeY = bottomY + (c.fontHeight() - c.fontHeight() * noticeScale) / 2f;
+        // Bottom up: Done button, the failure sentence above it, the legal notice above that, then the lists.
+        warnY = done.y - 2 - warnLines.length * lineHeight;
+        noticeY = warnY - noticeLines.length * lineHeight;
+        int listH = Math.max(ROW, noticeY - GAP - LIST_Y);
+        featureList.setBounds(MARGIN, LIST_Y, leftW, listH);
+        int rightX = MARGIN + leftW + MARGIN;
+        optionList.setBounds(rightX, LIST_Y, sw - MARGIN - rightX, listH);
         positionHeader();
     }
 
     private void positionHeader() {
-        int pw = Math.max(60, sw * 30 / 100);
+        int pw = Math.max(60, sw * 25 / 100);
         Widget choice = header.get(0);
         choice.x = MARGIN;
         choice.y = HEADER_Y;
@@ -286,7 +338,7 @@ public final class SettingsScreen implements UiScreen {
 
     @Override
     public void render(Canvas c, int mx, int my, float partialTick) {
-        if (c.width() != sw || c.height() != sh) {
+        if (c.width() != sw || c.height() != sh || model.failureKey() != shownFailure) {
             layout(c);
         }
         c.fill(0, 0, sw, sh, DIM);
@@ -295,14 +347,20 @@ public final class SettingsScreen implements UiScreen {
         }
         featureList.render(c, mx, my);
         optionList.render(c, mx, my);
-        c.pushTransform(MARGIN, noticeY, noticeScale);
-        c.text(notice, 0, 0, 0xFFAAAAAA, true);
-        c.popTransform();
+        for (int k = 0; k < noticeLines.length; k++) {
+            c.text(noticeLines[k], MARGIN, noticeY + k * lineHeight, NOTICE, true);
+        }
+        for (int k = 0; k < warnLines.length; k++) {
+            c.text(warnLines[k], MARGIN, warnY + k * lineHeight, WARNING, true);
+        }
         done.render(c, mx, my);
     }
 
     @Override
     public boolean mouseClicked(int mx, int my, int button) {
+        if (confirmDelete && !deleteButton.inside(mx, my)) {
+            cancelConfirm();
+        }
         for (int i = 0; i < header.size(); i++) {
             if (header.get(i).mouseClicked(mx, my, button)) {
                 return true;
@@ -340,6 +398,9 @@ public final class SettingsScreen implements UiScreen {
 
     @Override
     public boolean keyPressed(UiKey key, boolean shift, boolean control) {
+        if (confirmDelete) {
+            cancelConfirm();
+        }
         if (key == UiKey.ESCAPE) {
             close();
             return true;
@@ -427,7 +488,7 @@ public final class SettingsScreen implements UiScreen {
             }
             model.select(feature.id());
             buildOptions();
-            optionList.scroll(1_000_000);
+            optionList.reset();
             return true;
         }
     }

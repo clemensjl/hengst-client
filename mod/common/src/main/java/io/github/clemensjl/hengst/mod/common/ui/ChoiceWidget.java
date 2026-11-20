@@ -14,7 +14,9 @@ public class ChoiceWidget extends Widget {
     private final Supplier<String> get;
     private final Consumer<String> set;
     private String lastValue;
-    private String composed = "";
+    private int lastAvail = -1;
+    private String display = "";
+    private int displayWidth;
 
     public ChoiceWidget(String label, String[] values, Supplier<String> get, Consumer<String> set) {
         this.label = label;
@@ -30,11 +32,33 @@ public class ChoiceWidget extends Widget {
         if (v == null) {
             v = "";
         }
-        if (lastValue == null || !v.equals(lastValue)) {
+        int avail = w - 4;
+        if (lastValue == null || avail != lastAvail || !v.equals(lastValue)) {
             lastValue = v;
-            composed = label.contains("%s") ? label.replace("%s", v) : label + ": " + v;
+            lastAvail = avail;
+            // Too narrow: drop the label part first, then shorten the value in the middle. The end of the value,
+            // which tells similar values apart, is never the part that gets cut.
+            String full = label.contains("%s") ? label.replace("%s", v) : label + ": " + v;
+            display = c.textWidth(full) <= avail ? full : middleCut(c, v, avail);
+            displayWidth = c.textWidth(display);
         }
-        drawCentered(c, composed);
+        c.text(display, x + (w - displayWidth) / 2, y + (h - c.fontHeight()) / 2, TEXT, true);
+    }
+
+    /** The text, or its start and end joined by ".." so that it fits. */
+    static String middleCut(Canvas c, String text, int avail) {
+        if (c.textWidth(text) <= avail) {
+            return text;
+        }
+        for (int keep = text.length() - 1; keep > 0; keep--) {
+            int tail = keep / 2;
+            int head = keep - tail;
+            String s = text.substring(0, head) + ".." + text.substring(text.length() - tail);
+            if (c.textWidth(s) <= avail) {
+                return s;
+            }
+        }
+        return "..";
     }
 
     @Override

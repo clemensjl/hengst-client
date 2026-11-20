@@ -25,8 +25,16 @@
   "hengst.option.decimals": "Decimals",
   "hengst.button.edit_hud": "Edit HUD",
   "hengst.button.new_profile": "New profile",
-  "hengst.button.delete_profile": "Delete profile",
+  "hengst.button.delete_profile": "Delete",
   "hengst.button.done": "Done",
   "hengst.profile": "Profile: %s",
+  "hengst.button.confirm_delete": "Sure?",
+  "hengst.warn.save_failed": "Could not save the profile. Your changes stay in memory only.",
+  "hengst.warn.profile_load_failed": "This profile could not be read and will not be overwritten. Changes to it cannot be saved.",
+  "hengst.warn.settings_load_failed": "The settings file could not be read. The chosen profile will not be remembered.",
+  "hengst.warn.switch_failed": "Could not switch the profile.",
+  "hengst.warn.copy_failed": "Could not copy the profile.",
+  "hengst.warn.delete_failed": "Could not delete the profile.",
+  "hengst.warn.editor_failed": "Could not open the HUD editor.",
   "hengst.editor.hint": "Drag to move, mouse wheel to scale, arrow keys to nudge, Delete to hide, Esc to save and close"
 }

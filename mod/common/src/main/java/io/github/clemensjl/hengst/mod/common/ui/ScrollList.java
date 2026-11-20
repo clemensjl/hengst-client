@@ -48,6 +48,15 @@ public final class ScrollList {
         clamp();
     }
 
+    /** Scrolls back to the top. */
+    public void reset() {
+        offset = 0;
+    }
+
+    int height() {
+        return h;
+    }
+
     boolean contains(int mx, int my) {
         return mx >= x && mx < x + w && my >= y && my < y + h;
     }

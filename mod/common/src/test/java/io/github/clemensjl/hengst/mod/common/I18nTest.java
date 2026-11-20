@@ -44,6 +44,7 @@ class I18nTest {
     void both_language_files_have_the_same_keys() throws Exception {
         Set<String> en = langKeys("en_us");
         Set<String> de = langKeys("de_de");
+        // hengst.notice is English in both files on purpose (legal wording); do not translate it.
         assertEquals(en, de);
         assertTrue(en.containsAll(Arrays.asList("hengst.title", "hengst.notice", "hengst.button.done",
                 "hengst.color.white", "hengst.color.black", "hengst.editor.hint")));

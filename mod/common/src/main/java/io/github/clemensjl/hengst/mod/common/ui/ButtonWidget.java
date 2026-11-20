@@ -3,12 +3,16 @@ package io.github.clemensjl.hengst.mod.common.ui;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 
 public class ButtonWidget extends Widget {
-    private final String label;
+    private String label;
     private final Runnable action;
 
     public ButtonWidget(String label, Runnable action) {
         this.label = label;
         this.action = action;
+    }
+
+    public void setLabel(String label) {
+        this.label = label;
     }
 
     @Override

@@ -8,6 +8,7 @@ import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
+import io.github.clemensjl.hengst.mod.common.ui.TextWrap;
 
 /**
  * The HUD editor screen. Drawn by common; the adapters only forward mouse and key events. It does not close itself:
@@ -67,7 +68,7 @@ public final class HudEditorScreen implements UiScreen {
             frame(canvas, r, i == selected ? SELECTED : FRAME);
         }
         if (hintForWidth != sw) {
-            hintLines = wrap(canvas, hint, sw);
+            hintLines = TextWrap.wrap(canvas, hint, sw);
             hintForWidth = sw;
         }
         int lineH = canvas.fontHeight() + 1;
@@ -77,29 +78,6 @@ public final class HudEditorScreen implements UiScreen {
             canvas.text(hintLines[k], Math.max(0, (sw - canvas.textWidth(hintLines[k])) / 2), y, LABEL, true);
             y += lineH;
         }
-    }
-
-    /** Greedy word wrap; a single word wider than the width gets a line of its own. Cold path. */
-    private static String[] wrap(Canvas canvas, String text, int width) {
-        java.util.List<String> lines = new java.util.ArrayList<String>();
-        StringBuilder line = new StringBuilder();
-        for (String word : text.split(" ")) {
-            if (word.isEmpty()) {
-                continue;
-            }
-            if (line.length() > 0 && canvas.textWidth(line + " " + word) > width) {
-                lines.add(line.toString());
-                line.setLength(0);
-            }
-            if (line.length() > 0) {
-                line.append(' ');
-            }
-            line.append(word);
-        }
-        if (line.length() > 0) {
-            lines.add(line.toString());
-        }
-        return lines.toArray(new String[0]);
     }
 
     private void drawModule(Canvas canvas, int i, MutableRect r) {

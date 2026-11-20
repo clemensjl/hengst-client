@@ -93,4 +93,15 @@ class WidgetsTest {
         assertTrue(l.mouseClicked(10, 14, 0)); assertEquals(1, clicks[1]);
         assertFalse(l.mouseClicked(10, 150, 0));                // outside the list
     }
+
+    @Test void scroll_list_reset_goes_back_to_the_top() {
+        ScrollList l = new ScrollList(0, 0, 200, 100);
+        List<Widget> ws = new ArrayList<>();
+        for (int i = 0; i < 20; i++) ws.add(new ButtonWidget("b" + i, () -> {}));
+        l.setWidgets(ws, 20);
+        l.scroll(-5);
+        assertEquals(60, l.offset());
+        l.reset();
+        assertEquals(0, l.offset());
+    }
 }
