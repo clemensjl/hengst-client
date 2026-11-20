@@ -3,10 +3,15 @@
 //!
 //! Everything in the install profile is untrusted remote data that ends up on a command line and
 //! in file paths, so each string is validated where it becomes a path or an argument.
+//!
+//! Intended use (Task 11): hash the installer, `plan`, and skip all processors only if
+//! `install_state_valid` is true. Otherwise run the commands in order with the work directory as
+//! current directory, calling `ProcessorCommand::verify_files` right before each spawn and
+//! `check_outputs` after it, then `write_marker`.
 
 use std::collections::{HashMap, HashSet};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::installer::{extract_files, ModernProfile, Processor};
 use crate::download::sha1_file;
@@ -23,15 +28,20 @@ pub struct InstallEnv {
     pub minecraft_jar: PathBuf,
     pub game: String,
     pub installer: PathBuf,
-    /// Scratch directory the installer's data files are extracted to.
+    /// Per-install scratch directory the installer's data files are extracted to. Processors run
+    /// with it as current directory.
     pub work: PathBuf,
 }
 
-/// One processor, ready to run as `java -cp <jar + classpath> <main_class> <args>`.
+/// One processor, ready to run as `java -cp <jar + classpath> <main_class> <args>` (no shell).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessorCommand {
     pub jar: PathBuf,
+    /// SHA-1 the profile declares for `jar`.
+    pub jar_sha1: String,
     pub classpath: Vec<PathBuf>,
+    /// SHA-1 the profile declares for each classpath entry, in the same order.
+    pub classpath_sha1: Vec<String>,
     pub main_class: String,
     pub args: Vec<String>,
     /// Files the processor produces with their expected SHA-1.
@@ -39,15 +49,62 @@ pub struct ProcessorCommand {
 }
 
 impl ProcessorCommand {
-    /// True when the processor declares outputs and all of them exist with the expected SHA-1, so
-    /// it need not run again.
-    pub fn satisfied(&self) -> bool {
-        !self.outputs.is_empty() && self.outputs.iter().all(|(p, sha)| has_sha1(p, sha))
+    /// Re-checks the jar and the classpath files against their declared SHA-1. Call it right
+    /// before starting the process.
+    pub fn verify_files(&self) -> Result<()> {
+        let files = std::iter::once((&self.jar, &self.jar_sha1))
+            .chain(self.classpath.iter().zip(&self.classpath_sha1));
+        for (path, sha) in files {
+            if !has_sha1(path, sha) {
+                return Err(bad(format!(
+                    "{} does not match its declared SHA-1",
+                    path.display()
+                )));
+            }
+        }
+        Ok(())
     }
+
+    /// Checks the declared outputs after the processor ran.
+    pub fn check_outputs(&self) -> Result<()> {
+        for (path, sha) in &self.outputs {
+            match sha1_file(path) {
+                Ok(actual) if actual.eq_ignore_ascii_case(sha) => {}
+                Ok(actual) => {
+                    return Err(Error::Checksum {
+                        path: path.clone(),
+                        expected: sha.clone(),
+                        actual,
+                    })
+                }
+                Err(_) => {
+                    return Err(bad(format!(
+                        "processor output {} is missing or unreadable",
+                        path.display()
+                    )))
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// The processors to run together with the data they were planned from, so the install state is
+/// always checked against the same map.
+#[derive(Clone, Debug)]
+pub struct Plan {
+    pub commands: Vec<ProcessorCommand>,
+    pub data: HashMap<String, String>,
+    /// Files below the libraries directory the processors produce without a declared hash (data
+    /// coordinates that are neither downloaded libraries, declared outputs nor `PATCHED`).
+    produced: Vec<PathBuf>,
 }
 
 /// Largest `META-INF/MANIFEST.MF` we read; real ones are a few hundred bytes.
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
+/// Largest install marker we read; a real one is a few hundred bytes.
+const MAX_MARKER_BYTES: u64 = 64 * 1024;
+const MARKER_MAGIC: &str = "hengst-loader-marker 1";
 
 fn bad(msg: impl std::fmt::Display) -> Error {
     Error::Installer(msg.to_string())
@@ -69,6 +126,19 @@ fn has_sha1(path: &Path, expected: &str) -> bool {
     sha1_file(path).is_ok_and(|h| h.eq_ignore_ascii_case(expected))
 }
 
+/// A short, printable excerpt of untrusted text for error messages.
+fn excerpt(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .take(40)
+        .map(|c| if c.is_control() { '?' } else { c })
+        .collect();
+    if s.chars().count() > 40 {
+        out.push_str("...");
+    }
+    out
+}
+
 /// `[group:artifact:version...]` as a whole string.
 fn as_coordinate(s: &str) -> Option<&str> {
     s.strip_prefix('[')?.strip_suffix(']')
@@ -80,19 +150,31 @@ fn library_file(libraries: &Path, coord: &str) -> Result<PathBuf> {
     join_relative(libraries, &rel)
 }
 
-/// Client-side values of the profile's `data`, plus the fixed tokens. Coordinates resolve below
-/// the libraries directory, quoted values are literals, anything else is an installer entry that
-/// is extracted below `env.work`. The fixed tokens cannot be overridden by the profile.
-pub fn resolve_data(profile: &ModernProfile, env: &InstallEnv) -> Result<HashMap<String, String>> {
+/// Data key and resolved path of every data value that was a Maven coordinate.
+type CoordinatePaths = Vec<(String, PathBuf)>;
+
+/// Client-side values of the profile's `data`, plus the fixed tokens, and the paths of the
+/// values that were coordinates. Coordinates resolve below the libraries directory, quoted values
+/// are literals, anything else is an installer entry that is extracted below `env.work`. The
+/// fixed tokens cannot be overridden by the profile.
+///
+/// The extracted data files are trusted only because the installer itself was verified by the
+/// caller; they are rewritten from it on every call and never read back from an earlier run.
+fn resolve_data(
+    profile: &ModernProfile,
+    env: &InstallEnv,
+) -> Result<(HashMap<String, String>, CoordinatePaths)> {
     let mut data = HashMap::new();
+    let mut coords = Vec::new();
     let mut jobs = Vec::new();
     for (key, sided) in &profile.data {
         let v = sided.client.as_str();
         let value = if let Some(coord) = as_coordinate(v) {
-            path_string(
-                &library_file(&env.libraries, coord)
-                    .map_err(|e| bad(format!("data {key}: {}", inner(e))))?,
-            )
+            let path = library_file(&env.libraries, coord)
+                .map_err(|e| bad(format!("data {key}: {}", inner(e))))?;
+            let value = path_string(&path);
+            coords.push((key.clone(), path));
+            value
         } else if v.len() >= 2 && v.starts_with('\'') && v.ends_with('\'') {
             v[1..v.len() - 1].to_string()
         } else {
@@ -116,7 +198,7 @@ pub fn resolve_data(profile: &ModernProfile, env: &InstallEnv) -> Result<HashMap
     ] {
         data.insert(key.to_string(), value);
     }
-    Ok(data)
+    Ok((data, coords))
 }
 
 fn is_token_name(s: &str) -> bool {
@@ -205,75 +287,170 @@ fn is_client(p: &Processor) -> bool {
         .is_none_or(|s| s.iter().any(|s| s == "client"))
 }
 
-/// A processor jar or classpath entry: it must be one of the profile's declared libraries (so its
-/// download is verified like any other) and must not carry the classpath separator.
-fn declared_file(coord: &str, declared: &HashSet<String>, libraries: &Path) -> Result<PathBuf> {
+/// `(artifact path, sha1)` of every profile library, by Maven path of its name. A library without
+/// a download artifact has empty strings.
+type Declared = HashMap<String, Vec<(String, String)>>;
+
+fn declared_libraries(profile: &ModernProfile) -> Declared {
+    let mut declared = Declared::new();
+    for l in &profile.libraries {
+        let Some(rel) = maven_path(&l.name) else {
+            continue;
+        };
+        let artifact = l.downloads.as_ref().and_then(|d| d.artifact.as_ref());
+        declared.entry(rel).or_default().push(match artifact {
+            Some(a) => (a.path.clone(), a.sha1.clone()),
+            None => (String::new(), String::new()),
+        });
+    }
+    declared
+}
+
+/// A processor jar or classpath entry: it must be one of the profile's declared libraries, stored
+/// at the Maven path of its name, with a declared SHA-1, which the file on disk must match. It
+/// must not carry the classpath separator. Returns the file and its SHA-1.
+fn declared_file(coord: &str, declared: &Declared, libraries: &Path) -> Result<(PathBuf, String)> {
     let rel = maven_path(coord).ok_or_else(|| Error::UnsafePath(coord.to_string()))?;
     if rel.contains(';') {
         return Err(bad(format!(
             "{coord}: ';' is not allowed in a classpath entry"
         )));
     }
-    if !declared.contains(&rel) {
+    let entries = declared
+        .get(&rel)
+        .ok_or_else(|| bad(format!("{coord} is not one of the profile's libraries")))?;
+    let (path, sha1) = &entries[0];
+    if entries.iter().any(|e| e != &entries[0]) {
         return Err(bad(format!(
-            "{coord} is not one of the profile's libraries"
+            "{coord} is declared more than once, differently"
         )));
     }
-    join_relative(libraries, &rel)
+    if path.is_empty() {
+        return Err(bad(format!(
+            "{coord} has no download artifact in the profile"
+        )));
+    }
+    if path != &rel {
+        return Err(bad(format!(
+            "{coord}: artifact path differs from the Maven path of its name"
+        )));
+    }
+    if validate_sha1(sha1).is_err() {
+        return Err(bad(format!("{coord} has no declared SHA-1")));
+    }
+    let file = join_relative(libraries, &rel)?;
+    if !has_sha1(&file, sha1) {
+        return Err(bad(format!(
+            "{coord}: file is missing or does not match its declared SHA-1"
+        )));
+    }
+    Ok((file, sha1.clone()))
+}
+
+/// A path taken from the profile: absolute, no UNC or verbatim form, and below one of `roots`
+/// (the root directory itself only if `allow_root`) or exactly one of `exact`. Every component
+/// below a root must pass the same rules as downloaded paths (no trailing dot or space, no device
+/// names, no `:`).
+fn contained(s: &str, roots: &[&Path], exact: &[&Path], allow_root: bool) -> bool {
+    if s.starts_with("\\\\") || s.starts_with("//") {
+        return false;
+    }
+    let p = Path::new(s);
+    if !p.is_absolute() {
+        return false;
+    }
+    if exact.contains(&p) {
+        return true;
+    }
+    roots.iter().any(|r| {
+        let Ok(rest) = p.strip_prefix(r) else {
+            return false;
+        };
+        let mut rel = Vec::new();
+        for c in rest.components() {
+            match c.as_os_str().to_str() {
+                Some(part) if matches!(c, Component::Normal(_)) => rel.push(part),
+                _ => return false,
+            }
+        }
+        if rel.is_empty() {
+            return allow_root;
+        }
+        join_relative(Path::new("x"), &rel.join("/")).is_ok()
+    })
+}
+
+/// An argument that looks like a path (contains `/`, `\` or `:`) must be contained; so must the
+/// value of a `--key=value` argument. Anything else is a plain option or value.
+fn check_argument(arg: &str, roots: &[&Path], exact: &[&Path]) -> bool {
+    let value = match arg.strip_prefix('-').and(arg.split_once('=')) {
+        Some((_, v)) => v,
+        None => arg,
+    };
+    !value.contains(['/', '\\', ':']) || contained(value, roots, exact, true)
 }
 
 fn plan_one(
     p: &Processor,
     data: &HashMap<String, String>,
-    declared: &HashSet<String>,
+    declared: &Declared,
     env: &InstallEnv,
 ) -> Result<ProcessorCommand> {
-    let jar = declared_file(&p.jar, declared, &env.libraries)?;
-    let classpath = p
-        .classpath
-        .iter()
-        .map(|c| declared_file(c, declared, &env.libraries))
-        .collect::<Result<Vec<_>>>()?;
+    let (jar, jar_sha1) = declared_file(&p.jar, declared, &env.libraries)?;
+    let mut classpath = Vec::new();
+    let mut classpath_sha1 = Vec::new();
+    for c in &p.classpath {
+        let (file, sha) = declared_file(c, declared, &env.libraries)?;
+        classpath.push(file);
+        classpath_sha1.push(sha);
+    }
     let main_class = jar_main_class(&jar)?;
-    let args = p
-        .args
-        .iter()
-        .map(|a| substitute(a, data, &env.libraries))
-        .collect::<Result<Vec<_>>>()?;
-    let roots = [&env.root, &env.libraries, &env.work];
+    let roots = [env.libraries.as_path(), env.work.as_path()];
+    let exact = [env.minecraft_jar.as_path()];
+    let mut args = Vec::new();
+    for (j, a) in p.args.iter().enumerate() {
+        let arg = substitute(a, data, &env.libraries)?;
+        if !check_argument(&arg, &roots, &exact) {
+            return Err(bad(format!(
+                "argument {j} ({}) is a path outside the launcher directories",
+                excerpt(&arg)
+            )));
+        }
+        args.push(arg);
+    }
     let mut outputs = Vec::new();
     for (key, value) in &p.outputs {
-        let path = PathBuf::from(substitute(key, data, &env.libraries)?);
-        if !path.is_absolute() || !roots.iter().any(|r| path.starts_with(r)) {
+        let key = substitute(key, data, &env.libraries)?;
+        if !contained(&key, &roots, &[], false) {
             return Err(bad(format!(
-                "output {} is outside the launcher directories",
-                path.display()
+                "output {} is outside the libraries and work directories",
+                excerpt(&key)
             )));
         }
         let sha = substitute(value, data, &env.libraries)?;
-        validate_sha1(&sha).map_err(|_| bad(format!("output hash {sha} is not a SHA-1")))?;
-        outputs.push((path, sha));
+        validate_sha1(&sha)
+            .map_err(|_| bad(format!("output hash {} is not a SHA-1", excerpt(&sha))))?;
+        outputs.push((PathBuf::from(key), sha));
     }
     Ok(ProcessorCommand {
         jar,
+        jar_sha1,
         classpath,
+        classpath_sha1,
         main_class,
         args,
         outputs,
     })
 }
 
-/// The client-side processors of the profile in order, ready to run. Needs the processor jars on
-/// disk (for their `Main-Class`) and the installer (for its data files). An invalid processor is
-/// an error naming its index in the profile.
-pub fn plan(profile: &ModernProfile, env: &InstallEnv) -> Result<Vec<ProcessorCommand>> {
-    let data = resolve_data(profile, env)?;
-    let declared: HashSet<String> = profile
-        .libraries
-        .iter()
-        .filter_map(|l| maven_path(&l.name))
-        .collect();
-    profile
+/// The client-side processors of the profile in order, ready to run, with the data they were
+/// planned from. Needs the processor jars on disk (they are checked against their declared SHA-1
+/// before their manifest is read) and the installer (for its data files, extracted into
+/// `env.work` on every call). An invalid processor is an error naming its index in the profile.
+pub fn plan(profile: &ModernProfile, env: &InstallEnv) -> Result<Plan> {
+    let (data, coords) = resolve_data(profile, env)?;
+    let declared = declared_libraries(profile);
+    let commands = profile
         .processors
         .iter()
         .enumerate()
@@ -282,38 +459,143 @@ pub fn plan(profile: &ModernProfile, env: &InstallEnv) -> Result<Vec<ProcessorCo
             plan_one(p, &data, &declared, env)
                 .map_err(|e| bad(format!("processor {i}: {}", inner(e))))
         })
-        .collect()
+        .collect::<Result<Vec<_>>>()?;
+    let downloaded: HashSet<PathBuf> = profile
+        .libraries
+        .iter()
+        .filter_map(|l| l.downloads.as_ref()?.artifact.as_ref())
+        .filter_map(|a| join_relative(&env.libraries, &a.path).ok())
+        .collect();
+    let declared_outputs: HashSet<&PathBuf> = commands
+        .iter()
+        .flat_map(|c| &c.outputs)
+        .map(|(p, _)| p)
+        .collect();
+    let mut produced: Vec<PathBuf> = coords
+        .into_iter()
+        .filter(|(k, p)| k != "PATCHED" && !downloaded.contains(p) && !declared_outputs.contains(p))
+        .map(|(_, p)| p)
+        .collect();
+    produced.sort();
+    produced.dedup();
+    Ok(Plan {
+        commands,
+        data,
+        produced,
+    })
 }
 
-/// True only when the install marker names this installer, every processor output has its
-/// expected SHA-1, the patched client jar exists (and matches `PATCHED_SHA` when the profile has
-/// one) and every installer-provided library of `version` (empty `url`) matches its SHA-1. A
-/// marker alone is never trusted.
+fn patched_ok(plan: &Plan) -> Option<(PathBuf, String)> {
+    let patched = PathBuf::from(plan.data.get("PATCHED")?);
+    let actual = sha1_file(&patched).ok()?;
+    match plan.data.get("PATCHED_SHA") {
+        Some(sha) if !actual.eq_ignore_ascii_case(sha) => None,
+        _ => Some((patched, actual)),
+    }
+}
+
+/// Records a finished installation: the installer's SHA-1, the actual SHA-1 of the patched jar
+/// and of every produced file without a declared hash that exists. Declared outputs and
+/// `PATCHED_SHA` are verified first; any mismatch is an error and no marker is written.
+pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<()> {
+    validate_sha1(installer_sha1)?;
+    for c in &plan.commands {
+        c.check_outputs()?;
+    }
+    let (_, patched_sha) = patched_ok(plan)
+        .ok_or_else(|| bad("the patched client jar is missing or does not match PATCHED_SHA"))?;
+    let mut text = format!("{MARKER_MAGIC}\ninstaller {installer_sha1}\npatched {patched_sha}\n");
+    for path in &plan.produced {
+        let Ok(sha) = sha1_file(path) else { continue };
+        let p = path_string(path);
+        if p.contains(['\n', '\r']) {
+            return Err(Error::UnsafePath(excerpt(&p)));
+        }
+        text.push_str(&format!("output {sha} {p}\n"));
+    }
+    if let Some(dir) = marker.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut tmp = marker.as_os_str().to_owned();
+    tmp.push(".part");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, text)?;
+    std::fs::rename(&tmp, marker)?;
+    Ok(())
+}
+
+struct Marker {
+    installer: String,
+    patched: String,
+    outputs: Vec<(String, String)>,
+}
+
+/// Reads the marker as untrusted local data: bounded size, strict format, `None` on any problem.
+fn read_marker(path: &Path) -> Option<Marker> {
+    let mut buf = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_MARKER_BYTES + 1)
+        .read_to_end(&mut buf)
+        .ok()?;
+    if buf.len() as u64 > MAX_MARKER_BYTES {
+        return None;
+    }
+    let text = String::from_utf8(buf).ok()?;
+    let mut lines = text.lines();
+    if lines.next()? != MARKER_MAGIC {
+        return None;
+    }
+    let hash = |s: &str| validate_sha1(s).is_ok().then(|| s.to_ascii_lowercase());
+    let installer = hash(lines.next()?.strip_prefix("installer ")?)?;
+    let patched = hash(lines.next()?.strip_prefix("patched ")?)?;
+    let mut outputs = Vec::new();
+    for line in lines {
+        let (sha, p) = line.strip_prefix("output ")?.split_once(' ')?;
+        outputs.push((p.to_string(), hash(sha)?));
+    }
+    Some(Marker {
+        installer,
+        patched,
+        outputs,
+    })
+}
+
+/// True only when all of this holds: the marker (written by `write_marker`) names this installer;
+/// the patched client jar (`PATCHED`, required) exists, matches `PATCHED_SHA` when the profile
+/// has one and the SHA-1 the marker recorded; every declared output has its SHA-1; every file
+/// the marker recorded still has the recorded SHA-1 and is one the plan produces; and every
+/// installer-provided library of `version` (empty `url`) matches its SHA-1. A marker alone is
+/// never trusted, and an unreadable or malformed marker just means "not valid".
 pub fn install_state_valid(
-    cmds: &[ProcessorCommand],
-    data: &HashMap<String, String>,
+    plan: &Plan,
     version: &VersionJson,
     libraries: &Path,
     marker: &Path,
     installer_sha1: &str,
 ) -> Result<bool> {
-    if !std::fs::read_to_string(marker).is_ok_and(|m| m.trim() == installer_sha1) {
+    let Some(m) = read_marker(marker) else {
+        return Ok(false);
+    };
+    if !m.installer.eq_ignore_ascii_case(installer_sha1) {
         return Ok(false);
     }
-    if !cmds
+    match patched_ok(plan) {
+        Some((_, actual)) if actual == m.patched => {}
+        _ => return Ok(false),
+    }
+    if !plan
+        .commands
         .iter()
         .flat_map(|c| &c.outputs)
         .all(|(path, sha)| has_sha1(path, sha))
     {
         return Ok(false);
     }
-    if let Some(patched) = data.get("PATCHED") {
-        let patched = Path::new(patched);
-        let ok = match data.get("PATCHED_SHA") {
-            Some(sha) => has_sha1(patched, sha),
-            None => patched.is_file(),
-        };
-        if !ok {
+    let produced: HashSet<String> = plan.produced.iter().map(|p| path_string(p)).collect();
+    let mut seen = HashSet::new();
+    for (p, sha) in &m.outputs {
+        if !produced.contains(p) || !seen.insert(p) || !has_sha1(Path::new(p), sha) {
             return Ok(false);
         }
     }
@@ -334,7 +616,8 @@ pub fn install_state_valid(
 mod tests {
     use super::*;
     use crate::download::sha1_hex;
-    use serde_json::json;
+    use crate::libraries::maven_path;
+    use serde_json::{json, Value};
     use std::fs::File;
     use std::io::Write;
     use zip::write::SimpleFileOptions;
@@ -383,21 +666,57 @@ mod tests {
         serde_json::from_str(json).unwrap()
     }
 
-    /// A dummy jar with a manifest for every processor jar (client and server) of the profile.
-    fn stage_jars(profile: &ModernProfile, env: &InstallEnv) {
-        for p in &profile.processors {
-            let rel = maven_path(&p.jar).unwrap();
-            let path = join_relative(&env.libraries, &rel).unwrap();
+    /// A library entry with a download artifact whose SHA-1 `stage_jars` fills in.
+    fn lib(name: &str) -> Value {
+        json!({"name": name, "downloads": {"artifact": {
+            "path": maven_path(name).unwrap(), "sha1": "", "size": 1,
+            "url": "https://example.invalid/x.jar"}}})
+    }
+
+    /// Puts a dummy jar with a manifest at the artifact path of every library of the profile and
+    /// declares its real SHA-1, so the profile's own hashes (which belong to the real jars) do not
+    /// matter.
+    fn stage_jars(profile: &mut ModernProfile, env: &InstallEnv) {
+        for l in &mut profile.libraries {
+            let Some(a) = l.downloads.as_mut().and_then(|d| d.artifact.as_mut()) else {
+                continue;
+            };
+            let path = join_relative(&env.libraries, &a.path).unwrap();
             std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             zip_file(&path, &[("META-INF/MANIFEST.MF", &manifest("test.Main"))]);
+            a.sha1 = sha1_file(&path).unwrap();
         }
+    }
+
+    /// Parses, stages and plans a profile.
+    fn build(profile: Value, game: &str) -> (tempfile::TempDir, InstallEnv, Plan) {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = env(tmp.path(), game);
+        let mut profile = parse(&profile.to_string());
+        stage_jars(&mut profile, &env);
+        let plan = plan(&profile, &env).unwrap();
+        (tmp, env, plan)
+    }
+
+    fn real(json: &str, game: &str) -> (tempfile::TempDir, InstallEnv, Plan) {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = env(tmp.path(), game);
+        let mut profile = parse(json);
+        stage_jars(&mut profile, &env);
+        let plan = plan(&profile, &env).unwrap();
+        (tmp, env, plan)
+    }
+
+    fn rel(env: &InstallEnv, s: &str) -> String {
+        s.replace(&env.root.to_string_lossy().into_owned(), "<home>")
+            .replace('\\', "/")
     }
 
     #[test]
     fn resolves_data_like_the_forge_installer() {
         let tmp = tempfile::tempdir().unwrap();
         let env = env(tmp.path(), "1.20.1");
-        let d = resolve_data(&parse(PROFILE_1201), &env).unwrap();
+        let (d, _) = resolve_data(&parse(PROFILE_1201), &env).unwrap();
         assert_eq!(d["SIDE"], "client");
         assert_eq!(d["MC_SLIM_SHA"], "de86b035d2da0f78940796bb95c39a932ed84834");
         assert_eq!(d["MINECRAFT_VERSION"], "1.20.1");
@@ -433,7 +752,7 @@ mod tests {
                 "data": {"SIDE": {"client": "'server'", "server": "'server'"}}})
             .to_string(),
         );
-        assert_eq!(resolve_data(&p, &env).unwrap()["SIDE"], "client");
+        assert_eq!(resolve_data(&p, &env).unwrap().0["SIDE"], "client");
     }
 
     #[test]
@@ -580,11 +899,8 @@ mod tests {
 
     #[test]
     fn plans_only_client_processors() {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = env(tmp.path(), "1.20.1");
-        let profile = parse(PROFILE_1201);
-        stage_jars(&profile, &env);
-        let cmds = plan(&profile, &env).unwrap();
+        let (_tmp, env, plan) = real(PROFILE_1201, "1.20.1");
+        let cmds = &plan.commands;
         assert_eq!(cmds.len(), 6);
         assert_eq!(&cmds[0].args[..2], ["--task", "MCP_DATA"]);
         assert!(cmds.iter().all(|c| c.main_class == "test.Main"));
@@ -602,147 +918,318 @@ mod tests {
                 .join("net/minecraftforge/jarsplitter/1.1.4/jarsplitter-1.1.4.jar")
         );
         assert_eq!(split.classpath.len(), 2);
+        assert_eq!(split.classpath_sha1.len(), 2);
+        split.verify_files().unwrap();
+        assert_eq!(plan.data["SIDE"], "client");
 
-        let neo_profile = parse(PROFILE_NEO);
-        let neo_env = InstallEnv {
-            game: "26.3".into(),
-            ..env
-        };
-        stage_jars(&neo_profile, &neo_env);
-        let neo = plan(&neo_profile, &neo_env).unwrap();
-        assert_eq!(neo.len(), 1);
-        assert!(neo[0]
+        let (_tmp2, neo_env, neo) = real(PROFILE_NEO, "26.3");
+        assert_eq!(neo.commands.len(), 1);
+        assert!(neo.commands[0]
             .args
             .iter()
             .any(|a| a == &format!("{}/libraries/", neo_env.root.to_string_lossy())));
-        assert_eq!(&neo[0].args[..2], ["--task", "PROCESS_MINECRAFT_JAR"]);
+        assert_eq!(
+            &neo.commands[0].args[..2],
+            ["--task", "PROCESS_MINECRAFT_JAR"]
+        );
+    }
+
+    /// The full argument vectors of the real fixtures, relative to the launcher home.
+    #[test]
+    fn real_fixture_argument_vectors() {
+        let l = "<home>/libraries";
+        let c = format!("{l}/de/oceanlabs/mcp/mcp_config/1.20.1-20230612.114412/mcp_config-1.20.1-20230612.114412");
+        let m = format!(
+            "{l}/net/minecraft/client/1.20.1-20230612.114412/client-1.20.1-20230612.114412"
+        );
+        let (_t, env1, forge) = real(PROFILE_1201, "1.20.1");
+        let got: Vec<Vec<String>> = forge
+            .commands
+            .iter()
+            .map(|c| c.args.iter().map(|a| rel(&env1, a)).collect())
+            .collect();
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            got,
+            vec![
+                v(&["--task", "MCP_DATA", "--input", &format!("{c}.zip"), "--output", &format!("{c}-mappings.txt"), "--key", "mappings"]),
+                v(&["--task", "DOWNLOAD_MOJMAPS", "--version", "1.20.1", "--side", "client", "--output", &format!("{m}-mappings.txt")]),
+                v(&["--task", "MERGE_MAPPING", "--left", &format!("{c}-mappings.txt"), "--right", &format!("{m}-mappings.txt"), "--output", &format!("{c}-mappings-merged.txt"), "--classes", "--reverse-right"]),
+                v(&["--input", "<home>/versions/1.20.1/1.20.1.jar", "--slim", &format!("{m}-slim.jar"), "--extra", &format!("{m}-extra.jar"), "--srg", &format!("{c}-mappings-merged.txt")]),
+                v(&["--input", &format!("{m}-slim.jar"), "--output", &format!("{m}-srg.jar"), "--names", &format!("{c}-mappings-merged.txt"), "--ann-fix", "--ids-fix", "--src-fix", "--record-fix"]),
+                v(&["--clean", &format!("{m}-srg.jar"), "--output", &format!("{l}/net/minecraftforge/forge/1.20.1-47.4.28/forge-1.20.1-47.4.28-client.jar"), "--apply", "<home>/work/data/client.lzma"]),
+            ]
+        );
+        let (_t2, env2, neo) = real(PROFILE_NEO, "26.3");
+        let got: Vec<String> = neo.commands[0].args.iter().map(|a| rel(&env2, a)).collect();
+        assert_eq!(
+            got,
+            v(&["--task", "PROCESS_MINECRAFT_JAR", "--no-mod-manifest", "--input", "<home>/versions/26.3/26.3.jar", "--output", &format!("{l}/net/neoforged/minecraft-client-patched/26.3.0.115/minecraft-client-patched-26.3.0.115.jar"), "--extract-libraries-to", &format!("{l}/"), "--apply-patches", "<home>/work/data/client.lzma"])
+        );
     }
 
     #[test]
     fn server_only_processors_are_skipped_and_unsided_ones_kept() {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = env(tmp.path(), "1.20.1");
-        let profile = parse(
-            &json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
-            "libraries": [{"name": "x:tool:1"}],
+        let (_t, _e, plan) = build(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "libraries": [lib("x:tool:1")],
             "processors": [
                 {"jar": "x:tool:1", "args": ["unsided"]},
                 {"jar": "x:tool:1", "sides": ["server"], "args": ["server"]},
                 {"jar": "x:tool:1", "sides": ["client", "server"], "args": ["both"]},
                 {"jar": "x:tool:1", "sides": ["client"], "args": ["client"]},
                 {"jar": "x:tool:1", "sides": [], "args": ["empty"]}
-            ]})
-            .to_string(),
+            ]}),
+            "1.20.1",
         );
-        stage_jars(&profile, &env);
-        let cmds = plan(&profile, &env).unwrap();
-        let got: Vec<&str> = cmds.iter().map(|c| c.args[0].as_str()).collect();
+        let got: Vec<&str> = plan.commands.iter().map(|c| c.args[0].as_str()).collect();
         assert_eq!(got, ["unsided", "both", "client"]);
     }
 
-    fn one_processor(extra: serde_json::Value) -> ModernProfile {
+    fn processors_profile(processors: Value) -> Value {
+        json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "libraries": [lib("x:tool:1"), lib("x:dep:2")], "processors": processors})
+    }
+
+    fn one_processor(extra: Value) -> Value {
         let mut p = json!({"jar": "x:tool:1", "args": []});
         p.as_object_mut()
             .unwrap()
             .extend(extra.as_object().unwrap().clone());
-        parse(
-            &json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
-                "libraries": [{"name": "x:tool:1"}, {"name": "x:dep:2"}],
-                "processors": [p]})
-            .to_string(),
-        )
+        processors_profile(json!([p]))
     }
 
-    fn assert_refused(profile: &ModernProfile, env: &InstallEnv, needle: &str) {
-        stage_jars(profile, env);
-        match plan(profile, env) {
-            Err(Error::Installer(m)) => {
-                assert!(m.contains("processor 0"), "{m}");
-                assert!(m.contains(needle), "{m}");
-            }
+    fn plan_error(profile: Value) -> String {
+        let tmp = tempfile::tempdir().unwrap();
+        let env = env(tmp.path(), "1.20.1");
+        let mut profile = parse(&profile.to_string());
+        stage_jars(&mut profile, &env);
+        match plan(&profile, &env) {
+            Err(Error::Installer(m)) => m,
             other => panic!("expected an installer error, got {other:?}"),
         }
     }
 
+    fn assert_refused(profile: Value, index: usize, needle: &str) {
+        let m = plan_error(profile);
+        assert!(m.contains(&format!("processor {index}")), "{m}");
+        assert!(m.contains(needle), "{m}");
+    }
+
     #[test]
     fn hostile_profiles_are_refused_naming_the_processor() {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = env(tmp.path(), "1.20.1");
         let sha = "0123456789abcdef0123456789abcdef01234567";
-        // Unknown placeholder.
-        assert_refused(&one_processor(json!({"args": ["{NOPE}"]})), &env, "NOPE");
-        // A path that leaves the allowed roots.
+        assert_refused(one_processor(json!({"args": ["{NOPE}"]})), 0, "NOPE");
+        assert_refused(one_processor(json!({"args": ["{ROOT}/../evil"]})), 0, "..");
+        assert_refused(one_processor(json!({"jar": "x:other:1"})), 0, "x:other:1");
         assert_refused(
-            &one_processor(json!({"args": ["{ROOT}/../evil"]})),
-            &env,
-            "..",
-        );
-        // Jar and classpath entries the profile does not declare as libraries.
-        assert_refused(
-            &one_processor(json!({"jar": "x:other:1"})),
-            &env,
+            one_processor(json!({"classpath": ["x:other:1"]})),
+            0,
             "x:other:1",
         );
         assert_refused(
-            &one_processor(json!({"classpath": ["x:other:1"]})),
-            &env,
-            "x:other:1",
-        );
-        // Escaping coordinates, and a classpath separator smuggled into one.
-        assert_refused(
-            &one_processor(json!({"classpath": ["x:dep:../../2"]})),
-            &env,
+            one_processor(json!({"classpath": ["x:dep:../../2"]})),
+            0,
             "x:dep",
         );
         assert_refused(
-            &one_processor(json!({"classpath": ["x:dep:2;evil"]})),
-            &env,
+            one_processor(json!({"classpath": ["x:dep:2;evil"]})),
+            0,
             "x:dep",
         );
-        // Outputs: key outside the roots, key not absolute, value not a SHA-1, unknown token.
+        // Outputs: outside the libraries and work directories (the launcher root is too wide),
+        // not absolute, reserved or trailing-dot components, bad value, unknown token.
+        for (key, needle) in [
+            ("C:/Windows/evil.dll", "evil.dll"),
+            ("relative.jar", "relative.jar"),
+            ("{ROOT}/versions/x.jar", "outside"),
+            ("{LIBRARY_DIR}/CON/x.jar", "outside"),
+            ("{LIBRARY_DIR}/a.", "outside"),
+            ("{LIBRARY_DIR}", "outside"),
+            ("{LIBRARY_DIR}/a.jar:stream", "outside"),
+        ] {
+            assert_refused(one_processor(json!({"outputs": {key: sha}})), 0, needle);
+        }
         assert_refused(
-            &one_processor(json!({"outputs": {"C:/Windows/evil.dll": sha}})),
-            &env,
-            "evil.dll",
-        );
-        assert_refused(
-            &one_processor(json!({"outputs": {"relative.jar": sha}})),
-            &env,
-            "relative.jar",
-        );
-        assert_refused(
-            &one_processor(json!({"outputs": {"{ROOT}/a.jar": "not-a-hash"}})),
-            &env,
+            one_processor(json!({"outputs": {"{LIBRARY_DIR}/a.jar": "not-a-hash"}})),
+            0,
             "not-a-hash",
         );
         assert_refused(
-            &one_processor(json!({"outputs": {"{NOPE}": sha}})),
-            &env,
+            one_processor(json!({"outputs": {"{NOPE}": sha}})),
+            0,
             "NOPE",
         );
     }
 
     #[test]
+    fn outputs_inside_libraries_or_work_are_accepted() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        let (_t, env, plan) = build(
+            one_processor(json!({"outputs": {
+                "{LIBRARY_DIR}/a/b.jar": sha, "{ROOT}/work/c.bin": sha}})),
+            "1.20.1",
+        );
+        let outs = &plan.commands[0].outputs;
+        assert!(outs
+            .iter()
+            .any(|(p, _)| *p == env.libraries.join("a/b.jar")));
+        assert!(outs.iter().any(|(p, _)| *p == env.work.join("c.bin")));
+    }
+
+    #[test]
+    fn path_arguments_must_stay_in_the_launcher_directories() {
+        let refuse = |literal: &str, arg: &str| {
+            let mut p = one_processor(json!({"args": ["--output", arg]}));
+            p["data"] = json!({"X": {"client": format!("'{literal}'"), "server": "'x'"}});
+            let m = plan_error(p);
+            assert!(m.contains("processor 0") && m.contains("argument 1"), "{m}");
+            assert!(m.len() < 200, "message must stay short: {m}");
+        };
+        refuse("C:/Users/u/Documents/f", "{X}");
+        refuse("C:\\Users\\u\\Documents\\f", "{X}");
+        refuse("\\\\server\\share\\f", "{X}");
+        refuse("\\\\?\\C:\\f", "{X}");
+        refuse("//server/share/f", "{X}");
+        refuse("/etc/passwd", "{X}");
+        refuse("relative/path", "{X}");
+        refuse("C:f", "{X}");
+        refuse("x", "--out=C:/Users/u/f");
+        refuse("x", "{LIBRARY_DIR}/CON/f");
+        refuse("x", "{LIBRARY_DIR}/a./f");
+        refuse("x", "{ROOT}/versions/other/other.jar");
+        refuse(&"a/".repeat(100), "{X}");
+
+        // Allowed: plain values, the libraries and work directories, the vanilla jar, and
+        // --key=value with a contained value.
+        let (_t, env, plan) = build(
+            one_processor(json!({"args": [
+                "--task", "1.20.1", "{LIBRARY_DIR}", "{LIBRARY_DIR}/a/b.jar", "{MINECRAFT_JAR}",
+                "{ROOT}/work/data/x", "--out={LIBRARY_DIR}/y.jar", "-Dx=plain"]})),
+            "1.20.1",
+        );
+        assert_eq!(plan.commands[0].args.len(), 8);
+        assert_eq!(PathBuf::from(&plan.commands[0].args[4]), env.minecraft_jar);
+    }
+
+    #[test]
+    fn processor_index_is_the_position_in_the_profile() {
+        let m = plan_error(processors_profile(json!([
+            {"jar": "x:tool:1", "sides": ["server"], "args": []},
+            {"jar": "x:tool:1", "sides": ["server"], "args": []},
+            {"jar": "x:tool:1", "args": ["{NOPE}"]}
+        ])));
+        assert!(m.contains("processor 2") && m.contains("NOPE"), "{m}");
+    }
+
+    #[test]
     fn server_only_hostile_processor_is_not_inspected() {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = env(tmp.path(), "1.20.1");
-        let profile = one_processor(json!({"sides": ["server"], "args": ["{NOPE}"]}));
-        stage_jars(&profile, &env);
-        assert!(plan(&profile, &env).unwrap().is_empty());
+        let (_t, _e, plan) = build(
+            one_processor(json!({"sides": ["server"], "args": ["{NOPE}"]})),
+            "1.20.1",
+        );
+        assert!(plan.commands.is_empty());
     }
 
     #[test]
     fn missing_processor_jar_is_an_error() {
         let tmp = tempfile::tempdir().unwrap();
         let env = env(tmp.path(), "1.20.1");
-        let profile = one_processor(json!({}));
+        let profile = parse(&one_processor(json!({})).to_string());
         assert!(plan(&profile, &env).is_err());
     }
 
     #[test]
-    fn arguments_stay_single_uninterpreted_arguments() {
+    fn processor_files_must_match_their_declared_sha1() {
         let tmp = tempfile::tempdir().unwrap();
         let env = env(tmp.path(), "1.20.1");
+        let mut profile = parse(&one_processor(json!({"classpath": ["x:dep:2"]})).to_string());
+        stage_jars(&mut profile, &env);
+        plan(&profile, &env).unwrap();
+        // The jar changes on disk after the profile's hash was declared.
+        let jar = env.libraries.join("x/tool/1/tool-1.jar");
+        zip_file(&jar, &[("META-INF/MANIFEST.MF", &manifest("evil.Main"))]);
+        let Err(Error::Installer(m)) = plan(&profile, &env) else {
+            panic!("a changed processor jar must be refused")
+        };
+        assert!(m.contains("processor 0") && m.contains("SHA-1"), "{m}");
+        // The same for a classpath entry.
+        stage_jars(&mut profile, &env);
+        zip_file(
+            &env.libraries.join("x/dep/2/dep-2.jar"),
+            &[("a", b"changed")],
+        );
+        let Err(Error::Installer(m)) = plan(&profile, &env) else {
+            panic!("a changed classpath entry must be refused")
+        };
+        assert!(m.contains("processor 0") && m.contains("x:dep:2"), "{m}");
+    }
+
+    #[test]
+    fn processor_libraries_need_a_declared_hash_and_the_maven_path() {
+        for (change, needle) in [
+            (json!({"path": "other/place/tool-1.jar"}), "artifact path"),
+            (json!({"sha1": ""}), "SHA-1"),
+        ] {
+            let mut profile = one_processor(json!({}));
+            let artifact = &mut profile["libraries"][0]["downloads"]["artifact"];
+            artifact
+                .as_object_mut()
+                .unwrap()
+                .extend(change.as_object().unwrap().clone());
+            let tmp = tempfile::tempdir().unwrap();
+            let env = env(tmp.path(), "1.20.1");
+            let mut p = parse(&profile.to_string());
+            // Stage the jar at the Maven path, as a downloader following the name would.
+            let at = env.libraries.join("x/tool/1/tool-1.jar");
+            std::fs::create_dir_all(at.parent().unwrap()).unwrap();
+            zip_file(&at, &[("META-INF/MANIFEST.MF", &manifest("test.Main"))]);
+            if needle == "SHA-1" {
+                p.libraries[0]
+                    .downloads
+                    .as_mut()
+                    .unwrap()
+                    .artifact
+                    .as_mut()
+                    .unwrap()
+                    .sha1
+                    .clear();
+            }
+            let Err(Error::Installer(m)) = plan(&p, &env) else {
+                panic!("{needle}: must be refused")
+            };
+            assert!(m.contains("processor 0") && m.contains(needle), "{m}");
+        }
+        // A library without any download artifact cannot be a processor jar.
+        let mut profile = one_processor(json!({}));
+        profile["libraries"][0] = json!({"name": "x:tool:1"});
+        let m = plan_error(profile);
+        assert!(
+            m.contains("processor 0") && m.contains("no download artifact"),
+            "{m}"
+        );
+    }
+
+    #[test]
+    fn command_checks_files_and_outputs() {
+        let sha = sha1_hex(b"out");
+        let (_t, env, plan) = build(
+            one_processor(json!({"outputs": {"{LIBRARY_DIR}/o.bin": sha}})),
+            "1.20.1",
+        );
+        let cmd = &plan.commands[0];
+        assert!(cmd.check_outputs().is_err());
+        write(&env.libraries.join("o.bin"), b"out");
+        cmd.check_outputs().unwrap();
+        write(&env.libraries.join("o.bin"), b"other");
+        assert!(matches!(cmd.check_outputs(), Err(Error::Checksum { .. })));
+        cmd.verify_files().unwrap();
+        std::fs::write(&cmd.jar, b"tampered").unwrap();
+        assert!(cmd.verify_files().is_err());
+    }
+
+    #[test]
+    fn arguments_stay_single_uninterpreted_arguments() {
         let nasty = [
             "two words",
             "say \"hi\"",
@@ -756,10 +1243,8 @@ mod tests {
             "caret^here",
             "it's",
         ];
-        let profile = one_processor(json!({"args": nasty}));
-        stage_jars(&profile, &env);
-        let cmds = plan(&profile, &env).unwrap();
-        assert_eq!(cmds[0].args, nasty);
+        let (tmp, _env, plan) = build(one_processor(json!({"args": nasty})), "1.20.1");
+        assert_eq!(plan.commands[0].args, nasty);
 
         // The vector goes to a real process without a shell; each element arrives as one argument.
         let script = tmp.path().join("echo.ps1");
@@ -768,7 +1253,7 @@ mod tests {
             "$args.Count\r\nforeach ($a in $args) { 'ARG[' + $a + ']' }\r\n",
         )
         .unwrap();
-        let out = match std::process::Command::new("powershell")
+        let out = std::process::Command::new("powershell")
             .args([
                 "-NoProfile",
                 "-NonInteractive",
@@ -777,15 +1262,11 @@ mod tests {
             ])
             .arg("-File")
             .arg(&script)
-            .args(&cmds[0].args)
+            .args(&plan.commands[0].args)
             .output()
-        {
-            Ok(o) => o,
-            Err(e) => {
-                eprintln!("skipping the process check, no powershell: {e}");
-                return;
-            }
-        };
+            .expect(
+                "powershell.exe is part of every supported Windows and is needed for this test",
+            );
         let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
         let mut lines = text.lines();
         assert_eq!(
@@ -803,43 +1284,46 @@ mod tests {
     struct Install {
         _tmp: tempfile::TempDir,
         env: InstallEnv,
-        cmds: Vec<ProcessorCommand>,
-        data: HashMap<String, String>,
+        plan: Plan,
         version: VersionJson,
         marker: PathBuf,
         out: PathBuf,
+        mid: PathBuf,
         patched: PathBuf,
         provided: PathBuf,
     }
 
     const SHA_OF_INSTALLER: &str = "1111111111111111111111111111111111111111";
 
-    /// A complete, valid installation: one client processor with an output, a patched jar with
-    /// `PATCHED_SHA`, an installer-provided library and the marker.
+    fn data_entry(client: &str) -> Value {
+        json!({"client": client, "server": "'x'"})
+    }
+
+    /// A complete, valid installation: one client processor with a declared output, a produced
+    /// file without a declared hash (`MID`), a patched jar with `PATCHED_SHA`, an
+    /// installer-provided library and the marker written by `write_marker`.
     fn install() -> Install {
-        let tmp = tempfile::tempdir().unwrap();
-        let env = env(tmp.path(), "1.20.1");
         let (out_data, patched_data, provided_data) = (b"out".as_slice(), b"patched", b"provided");
-        let profile = parse(
-            &json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+        let (tmp, env, plan) = build(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
                 "data": {
-                    "OUT": {"client": "[a:b:1:out]", "server": "[a:b:1:out]"},
-                    "OUT_SHA": {"client": format!("'{}'", sha1_hex(out_data)), "server": "'x'"},
-                    "PATCHED": {"client": "[a:b:1:patched]", "server": "[a:b:1:patched]"},
-                    "PATCHED_SHA": {"client": format!("'{}'", sha1_hex(patched_data)), "server": "'x'"}
+                    "OUT": data_entry("[a:b:1:out]"),
+                    "OUT_SHA": data_entry(&format!("'{}'", sha1_hex(out_data))),
+                    "MID": data_entry("[a:b:1:mid]"),
+                    "PATCHED": data_entry("[a:b:1:patched]"),
+                    "PATCHED_SHA": data_entry(&format!("'{}'", sha1_hex(patched_data)))
                 },
-                "libraries": [{"name": "x:tool:1"}],
-                "processors": [{"jar": "x:tool:1", "args": ["{OUT}"],
-                    "outputs": {"{OUT}": "{OUT_SHA}"}}]})
-            .to_string(),
+                "libraries": [lib("x:tool:1")],
+                "processors": [{"jar": "x:tool:1", "args": ["{OUT}", "{MID}"],
+                    "outputs": {"{OUT}": "{OUT_SHA}"}}]}),
+            "1.20.1",
         );
-        stage_jars(&profile, &env);
-        let cmds = plan(&profile, &env).unwrap();
-        let data = resolve_data(&profile, &env).unwrap();
-        let out = PathBuf::from(&data["OUT"]);
-        let patched = PathBuf::from(&data["PATCHED"]);
+        let out = PathBuf::from(&plan.data["OUT"]);
+        let mid = PathBuf::from(&plan.data["MID"]);
+        let patched = PathBuf::from(&plan.data["PATCHED"]);
         let provided = env.libraries.join("p/q/1/q-1.jar");
         write(&out, out_data);
+        write(&mid, b"mid");
         write(&patched, patched_data);
         write(&provided, provided_data);
         let version: VersionJson = serde_json::from_value(json!({
@@ -854,39 +1338,43 @@ mod tests {
         ]}))
         .unwrap();
         let marker = env.root.join("loader.marker");
-        write(&marker, format!("{SHA_OF_INSTALLER}\n").as_bytes());
+        write_marker(&plan, &marker, SHA_OF_INSTALLER).unwrap();
         Install {
             _tmp: tmp,
             env,
-            cmds,
-            data,
+            plan,
             version,
             marker,
             out,
+            mid,
             patched,
             provided,
         }
     }
 
     impl Install {
-        fn valid(&self) -> bool {
+        fn valid_for(&self, installer: &str) -> bool {
             install_state_valid(
-                &self.cmds,
-                &self.data,
+                &self.plan,
                 &self.version,
                 &self.env.libraries,
                 &self.marker,
-                SHA_OF_INSTALLER,
+                installer,
             )
             .unwrap()
+        }
+        fn valid(&self) -> bool {
+            self.valid_for(SHA_OF_INSTALLER)
         }
     }
 
     #[test]
     fn install_state_complete_is_valid() {
         let i = install();
-        assert_eq!(i.cmds[0].outputs.len(), 1);
-        assert!(i.cmds[0].satisfied());
+        assert_eq!(i.plan.commands[0].outputs.len(), 1);
+        let marker = std::fs::read_to_string(&i.marker).unwrap();
+        assert!(marker.contains(&sha1_hex(b"patched")), "{marker}");
+        assert!(marker.contains(&sha1_hex(b"mid")), "{marker}");
         assert!(i.valid());
     }
 
@@ -900,7 +1388,14 @@ mod tests {
     #[test]
     fn install_state_other_installer() {
         let i = install();
-        write(&i.marker, b"2222222222222222222222222222222222222222");
+        assert!(!i.valid_for("2222222222222222222222222222222222222222"));
+        // A marker written for another installer build.
+        write_marker(
+            &i.plan,
+            &i.marker,
+            "2222222222222222222222222222222222222222",
+        )
+        .unwrap();
         assert!(!i.valid());
     }
 
@@ -910,7 +1405,6 @@ mod tests {
         assert!(i.marker.is_file());
         std::fs::remove_file(&i.out).unwrap();
         assert!(!i.valid());
-        assert!(!i.cmds[0].satisfied());
     }
 
     #[test]
@@ -918,7 +1412,6 @@ mod tests {
         let i = install();
         write(&i.out, b"corrupt");
         assert!(!i.valid());
-        assert!(!i.cmds[0].satisfied());
     }
 
     #[test]
@@ -936,6 +1429,15 @@ mod tests {
     }
 
     #[test]
+    fn install_state_recorded_undeclared_output_changed_or_missing() {
+        let i = install();
+        write(&i.mid, b"changed");
+        assert!(!i.valid());
+        std::fs::remove_file(&i.mid).unwrap();
+        assert!(!i.valid());
+    }
+
+    #[test]
     fn install_state_provided_library_missing_or_wrong() {
         let i = install();
         write(&i.provided, b"tampered");
@@ -945,24 +1447,114 @@ mod tests {
     }
 
     #[test]
-    fn install_state_without_patched_sha_only_needs_the_file() {
-        let mut i = install();
-        i.data.remove("PATCHED_SHA");
-        write(&i.patched, b"anything");
+    fn install_state_neoforge_style_patched_jar_changed_after_marker() {
+        // No PATCHED_SHA, no declared outputs: only the marker's recorded hash protects the jar.
+        let (_t, env, plan) = build(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+                "data": {"PATCHED": data_entry("[n:patched:1]")},
+                "libraries": [lib("x:tool:1")],
+                "processors": [{"jar": "x:tool:1", "args": ["{PATCHED}"]}]}),
+            "1.20.1",
+        );
+        let patched = PathBuf::from(&plan.data["PATCHED"]);
+        write(&patched, b"the real patched jar");
+        let marker = env.root.join("m");
+        write_marker(&plan, &marker, SHA_OF_INSTALLER).unwrap();
+        let version: VersionJson =
+            serde_json::from_value(json!({"id": "v", "mainClass": "m"})).unwrap();
+        let check = || {
+            install_state_valid(&plan, &version, &env.libraries, &marker, SHA_OF_INSTALLER).unwrap()
+        };
+        assert!(check());
+        write(&patched, b"the real patched ja");
+        assert!(!check());
+        write(&patched, b"the real patched jar");
+        assert!(check());
+        std::fs::remove_file(&patched).unwrap();
+        assert!(!check());
+    }
+
+    #[test]
+    fn install_state_patched_key_absent() {
+        let (_t, env, plan) = build(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+                "libraries": [lib("x:tool:1")],
+                "processors": [{"jar": "x:tool:1", "args": []}]}),
+            "1.20.1",
+        );
+        let marker = env.root.join("m");
+        // Nothing to record: a marker cannot be written.
+        assert!(write_marker(&plan, &marker, SHA_OF_INSTALLER).is_err());
+        assert!(!marker.exists());
+        // A hand-made, well-formed marker does not make the state valid.
+        write(
+            &marker,
+            format!(
+                "{MARKER_MAGIC}\ninstaller {SHA_OF_INSTALLER}\npatched {}\n",
+                sha1_hex(b"x")
+            )
+            .as_bytes(),
+        );
+        let version: VersionJson =
+            serde_json::from_value(json!({"id": "v", "mainClass": "m"})).unwrap();
+        assert!(
+            !install_state_valid(&plan, &version, &env.libraries, &marker, SHA_OF_INSTALLER)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn install_state_malformed_markers_are_invalid_not_errors() {
+        let i = install();
+        let good = std::fs::read_to_string(&i.marker).unwrap();
+        let mid = i.plan.produced[0].to_string_lossy().into_owned();
+        let sha = sha1_hex(b"mid");
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", vec![]),
+            ("binary", vec![0xff, 0xfe, 0, 1, 2]),
+            (
+                "wrong magic",
+                good.replacen("marker 1", "marker 2", 1).into_bytes(),
+            ),
+            ("truncated", good.as_bytes()[..good.len() / 3].to_vec()),
+            ("unknown line", format!("{good}surprise\n").into_bytes()),
+            (
+                "bad hash",
+                good.replacen("patched ", "patched zz", 1).into_bytes(),
+            ),
+            (
+                "duplicate output",
+                format!("{good}output {sha} {mid}\n").into_bytes(),
+            ),
+            (
+                "output outside the plan",
+                format!("{good}output {sha} {}\n", i.env.root.join("evil").display()).into_bytes(),
+            ),
+            ("oversized", vec![b'a'; (MAX_MARKER_BYTES + 1) as usize]),
+        ];
+        for (name, bytes) in cases {
+            write(&i.marker, &bytes);
+            assert!(!i.valid(), "{name}");
+        }
+        write(&i.marker, good.as_bytes());
         assert!(i.valid());
-        std::fs::remove_file(&i.patched).unwrap();
+        // A directory where the marker should be.
+        std::fs::remove_file(&i.marker).unwrap();
+        std::fs::create_dir(&i.marker).unwrap();
         assert!(!i.valid());
     }
 
     #[test]
-    fn processor_without_outputs_is_never_satisfied() {
-        let cmd = ProcessorCommand {
-            jar: PathBuf::new(),
-            classpath: vec![],
-            main_class: "m".into(),
-            args: vec![],
-            outputs: vec![],
-        };
-        assert!(!cmd.satisfied());
+    fn write_marker_refuses_a_broken_install() {
+        let i = install();
+        write(&i.out, b"corrupt");
+        assert!(write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).is_err());
+        write(&i.out, b"out");
+        write(&i.patched, b"tampered");
+        assert!(write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).is_err());
+        write(&i.patched, b"patched");
+        assert!(write_marker(&i.plan, &i.marker, "not-a-hash").is_err());
+        write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).unwrap();
+        assert!(i.valid());
     }
 }
