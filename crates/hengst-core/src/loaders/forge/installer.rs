@@ -321,16 +321,30 @@ fn namespace(kind: LoaderKind) -> Result<&'static str> {
     }
 }
 
+/// The loader's own main artifacts (`group:artifact`). NeoForge for 1.20.1 still publishes under
+/// `net.neoforged:forge`.
+fn main_artifacts(kind: LoaderKind) -> &'static [&'static str] {
+    match kind {
+        LoaderKind::Forge => &["net.minecraftforge:forge"],
+        LoaderKind::NeoForge => &["net.neoforged:neoforge", "net.neoforged:forge"],
+        _ => &[],
+    }
+}
+
 /// The artifacts a modern profile marks as installer-provided (empty `url`), as relative path and
 /// declared SHA-1. Each must be a plain `jar` of the installer's own `group`, its path must be
 /// exactly what the coordinate maps to, and the same file (compared case-insensitively) must not
-/// be declared twice with different content. A missing or malformed hash is refused.
+/// be declared twice with different content. A provided artifact of the loader's own main
+/// artifact must carry exactly the requested build `maven`. A missing or malformed hash is
+/// refused.
 fn provided_artifacts(
     profile: &ModernProfile,
     version: &VersionJson,
-    group: &str,
+    kind: LoaderKind,
+    maven: &str,
     max: usize,
 ) -> Result<BTreeMap<String, String>> {
+    let group = namespace(kind)?;
     let mut out: BTreeMap<String, (String, String)> = BTreeMap::new();
     let provided = profile
         .libraries
@@ -344,6 +358,16 @@ fn provided_artifacts(
         }
         if name.split(':').next() != Some(group) {
             return Err(bad(format!("provided artifact {name} is outside {group}")));
+        }
+        let coord = name.split('@').next().unwrap_or(name);
+        let parts: Vec<&str> = coord.split(':').collect();
+        if parts.len() >= 3
+            && main_artifacts(kind).contains(&format!("{}:{}", parts[0], parts[1]).as_str())
+            && parts[2] != maven
+        {
+            return Err(bad(format!(
+                "provided artifact {name} is not the requested build {maven}"
+            )));
         }
         let expected = maven_path(name).ok_or_else(|| Error::UnsafePath(name.clone()))?;
         check_relative(&a.path)?;
@@ -417,7 +441,9 @@ fn extract_embedded_with(
     let mut budget = 0u64;
     match &contents.kind {
         InstallerKind::Modern(profile) => {
-            let provided = provided_artifacts(profile, &contents.version, group, limits.entries)?;
+            validate_id(maven)?;
+            let provided =
+                provided_artifacts(profile, &contents.version, kind, maven, limits.entries)?;
             for (rel, sha1) in &provided {
                 let dest = join_relative(libraries, rel)?;
                 if dest.is_file() && sha1_file(&dest).is_ok_and(|h| h == *sha1) {
@@ -520,6 +546,7 @@ mod tests {
     const LEGACY_189_MAVEN: &str = "1.8.9-11.15.1.2318-1.8.9";
     const UNIVERSAL_189: &str = "forge-1.8.9-11.15.1.2318-1.8.9-universal.jar";
     const REAL_SHA_2859: &str = "bfc07a510e23e5181b6a32fdcea9c9d9a1445a46";
+    const MAVEN_2859: &str = "1.12.2-14.23.5.2859";
     const FORGE_2859: &str =
         "maven/net/minecraftforge/forge/1.12.2-14.23.5.2859/forge-1.12.2-14.23.5.2859.jar";
 
@@ -613,7 +640,7 @@ mod tests {
         };
         assert_eq!((p.spec, p.processors.len()), (0, 0));
         assert_eq!(c.version.id, "1.12.2-forge-14.23.5.2859");
-        extract_embedded(&jar, &mut c, &libs, FORGE, "x").unwrap();
+        extract_embedded(&jar, &mut c, &libs, FORGE, MAVEN_2859).unwrap();
         assert_eq!(
             std::fs::read(libs.join(
                 "net/minecraftforge/forge/1.12.2-14.23.5.2859/forge-1.12.2-14.23.5.2859.jar"
@@ -701,7 +728,7 @@ mod tests {
             ],
         );
         let mut c = read_installer(&jar).unwrap();
-        let err = extract_embedded(&jar, &mut c, &libs, FORGE, "x").unwrap_err();
+        let err = extract_embedded(&jar, &mut c, &libs, FORGE, MAVEN_2859).unwrap_err();
         assert!(
             matches!(&err, Error::Installer(m) if m.contains("forge-1.12.2-14.23.5.2859.jar")),
             "{err}"
@@ -1310,6 +1337,65 @@ mod tests {
             &[("net.neoforged:b:1", "net/neoforged/b/1/b-1.jar", None, b"x")],
             "neoforge group in a Forge installer",
         );
+    }
+
+    fn extract_named(kind: LoaderKind, name: &str, maven: &str) -> (tempfile::TempDir, Result<()>) {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = maven_path(name).unwrap();
+        let jar = synth_named(tmp.path(), &[(name, &path, None, b"jar")], &[]);
+        let mut c = read_installer(&jar).unwrap();
+        let res = extract_embedded(&jar, &mut c, &tmp.path().join("libs"), kind, maven);
+        (tmp, res)
+    }
+
+    #[test]
+    fn provided_main_artifact_must_be_the_requested_build() {
+        let neo = LoaderKind::NeoForge;
+        for (kind, name, maven) in [
+            (
+                FORGE,
+                "net.minecraftforge:forge:1.20.1-47.4.28",
+                "1.20.1-47.4.28",
+            ),
+            (
+                FORGE,
+                "net.minecraftforge:forge:1.20.1-47.4.28:universal",
+                "1.20.1-47.4.28",
+            ),
+            (neo, "net.neoforged:neoforge:26.3.0.115", "26.3.0.115"),
+            // NeoForge for 1.20.1 still uses the old `forge` artifact name.
+            (
+                neo,
+                "net.neoforged:forge:1.20.1-47.1.106",
+                "1.20.1-47.1.106",
+            ),
+            // Not the main artifact: any version.
+            (FORGE, "net.minecraftforge:fmlcore:9.9", "1.20.1-47.4.28"),
+        ] {
+            let (_t, res) = extract_named(kind, name, maven);
+            res.unwrap_or_else(|e| panic!("{name}: {e}"));
+        }
+        for (kind, name, maven) in [
+            (
+                FORGE,
+                "net.minecraftforge:forge:1.20.1-47.4.27",
+                "1.20.1-47.4.28",
+            ),
+            (
+                FORGE,
+                "net.minecraftforge:forge:1.12.2-14.23.5.2859",
+                "1.20.1-47.4.28",
+            ),
+            (neo, "net.neoforged:neoforge:26.3.0.114", "26.3.0.115"),
+            (neo, "net.neoforged:forge:1.20.1-47.1.5", "1.20.1-47.1.106"),
+        ] {
+            let (tmp, res) = extract_named(kind, name, maven);
+            assert!(
+                matches!(&res, Err(Error::Installer(m)) if m.contains("requested build")),
+                "{name}: {res:?}"
+            );
+            assert!(nothing_written(&tmp.path().join("libs")), "{name}");
+        }
     }
 
     #[test]

@@ -36,6 +36,10 @@ pub struct InstallEnv {
 /// One processor, ready to run as `java -cp <jar + classpath> <main_class> <args>` (no shell).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProcessorCommand {
+    /// Position of the processor in the profile (server-side ones counted).
+    pub index: usize,
+    /// Maven coordinate of the processor jar, as the profile names it.
+    pub coordinate: String,
     pub jar: PathBuf,
     /// SHA-1 the profile declares for `jar`.
     pub jar_sha1: String,
@@ -203,6 +207,23 @@ fn resolve_data(
 
 fn is_token_name(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// The names of all `{KEY}` tokens in an argument.
+fn token_names(arg: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = arg;
+    while let Some(start) = rest.find('{') {
+        let after = &rest[start + 1..];
+        match after.find('}') {
+            Some(end) if is_token_name(&after[..end]) => {
+                out.push(&after[..end]);
+                rest = &after[end + 1..];
+            }
+            _ => rest = after,
+        }
+    }
+    out
 }
 
 /// Resolves one processor argument: a whole `[coordinate]` becomes its library path, otherwise
@@ -380,17 +401,25 @@ fn contained(s: &str, roots: &[&Path], exact: &[&Path], allow_root: bool) -> boo
     })
 }
 
-/// An argument that looks like a path (contains `/`, `\` or `:`) must be contained; so must the
-/// value of a `--key=value` argument. Anything else is a plain option or value.
+/// An argument that looks like a path (contains `/`, `\` or `:`) must be contained and must not
+/// carry a list separator (`;` or `,`), which could smuggle a second path past the check. For a
+/// dashed `-key=value` argument both parts are checked. Anything else is a plain option or value.
 fn check_argument(arg: &str, roots: &[&Path], exact: &[&Path]) -> bool {
-    let value = match arg.strip_prefix('-').and(arg.split_once('=')) {
-        Some((_, v)) => v,
-        None => arg,
+    let parts = match arg
+        .strip_prefix('-')
+        .and_then(|a| a.trim_start_matches('-').split_once('='))
+    {
+        Some((k, v)) => vec![k, v],
+        None => vec![arg],
     };
-    !value.contains(['/', '\\', ':']) || contained(value, roots, exact, true)
+    parts.iter().all(|p| {
+        !p.contains(['/', '\\', ':'])
+            || (!p.contains([';', ',']) && contained(p, roots, exact, true))
+    })
 }
 
 fn plan_one(
+    index: usize,
     p: &Processor,
     data: &HashMap<String, String>,
     declared: &Declared,
@@ -433,6 +462,8 @@ fn plan_one(
         outputs.push((PathBuf::from(key), sha));
     }
     Ok(ProcessorCommand {
+        index,
+        coordinate: p.jar.clone(),
         jar,
         jar_sha1,
         classpath,
@@ -448,18 +479,35 @@ fn plan_one(
 /// before their manifest is read) and the installer (for its data files, extracted into
 /// `env.work` on every call). An invalid processor is an error naming its index in the profile.
 pub fn plan(profile: &ModernProfile, env: &InstallEnv) -> Result<Plan> {
-    let (data, coords) = resolve_data(profile, env)?;
-    let declared = declared_libraries(profile);
-    let commands = profile
+    let client: Vec<(usize, &Processor)> = profile
         .processors
         .iter()
         .enumerate()
         .filter(|(_, p)| is_client(p))
-        .map(|(i, p)| {
-            plan_one(p, &data, &declared, env)
+        .collect();
+    // Without PATCHED nothing ties a finished install to its result, and PATCHED without client
+    // processors cannot be produced. Both are refused before anything is extracted or run.
+    match (client.is_empty(), profile.data.contains_key("PATCHED")) {
+        (false, false) => return Err(bad("profile has client processors but no PATCHED data")),
+        (true, true) => return Err(bad("profile declares PATCHED but has no client processors")),
+        _ => {}
+    }
+    let (data, coords) = resolve_data(profile, env)?;
+    let declared = declared_libraries(profile);
+    let commands = client
+        .iter()
+        .map(|&(i, p)| {
+            plan_one(i, p, &data, &declared, env)
                 .map_err(|e| bad(format!("processor {i}: {}", inner(e))))
         })
         .collect::<Result<Vec<_>>>()?;
+    // Data keys the client processors refer to. Coordinates only server processors write (such
+    // as MC_UNPACKED) are never produced on the client.
+    let used: HashSet<&str> = client
+        .iter()
+        .flat_map(|(_, p)| &p.args)
+        .flat_map(|a| token_names(a))
+        .collect();
     let downloaded: HashSet<PathBuf> = profile
         .libraries
         .iter()
@@ -473,7 +521,12 @@ pub fn plan(profile: &ModernProfile, env: &InstallEnv) -> Result<Plan> {
         .collect();
     let mut produced: Vec<PathBuf> = coords
         .into_iter()
-        .filter(|(k, p)| k != "PATCHED" && !downloaded.contains(p) && !declared_outputs.contains(p))
+        .filter(|(k, p)| {
+            k != "PATCHED"
+                && used.contains(k.as_str())
+                && !downloaded.contains(p)
+                && !declared_outputs.contains(p)
+        })
         .map(|(_, p)| p)
         .collect();
     produced.sort();
@@ -495,7 +548,7 @@ fn patched_ok(plan: &Plan) -> Option<(PathBuf, String)> {
 }
 
 /// Records a finished installation: the installer's SHA-1, the actual SHA-1 of the patched jar
-/// and of every produced file without a declared hash that exists. Declared outputs and
+/// and of every produced file without a declared hash (each must exist). Declared outputs and
 /// `PATCHED_SHA` are verified first; any mismatch is an error and no marker is written.
 pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<()> {
     validate_sha1(installer_sha1)?;
@@ -506,7 +559,12 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
         .ok_or_else(|| bad("the patched client jar is missing or does not match PATCHED_SHA"))?;
     let mut text = format!("{MARKER_MAGIC}\ninstaller {installer_sha1}\npatched {patched_sha}\n");
     for path in &plan.produced {
-        let Ok(sha) = sha1_file(path) else { continue };
+        let sha = sha1_file(path).map_err(|_| {
+            bad(format!(
+                "{} should have been produced by the processors but is missing",
+                path.display()
+            ))
+        })?;
         let p = path_string(path);
         if p.contains(['\n', '\r']) {
             return Err(Error::UnsafePath(excerpt(&p)));
@@ -972,6 +1030,7 @@ mod tests {
     fn server_only_processors_are_skipped_and_unsided_ones_kept() {
         let (_t, _e, plan) = build(
             json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "data": {"PATCHED": data_entry("[n:patched:1]")},
             "libraries": [lib("x:tool:1")],
             "processors": [
                 {"jar": "x:tool:1", "args": ["unsided"]},
@@ -986,8 +1045,10 @@ mod tests {
         assert_eq!(got, ["unsided", "both", "client"]);
     }
 
+    /// A profile with the given processors, two libraries and a `PATCHED` coordinate.
     fn processors_profile(processors: Value) -> Value {
         json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "data": {"PATCHED": data_entry("[n:patched:1]")},
             "libraries": [lib("x:tool:1"), lib("x:dep:2")], "processors": processors})
     }
 
@@ -1081,7 +1142,7 @@ mod tests {
     fn path_arguments_must_stay_in_the_launcher_directories() {
         let refuse = |literal: &str, arg: &str| {
             let mut p = one_processor(json!({"args": ["--output", arg]}));
-            p["data"] = json!({"X": {"client": format!("'{literal}'"), "server": "'x'"}});
+            p["data"]["X"] = json!({"client": format!("'{literal}'"), "server": "'x'"});
             let m = plan_error(p);
             assert!(m.contains("processor 0") && m.contains("argument 1"), "{m}");
             assert!(m.len() < 200, "message must stay short: {m}");
@@ -1113,6 +1174,93 @@ mod tests {
     }
 
     #[test]
+    fn path_arguments_with_list_separators_are_refused() {
+        for arg in [
+            "{LIBRARY_DIR}/a.jar;C:/evil.jar",
+            "{LIBRARY_DIR}/a.jar,b.jar",
+            "--cp={LIBRARY_DIR}/a.jar;{LIBRARY_DIR}/b.jar",
+            "--list={ROOT}/work/a,{ROOT}/work/b",
+        ] {
+            let m = plan_error(one_processor(json!({"args": [arg]})));
+            assert!(
+                m.contains("processor 0") && m.contains("argument 0"),
+                "{arg}: {m}"
+            );
+        }
+        // Separators in plain values stay allowed.
+        let (_t, _e, plan) = build(
+            one_processor(json!({"args": ["a;b", "x,y", "--k=a,b"]})),
+            "1.20.1",
+        );
+        assert_eq!(plan.commands[0].args, ["a;b", "x,y", "--k=a,b"]);
+    }
+
+    #[test]
+    fn key_part_of_dashed_arguments_is_checked_too() {
+        for arg in [
+            "-C:/Users/u/evil=x",
+            "--{ROOT}/versions/x.jar=1",
+            "-D\\\\server\\s=1",
+        ] {
+            let m = plan_error(one_processor(json!({"args": [arg]})));
+            assert!(m.contains("argument 0"), "{arg}: {m}");
+        }
+        let (_t, _e, plan) = build(
+            one_processor(json!({"args": ["-{LIBRARY_DIR}/k=v", "-Dx=1"]})),
+            "1.20.1",
+        );
+        assert_eq!(plan.commands[0].args.len(), 2);
+    }
+
+    #[test]
+    fn client_processors_without_patched_are_refused() {
+        let m = plan_error(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "libraries": [lib("x:tool:1")],
+            "processors": [{"jar": "x:tool:1", "args": []}]}),
+        );
+        assert!(m.contains("PATCHED"), "{m}");
+        // Server-only processors and no PATCHED: nothing to run, nothing to refuse.
+        let (_t, _e, plan) = build(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+                "libraries": [lib("x:tool:1")],
+                "processors": [{"jar": "x:tool:1", "sides": ["server"], "args": []}]}),
+            "1.20.1",
+        );
+        assert!(plan.commands.is_empty());
+    }
+
+    #[test]
+    fn patched_without_client_processors_is_refused() {
+        let m = plan_error(
+            json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "data": {"PATCHED": data_entry("[n:patched:1]")}}),
+        );
+        assert!(m.contains("PATCHED"), "{m}");
+    }
+
+    #[test]
+    fn only_coordinates_used_by_client_processors_count_as_produced() {
+        let (_t, env, plan) = real(PROFILE_1201, "1.20.1");
+        let produced: Vec<String> = plan
+            .produced
+            .iter()
+            .map(|p| rel(&env, &path_string(p)))
+            .collect();
+        // MC_UNPACKED is only written by server processors.
+        assert!(
+            !produced.iter().any(|p| p.contains("unpacked")),
+            "{produced:?}"
+        );
+        for needle in ["mappings.txt", "mappings-merged.txt", "srg.jar"] {
+            assert!(
+                produced.iter().any(|p| p.ends_with(needle)),
+                "{needle}: {produced:?}"
+            );
+        }
+    }
+
+    #[test]
     fn processor_index_is_the_position_in_the_profile() {
         let m = plan_error(processors_profile(json!([
             {"jar": "x:tool:1", "sides": ["server"], "args": []},
@@ -1124,10 +1272,9 @@ mod tests {
 
     #[test]
     fn server_only_hostile_processor_is_not_inspected() {
-        let (_t, _e, plan) = build(
-            one_processor(json!({"sides": ["server"], "args": ["{NOPE}"]})),
-            "1.20.1",
-        );
+        let mut profile = one_processor(json!({"sides": ["server"], "args": ["{NOPE}"]}));
+        profile.as_object_mut().unwrap().remove("data");
+        let (_t, _e, plan) = build(profile, "1.20.1");
         assert!(plan.commands.is_empty());
     }
 
@@ -1475,15 +1622,16 @@ mod tests {
     }
 
     #[test]
-    fn install_state_patched_key_absent() {
+    fn install_state_patched_jar_absent_after_run() {
         let (_t, env, plan) = build(
             json!({"spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+                "data": {"PATCHED": data_entry("[n:patched:1]")},
                 "libraries": [lib("x:tool:1")],
-                "processors": [{"jar": "x:tool:1", "args": []}]}),
+                "processors": [{"jar": "x:tool:1", "args": ["{PATCHED}"]}]}),
             "1.20.1",
         );
         let marker = env.root.join("m");
-        // Nothing to record: a marker cannot be written.
+        // The patched jar was never produced: a marker cannot be written.
         assert!(write_marker(&plan, &marker, SHA_OF_INSTALLER).is_err());
         assert!(!marker.exists());
         // A hand-made, well-formed marker does not make the state valid.
@@ -1501,6 +1649,16 @@ mod tests {
             !install_state_valid(&plan, &version, &env.libraries, &marker, SHA_OF_INSTALLER)
                 .unwrap()
         );
+    }
+
+    #[test]
+    fn write_marker_refuses_a_missing_produced_file() {
+        let i = install();
+        std::fs::remove_file(&i.mid).unwrap();
+        std::fs::remove_file(&i.marker).unwrap();
+        let err = write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).unwrap_err();
+        assert!(err.to_string().contains("missing"), "{err}");
+        assert!(!i.marker.exists());
     }
 
     #[test]
