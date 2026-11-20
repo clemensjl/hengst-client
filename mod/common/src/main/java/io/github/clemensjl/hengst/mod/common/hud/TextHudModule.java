@@ -5,7 +5,7 @@ import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.EnumSet;
 
-/** A HUD module that shows one line of cached text on an optional background. */
+/** A HUD module that shows one line of cached text on an optional background. Empty text has size 0 and draws nothing. */
 public abstract class TextHudModule extends HudModule {
     protected static final int PAD = 2;
     private static final int BACKGROUND = 0x6F000000;
@@ -35,16 +35,19 @@ public abstract class TextHudModule extends HudModule {
         if (textWidth < 0) {
             textWidth = c.textWidth(text);
         }
-        return textWidth + 2 * PAD;
+        return text.isEmpty() ? 0 : textWidth + 2 * PAD;
     }
 
     @Override
     public int height(Canvas c, ModuleConfig cfg) {
-        return c.fontHeight() + 2 * PAD;
+        return text.isEmpty() ? 0 : c.fontHeight() + 2 * PAD;
     }
 
     @Override
     public void render(Canvas c, ModuleConfig cfg, HudContext ctx) {
+        if (text.isEmpty()) {
+            return;
+        }
         if (cfg.background()) {
             c.fill(0, 0, width(c, cfg), height(c, cfg), BACKGROUND);
         }

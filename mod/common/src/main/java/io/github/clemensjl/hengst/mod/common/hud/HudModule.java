@@ -22,6 +22,9 @@ public abstract class HudModule extends Feature {
     /** Unscaled height in GUI pixels. */
     public abstract int height(Canvas c, ModuleConfig cfg);
 
-    /** Must not allocate. */
+    /**
+     * Must not allocate. Options returned by {@link ModuleConfig#option} are boxed, so read them in
+     * {@link #tick} and cache them in primitive fields.
+     */
     public abstract void render(Canvas c, ModuleConfig cfg, HudContext ctx);
 }

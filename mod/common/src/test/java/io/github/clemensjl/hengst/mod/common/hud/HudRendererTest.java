@@ -9,6 +9,7 @@ import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
+import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.testutil.CountingCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
@@ -54,7 +55,7 @@ class HudRendererTest {
         int rebuilds;
 
         Counter() {
-            super("counter", 1, EnumSet.allOf(GameVersion.class));
+            super("counter", 6, EnumSet.allOf(GameVersion.class));
         }
 
         @Override
@@ -65,6 +66,171 @@ class HudRendererTest {
                 setText("N " + value);
             }
         }
+    }
+
+    /** Throws in the chosen method. */
+    static final class Thrower extends HudModule {
+        boolean inTick;
+        boolean inRender;
+        boolean inWidth;
+        int calls;
+
+        Thrower(String id, int nr) {
+            super(id, nr, EnumSet.allOf(GameVersion.class));
+        }
+
+        @Override
+        public void tick(HudContext ctx, ModuleConfig cfg) {
+            calls++;
+            if (inTick) {
+                throw new IllegalStateException("tick boom");
+            }
+        }
+
+        @Override
+        public int width(Canvas c, ModuleConfig cfg) {
+            if (inWidth) {
+                throw new IllegalStateException("width boom");
+            }
+            return 10;
+        }
+
+        @Override
+        public int height(Canvas c, ModuleConfig cfg) {
+            return 10;
+        }
+
+        @Override
+        public void render(Canvas c, ModuleConfig cfg, HudContext ctx) {
+            if (inRender) {
+                throw new IllegalStateException("render boom");
+            }
+            c.fill(0, 0, 10, 10, 0xFFFFFFFF);
+        }
+    }
+
+    private HudRenderer sandwich(Thrower bad, Profile[] out) {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new FixedSizeModule("a", 1, 10, 10));
+        reg.register(bad);
+        reg.register(new FixedSizeModule("c", 3, 10, 10));
+        Profile p = new Profile();
+        p.module("a").setEnabled(true);
+        p.module(bad.id()).setEnabled(true);
+        p.module("c").setEnabled(true);
+        out[0] = p;
+        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        r.rebuild(p);
+        return r;
+    }
+
+    private static int count(FakeCanvas c, String prefix) {
+        int n = 0;
+        for (String s : c.calls) {
+            if (s.startsWith(prefix)) {
+                n++;
+            }
+        }
+        return n;
+    }
+
+    @Test
+    void module_throwing_in_render_does_not_break_the_others() {
+        Thrower bad = new Thrower("bad", 2);
+        bad.inRender = true;
+        HudRenderer r = sandwich(bad, new Profile[1]);
+        FakeCanvas c = new FakeCanvas();
+        for (int i = 0; i < 50; i++) {
+            r.tick(ctx);
+            r.render(c, ctx);
+        }
+        assertEquals(count(c, "push"), count(c, "pop"));
+        assertEquals(1 + 50 * 2, count(c, "push"));
+        assertEquals(100, count(c, "fill"));
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("bad"));
+        assertTrue(platform.warnings.get(0).contains("IllegalStateException"));
+        assertTrue(platform.warnings.get(0).contains("render boom"));
+    }
+
+    @Test
+    void module_throwing_in_width_is_skipped_without_push() {
+        Thrower bad = new Thrower("bad", 2);
+        bad.inWidth = true;
+        HudRenderer r = sandwich(bad, new Profile[1]);
+        FakeCanvas c = new FakeCanvas();
+        for (int i = 0; i < 20; i++) {
+            r.render(c, ctx);
+        }
+        assertEquals(40, count(c, "push"));
+        assertEquals(40, count(c, "pop"));
+        assertEquals(1, platform.warnings.size());
+    }
+
+    @Test
+    void module_throwing_in_tick_is_skipped_in_tick_and_render() {
+        Thrower bad = new Thrower("bad", 2);
+        bad.inTick = true;
+        HudRenderer r = sandwich(bad, new Profile[1]);
+        FakeCanvas c = new FakeCanvas();
+        for (int i = 0; i < 20; i++) {
+            r.tick(ctx);
+            r.render(c, ctx);
+        }
+        assertEquals(1, bad.calls);
+        assertEquals(40, count(c, "push"));
+        assertEquals(count(c, "push"), count(c, "pop"));
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("tick boom"));
+    }
+
+    @Test
+    void failed_module_is_tried_again_after_rebuild() {
+        Thrower bad = new Thrower("bad", 2);
+        bad.inRender = true;
+        Profile[] p = new Profile[1];
+        HudRenderer r = sandwich(bad, p);
+        FakeCanvas c = new FakeCanvas();
+        r.render(c, ctx);
+        r.render(c, ctx);
+        assertEquals(1, platform.warnings.size());
+        bad.inRender = false;
+        r.rebuild(p[0]);
+        c.calls.clear();
+        r.render(c, ctx);
+        assertEquals(3, count(c, "push"));
+        assertEquals(1, platform.warnings.size());
+        bad.inRender = true;
+        r.rebuild(p[0]);
+        r.render(c, ctx);
+        assertEquals(2, platform.warnings.size());
+    }
+
+    @Test
+    void empty_text_module_has_no_size_and_draws_nothing() {
+        Fixed m = new Fixed("a", 1);
+        ModuleConfig cfg = ModuleConfig.defaults();
+        FakeCanvas c = new FakeCanvas();
+        assertEquals(0, m.width(c, cfg));
+        assertEquals(0, m.height(c, cfg));
+        m.render(c, cfg, ctx);
+        assertTrue(c.calls.isEmpty());
+    }
+
+    @Test
+    void renderer_skips_push_for_zero_size_module() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new Fixed("a", 1));
+        Profile p = new Profile();
+        p.module("a").setEnabled(true);
+        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        r.rebuild(p);
+        FakeCanvas c = new FakeCanvas();
+        r.render(c, ctx);
+        assertTrue(c.calls.isEmpty());
+        r.tick(ctx);
+        r.render(c, ctx);
+        assertEquals(1, count(c, "push"));
     }
 
     private HudRenderer rendererWith(String id, ModuleConfig[] out) {
@@ -256,6 +422,8 @@ class HudRendererTest {
         }
         reg.register(new FixedSizeModule("box", 5, 30, 12));
         p.module("box").setEnabled(true);
+        reg.register(new Counter());
+        p.module("counter").setEnabled(true);
         HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(p);
         platform.screenOpen = true;
@@ -265,18 +433,17 @@ class HudRendererTest {
             renderer.render(counting, ctx);
         }
         com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
-        long id = Thread.currentThread().getId();
         int frames = 20000;
-        long before = mx.getThreadAllocatedBytes(id);
+        long before = mx.getCurrentThreadAllocatedBytes();
         for (int i = 0; i < frames; i++) {
             renderer.render(counting, ctx);
         }
-        long allocated = mx.getThreadAllocatedBytes(id) - before;
-        long beforeTicks = mx.getThreadAllocatedBytes(id);
+        long allocated = mx.getCurrentThreadAllocatedBytes() - before;
+        long beforeTicks = mx.getCurrentThreadAllocatedBytes();
         for (int i = 0; i < frames; i++) {
             renderer.tick(ctx);
         }
-        long allocatedTicks = mx.getThreadAllocatedBytes(id) - beforeTicks;
+        long allocatedTicks = mx.getCurrentThreadAllocatedBytes() - beforeTicks;
         assertEquals(0, allocated, "allocated " + allocated + " bytes in " + frames + " frames");
         assertEquals(0, allocatedTicks, "allocated " + allocatedTicks + " bytes in " + frames + " ticks");
         assertTrue(counting.pushes > 0 && counting.pushes == counting.pops);

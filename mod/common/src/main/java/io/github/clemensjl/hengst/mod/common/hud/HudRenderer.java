@@ -25,6 +25,8 @@ public final class HudRenderer {
     private final MutableRect rect = new MutableRect();
     private HudModule[] modules = NO_MODULES;
     private ModuleConfig[] configs = NO_CONFIGS;
+    // A module that threw is skipped until the next rebuild; parallel to modules.
+    private boolean[] failed = new boolean[0];
     private boolean suppressed;
 
     public HudRenderer(FeatureRegistry registry, GameVersion version) {
@@ -50,6 +52,7 @@ public final class HudRenderer {
         }
         modules = Arrays.copyOf(m, n);
         configs = Arrays.copyOf(c, n);
+        failed = new boolean[n];
     }
 
     /** Set by the owner while one of the mod's own screens (editor, settings) is open. */
@@ -72,12 +75,23 @@ public final class HudRenderer {
     public void tick(HudContext ctx) {
         HudModule[] m = modules;
         ModuleConfig[] c = configs;
+        boolean[] bad = failed;
         for (int i = 0; i < m.length; i++) {
-            m[i].tick(ctx, c[i]);
+            if (bad[i]) {
+                continue;
+            }
+            try {
+                m[i].tick(ctx, c[i]);
+            } catch (RuntimeException e) {
+                fail(i, e, ctx);
+            }
         }
     }
 
-    /** Draws nothing when suppressed, when the HUD is hidden (F1) or outside a world. Vanilla screens do not hide it. */
+    /**
+     * Draws nothing when suppressed, when the HUD is hidden (F1) or outside a world. Vanilla screens do not hide it.
+     * A module with zero width or height is skipped; one that throws is disabled until the next rebuild.
+     */
     public void render(Canvas canvas, HudContext ctx) {
         GameView game = ctx.platform().game();
         if (suppressed || game.hudHidden() || !game.inWorld()) {
@@ -85,17 +99,37 @@ public final class HudRenderer {
         }
         HudModule[] m = modules;
         ModuleConfig[] c = configs;
+        boolean[] bad = failed;
         MutableRect r = rect;
         for (int i = 0; i < m.length; i++) {
+            if (bad[i]) {
+                continue;
+            }
             HudModule module = m[i];
             ModuleConfig cfg = c[i];
-            float scale = cfg.scale();
-            int w = Math.round(module.width(canvas, cfg) * scale);
-            int h = Math.round(module.height(canvas, cfg) * scale);
-            LayoutMath.resolve(cfg, w, h, canvas.width(), canvas.height(), r);
-            canvas.pushTransform(r.x, r.y, scale);
-            module.render(canvas, cfg, ctx);
-            canvas.popTransform();
+            try {
+                float scale = cfg.scale();
+                int w = Math.round(module.width(canvas, cfg) * scale);
+                int h = Math.round(module.height(canvas, cfg) * scale);
+                if (w <= 0 || h <= 0) {
+                    continue;
+                }
+                LayoutMath.resolve(cfg, w, h, canvas.width(), canvas.height(), r);
+                canvas.pushTransform(r.x, r.y, scale);
+                try {
+                    module.render(canvas, cfg, ctx);
+                } finally {
+                    canvas.popTransform();
+                }
+            } catch (RuntimeException e) {
+                fail(i, e, ctx);
+            }
         }
+    }
+
+    /** Cold path: marks the module failed and logs once; the message is built only here. */
+    private void fail(int index, RuntimeException e, HudContext ctx) {
+        failed[index] = true;
+        ctx.platform().logWarning("HUD module " + modules[index].id() + " failed and is disabled until the next reload: " + e);
     }
 }
