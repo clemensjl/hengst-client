@@ -1,10 +1,14 @@
 // Shared build script for every Stonecutter version node (versions/<mc>/).
 // 1.21.11 is obfuscated and needs the remapping Loom plugin; 26.3 is unobfuscated.
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
 def remap = project.property('loom_remap').toBoolean()
 apply plugin: remap ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom'
 
-group = project.maven_group
-version = "${project.mod_version}+${project.minecraft_version}"
+group = shared.maven_group
+version = "${shared.mod_version}+${project.minecraft_version}"
 
 base {
     archivesName = 'hengst-mod'
@@ -18,8 +22,8 @@ dependencies {
     add(remap ? 'modImplementation' : 'implementation', 'net.fabricmc:fabric-loader:0.20.1')
     add(remap ? 'modImplementation' : 'implementation', "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}")
 
-    implementation 'io.github.clemensjl.hengst:common:0.1.0'
-    include 'io.github.clemensjl.hengst:common:0.1.0'
+    implementation "${shared.maven_group}:common:${shared.mod_version}"
+    include "${shared.maven_group}:common:${shared.mod_version}"
 }
 
 processResources {

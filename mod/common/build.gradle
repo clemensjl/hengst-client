@@ -2,8 +2,12 @@ plugins {
     id 'java-library'
 }
 
-group = 'io.github.clemensjl.hengst'
-version = '0.1.0'
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
+group = shared.maven_group
+version = shared.mod_version
 
 repositories {
     mavenCentral()

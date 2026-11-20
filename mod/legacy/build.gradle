@@ -4,8 +4,12 @@ plugins {
     id 'legacy-looming' version '1.16.1'
 }
 
-group = project.maven_group
-version = "${project.mod_version}+1.8.9"
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
+group = shared.maven_group
+version = "${shared.mod_version}+1.8.9"
 
 base {
     archivesName = 'hengst-mod'
@@ -17,8 +21,8 @@ dependencies {
     modImplementation 'net.fabricmc:fabric-loader:0.20.1'
     modImplementation 'net.legacyfabric.legacy-fabric-api:legacy-fabric-api:1.13.5+1.8.9'
 
-    implementation 'io.github.clemensjl.hengst:common:0.1.0'
-    include 'io.github.clemensjl.hengst:common:0.1.0'
+    implementation "${shared.maven_group}:common:${shared.mod_version}"
+    include "${shared.maven_group}:common:${shared.mod_version}"
 }
 
 processResources {
