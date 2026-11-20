@@ -11,11 +11,10 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
 import java.util.function.Consumer;
 
-/** Profiles as {@code <dir>/<name>.json}. Not thread-safe; call from one thread (the batched save path). */
+/** Profiles as {@code <dir>/<name>.json}. Not thread-safe: client thread only; the batched save runs on that same thread. */
 public final class ProfileStore {
     public static final String DEFAULT = "default";
 
@@ -37,6 +36,7 @@ public final class ProfileStore {
     private final Path dir;
     private final Clock clock;
     private final Consumer<String> warn;
+    private final AtomicFiles.Guard guard = new AtomicFiles.Guard();
     private boolean loadedFromDefaults;
 
     public ProfileStore(Path dir, Clock clock, Consumer<String> warn) {
@@ -52,6 +52,9 @@ public final class ProfileStore {
         if (Files.isDirectory(dir)) {
             try (DirectoryStream<Path> ds = Files.newDirectoryStream(dir, "*" + SUFFIX)) {
                 for (Path p : ds) {
+                    if (!Files.isRegularFile(p)) {
+                        continue;
+                    }
                     String file = p.getFileName().toString();
                     String name = file.substring(0, file.length() - SUFFIX.length());
                     if (isValidName(name)) {
@@ -69,28 +72,48 @@ public final class ProfileStore {
 
     /** Never throws for file problems: a missing or damaged file gives defaults (damaged ones are moved aside). */
     public Profile load(String name) {
-        Profile p = read(name);
-        loadedFromDefaults = p == null;
-        return p == null ? new Profile() : p;
+        Path file = fileOf(name);
+        AtomicFiles.Loaded l = guard.read(file, clock, warn);
+        loadedFromDefaults = l.state == AtomicFiles.State.MISSING || l.state == AtomicFiles.State.MOVED_ASIDE;
+        return l.state == AtomicFiles.State.OK ? Profile.fromJson(l.json) : new Profile();
     }
 
-    /** True if the last {@link #load} found the file missing, empty or damaged (and moved aside). */
+    /**
+     * True if the last {@link #load} found the file missing, empty or damaged (and moved aside). False if the file
+     * could not be read or was written by a newer version: the defaults are then in memory only, see {@link #loadFailed}.
+     */
     public boolean loadedFromDefaults() {
         return loadedFromDefaults;
     }
 
+    /**
+     * True if the last load of this profile failed without the file being replaced by defaults (unreadable, damaged
+     * and not movable, or newer schema). {@link #save} will not overwrite such a file blindly; callers can show a warning.
+     */
+    public boolean loadFailed(String name) {
+        return guard.isBlocked(fileOf(name));
+    }
+
+    /**
+     * Writes the profile atomically. On IOException nothing was replaced, so the caller's dirty state stays intact
+     * and it can retry on the next batch. Refuses (IOException) to overwrite a file whose load failed, unless it
+     * could be backed up first.
+     */
     public void save(String name, Profile p) throws IOException {
         Path file = fileOf(name);
+        guard.beforeWrite(file, clock, warn);
         Files.createDirectories(dir);
         AtomicFiles.writeUtf8(file, Json.write(p.toJson()));
     }
 
     /** Copies the stored source profile to the first free "Profil N" (N from 2) and returns the new name. */
     public String createCopy(String sourceName) throws IOException {
-        Profile source = read(sourceName);
-        if (source == null) {
-            source = new Profile();
+        Path sourceFile = fileOf(sourceName);
+        AtomicFiles.Loaded l = guard.read(sourceFile, clock, warn);
+        if (guard.isBlocked(sourceFile)) {
+            throw new IOException("Cannot copy " + sourceName + ": it could not be loaded");
         }
+        Profile source = l.state == AtomicFiles.State.OK ? Profile.fromJson(l.json) : new Profile();
         for (int n = 2; ; n++) {
             String name = "Profil " + n;
             if (!Files.exists(fileOf(name))) {
@@ -103,7 +126,7 @@ public final class ProfileStore {
     public void delete(String name) throws IOException {
         Path file = fileOf(name);
         // Windows file names are case-insensitive: "Default" would be the default file as well.
-        if (DEFAULT.equalsIgnoreCase(name)) {
+        if (sameName(DEFAULT, name)) {
             throw new IllegalArgumentException("the default profile cannot be deleted");
         }
         Files.deleteIfExists(file);
@@ -127,16 +150,15 @@ public final class ProfileStore {
         return !RESERVED.contains(name.toLowerCase(Locale.ROOT));
     }
 
+    /** Case-insensitive name comparison: on Windows "Default" and "default" are the same file. */
+    public static boolean sameName(String a, String b) {
+        return a != null && b != null && a.toLowerCase(Locale.ROOT).equals(b.toLowerCase(Locale.ROOT));
+    }
+
     private Path fileOf(String name) {
         if (!isValidName(name)) {
             throw new IllegalArgumentException("invalid profile name: " + name);
         }
         return dir.resolve(name + SUFFIX);
-    }
-
-    /** The stored profile, or null if the file is missing or was damaged. */
-    private Profile read(String name) {
-        Map<String, Object> json = AtomicFiles.readObjectOrBackup(fileOf(name), clock, warn);
-        return json == null ? null : Profile.fromJson(json);
     }
 }

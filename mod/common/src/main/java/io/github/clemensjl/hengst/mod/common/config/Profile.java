@@ -9,11 +9,10 @@ import java.util.Set;
 /**
  * All module settings of one named profile. Entries read from a file stay raw until a module is asked for by id,
  * so modules this version does not know (or entries it could not read) are written back unchanged.
+ * Not thread-safe: client thread only.
  */
 public final class Profile {
-    private static final int SCHEMA = 1;
-
-    // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
+        // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
     private final Map<String, Object> entries = new LinkedHashMap<String, Object>();
 
     /** The module's config; creates the defaults if there is none (or the stored entry is not an object). */
@@ -56,7 +55,7 @@ public final class Profile {
             modules.put(e.getKey(), v instanceof ModuleConfig ? ((ModuleConfig) v).toJson() : v);
         }
         Map<String, Object> root = new LinkedHashMap<String, Object>();
-        root.put("schema", SCHEMA);
+        root.put("schema", AtomicFiles.SCHEMA);
         root.put("modules", modules);
         return root;
     }

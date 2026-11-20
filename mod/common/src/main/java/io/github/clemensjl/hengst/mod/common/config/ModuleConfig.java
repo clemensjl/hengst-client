@@ -8,7 +8,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
-/** Stored settings of one module: switch, HUD placement, style and option values. */
+/** Stored settings of one module: switch, HUD placement, style and option values. Not thread-safe: client thread only. */
 public final class ModuleConfig {
     private static final float MIN_SCALE = 0.5f;
     private static final float MAX_SCALE = 3.0f;
