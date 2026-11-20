@@ -198,4 +198,97 @@ class HudEditorModelTest {
         model.press(10, 5);
         assertTrue(model.dragging());
     }
+
+    private void singlePlaceholder(Anchor anchor) {
+        modules = new HudModule[] {new FixedSizeModule("z", 1, 0, 0)};
+        configs = new ModuleConfig[] {ModuleConfig.defaults()};
+        configs[0].setEnabled(true);
+        configs[0].setAnchor(anchor);
+        model = new HudEditorModel(modules, configs);
+        model.layout(canvas);
+    }
+
+    @Test
+    void nudge_while_dragging_is_ignored() {
+        model.press(5, 5);
+        model.drag(25, 5);
+        model.nudge(50, 50);
+        model.drag(25, 5);
+        model.release();
+        model.layout(canvas);
+        assertEquals(20, model.rect(0).x);
+        assertEquals(0, model.rect(0).y);
+    }
+
+    @Test
+    void unchanged_position_leaves_stored_config_untouched() {
+        configs[0].setOffsetX(-50); // resolves clamped to x = 0
+        model.layout(canvas);
+        model.press(5, 5);
+        model.release();
+        model.press(5, 5);
+        model.drag(5, 5);
+        model.release();
+        model.nudge(-1, 0);
+        assertEquals(Anchor.TOP_LEFT, configs[0].anchor());
+        assertEquals(-50, configs[0].offsetX());
+        assertEquals(0, configs[0].offsetY());
+        assertFalse(model.dirty());
+    }
+
+    @Test
+    void scroll_on_placeholder_is_ignored() {
+        singlePlaceholder(Anchor.TOP_LEFT);
+        model.press(5, 5);
+        model.release();
+        model.scroll(1);
+        assertEquals(1.0f, configs[0].scale());
+        assertFalse(model.dirty());
+    }
+
+    @Test
+    void right_anchored_placeholder_stores_anchor_and_offsets() {
+        singlePlaceholder(Anchor.BOTTOM_RIGHT);
+        assertEquals(300, model.rect(0).x);
+        assertEquals(230, model.rect(0).y);
+        model.press(310, 235);
+        model.drag(300, 235);
+        model.release();
+        assertEquals(Anchor.BOTTOM_RIGHT, configs[0].anchor());
+        assertEquals(-10, configs[0].offsetX());
+        assertEquals(0, configs[0].offsetY());
+        assertTrue(model.dirty());
+    }
+
+    @Test
+    void module_that_throws_is_reported_once_and_becomes_placeholder() {
+        java.util.List<String> warnings = new java.util.ArrayList<String>();
+        modules = new HudModule[] {
+            new HudModule("z", 1, java.util.EnumSet.allOf(io.github.clemensjl.hengst.mod.common.platform.GameVersion.class)) {
+                @Override
+                public int width(io.github.clemensjl.hengst.mod.common.platform.Canvas c, ModuleConfig cfg) {
+                    throw new IllegalStateException("boom");
+                }
+
+                @Override
+                public int height(io.github.clemensjl.hengst.mod.common.platform.Canvas c, ModuleConfig cfg) {
+                    return 5;
+                }
+
+                @Override
+                public void render(
+                        io.github.clemensjl.hengst.mod.common.platform.Canvas c,
+                        ModuleConfig cfg,
+                        io.github.clemensjl.hengst.mod.common.hud.HudContext ctx) {}
+            }
+        };
+        configs = new ModuleConfig[] {ModuleConfig.defaults()};
+        configs[0].setEnabled(true);
+        model = new HudEditorModel(modules, configs);
+        model.setWarningSink(warnings::add);
+        model.layout(canvas);
+        model.layout(canvas);
+        assertEquals(1, warnings.size());
+        assertTrue(model.placeholder(0));
+    }
 }

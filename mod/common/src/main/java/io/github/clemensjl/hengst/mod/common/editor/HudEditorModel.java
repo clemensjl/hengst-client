@@ -5,6 +5,7 @@ import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.LayoutMath;
 import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
+import java.util.function.Consumer;
 
 /**
  * State of the HUD editor: module rectangles, selection and the drag. Index {@code i} refers to the arrays given to
@@ -26,6 +27,9 @@ public final class HudEditorModel {
     private final int[] baseW;
     private final int[] baseH;
     private final boolean[] placeholder;
+    // A module whose width or height threw is not asked again while the editor is open.
+    private final boolean[] broken;
+    private Consumer<String> warn;
     private int screenW;
     private int screenH;
     private int selected = -1;
@@ -45,6 +49,12 @@ public final class HudEditorModel {
         baseW = new int[n];
         baseH = new int[n];
         placeholder = new boolean[n];
+        broken = new boolean[n];
+    }
+
+    /** Where problems with modules are reported (logged once per module); none by default. */
+    public void setWarningSink(Consumer<String> warn) {
+        this.warn = warn;
     }
 
     public HudModule module(int index) {
@@ -76,12 +86,18 @@ public final class HudEditorModel {
         for (int i = 0; i < modules.length; i++) {
             int w = 0;
             int h = 0;
-            try {
-                w = modules[i].width(c, configs[i]);
-                h = modules[i].height(c, configs[i]);
-            } catch (RuntimeException e) {
-                w = 0;
-                h = 0;
+            if (!broken[i]) {
+                try {
+                    w = modules[i].width(c, configs[i]);
+                    h = modules[i].height(c, configs[i]);
+                } catch (RuntimeException e) {
+                    broken[i] = true;
+                    w = 0;
+                    h = 0;
+                    if (warn != null) {
+                        warn.accept("HUD module " + modules[i].id() + " failed to report its size in the editor: " + e);
+                    }
+                }
             }
             baseW[i] = w;
             baseH[i] = h;
@@ -135,7 +151,7 @@ public final class HudEditorModel {
 
     /** Changes the scale of the selected module by one step in the direction of the sign of {@code amount}. */
     public void scroll(double amount) {
-        if (selected < 0 || amount == 0 || Double.isNaN(amount)) {
+        if (selected < 0 || placeholder[selected] || amount == 0 || Double.isNaN(amount)) {
             return;
         }
         ModuleConfig cfg = configs[selected];
@@ -147,8 +163,9 @@ public final class HudEditorModel {
         }
     }
 
+    /** Ignored while a drag is running: the next drag event would override it. */
     public void nudge(int dx, int dy) {
-        if (selected < 0) {
+        if (selected < 0 || dragging) {
             return;
         }
         MutableRect r = rects[selected];
@@ -184,11 +201,12 @@ public final class HudEditorModel {
         int ny = Math.max(0, Math.min(Math.max(0, screenH - r.h), y));
         int ox = r.x;
         int oy = r.y;
+        if (nx == ox && ny == oy) {
+            return; // the stored anchor and offsets stay as they are
+        }
         LayoutMath.reanchor(configs[i], nx, ny, r.w, r.h, screenW, screenH);
         place(i);
-        if (r.x != ox || r.y != oy) {
-            dirty = true;
-        }
+        dirty = true;
     }
 
     /** Sizes rect i from the base size and the scale and resolves its position from the config. */

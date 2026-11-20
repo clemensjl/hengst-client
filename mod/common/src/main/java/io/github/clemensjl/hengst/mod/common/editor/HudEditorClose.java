@@ -36,15 +36,22 @@ public final class HudEditorClose implements Runnable {
 
     @Override
     public void run() {
-        if (model.dirty()) {
-            try {
-                store.save(profileName, profile);
-                model.markSaved();
-            } catch (IOException e) {
-                platform.logWarning("Could not save the HUD layout of profile " + profileName + ": " + e);
+        try {
+            if (model.dirty()) {
+                try {
+                    store.save(profileName, profile);
+                    model.markSaved();
+                } catch (IOException | RuntimeException e) {
+                    platform.logWarning("Could not save the HUD layout of profile " + profileName + ": " + e);
+                }
             }
+            try {
+                renderer.rebuild(profile);
+            } catch (RuntimeException e) {
+                platform.logWarning("Could not rebuild the HUD after editing: " + e);
+            }
+        } finally {
+            platform.closeScreen();
         }
-        renderer.rebuild(profile);
-        platform.closeScreen();
     }
 }

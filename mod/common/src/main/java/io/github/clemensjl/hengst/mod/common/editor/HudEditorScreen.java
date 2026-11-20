@@ -24,6 +24,9 @@ public final class HudEditorScreen implements UiScreen {
     private final HudContext ctx;
     private final Runnable onClose;
     private final String hint;
+    // The hint split by word to the canvas width; rebuilt only when the width changes.
+    private String[] hintLines = new String[0];
+    private int hintForWidth = -1;
     // Labels are built once when the editor opens, never per frame.
     private final String[] labels;
     // A module that threw while drawing is skipped for the rest of the session of this editor.
@@ -35,6 +38,7 @@ public final class HudEditorScreen implements UiScreen {
         this.ctx = ctx;
         this.onClose = onClose;
         this.hint = i18n.get("hengst.editor.hint");
+        model.setWarningSink(ctx.platform()::logWarning);
         // The model only holds the arrays; the module names come from the features themselves.
         this.labels = new String[model.count()];
         this.failed = new boolean[model.count()];
@@ -62,8 +66,40 @@ public final class HudEditorScreen implements UiScreen {
             }
             frame(canvas, r, i == selected ? SELECTED : FRAME);
         }
-        int hintX = Math.max(0, (sw - canvas.textWidth(hint)) / 2);
-        canvas.text(hint, hintX, sh - canvas.fontHeight() - HINT_MARGIN, LABEL, true);
+        if (hintForWidth != sw) {
+            hintLines = wrap(canvas, hint, sw);
+            hintForWidth = sw;
+        }
+        int lineH = canvas.fontHeight() + 1;
+        // The last line sits just above the bottom edge, earlier lines above it.
+        int y = sh - HINT_MARGIN - canvas.fontHeight() - (hintLines.length - 1) * lineH;
+        for (int k = 0; k < hintLines.length; k++) {
+            canvas.text(hintLines[k], Math.max(0, (sw - canvas.textWidth(hintLines[k])) / 2), y, LABEL, true);
+            y += lineH;
+        }
+    }
+
+    /** Greedy word wrap; a single word wider than the width gets a line of its own. Cold path. */
+    private static String[] wrap(Canvas canvas, String text, int width) {
+        java.util.List<String> lines = new java.util.ArrayList<String>();
+        StringBuilder line = new StringBuilder();
+        for (String word : text.split(" ")) {
+            if (word.isEmpty()) {
+                continue;
+            }
+            if (line.length() > 0 && canvas.textWidth(line + " " + word) > width) {
+                lines.add(line.toString());
+                line.setLength(0);
+            }
+            if (line.length() > 0) {
+                line.append(' ');
+            }
+            line.append(word);
+        }
+        if (line.length() > 0) {
+            lines.add(line.toString());
+        }
+        return lines.toArray(new String[0]);
     }
 
     private void drawModule(Canvas canvas, int i, MutableRect r) {

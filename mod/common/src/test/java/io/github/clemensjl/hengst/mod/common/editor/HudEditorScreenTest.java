@@ -204,8 +204,7 @@ class HudEditorScreenTest {
         assertEquals("fill 0 0 320 240 50000000", canvas.calls.get(0));
         assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("fill") && s.endsWith("ffffaa00")));
         assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("fill") && s.endsWith("80ffffff")));
-        String hint = I18n.load("en_us").get("hengst.editor.hint");
-        assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("text " + hint + " ")));
+        assertEquals(I18n.load("en_us").get("hengst.editor.hint"), String.join(" ", textLines(canvas)));
         assertEquals(2, canvas.calls.stream().filter(s -> s.startsWith("push")).count());
     }
 
@@ -221,5 +220,120 @@ class HudEditorScreenTest {
         HudEditorScreen screen = new HudEditorScreen(m, ctx, I18n.load("en_us"), () -> {});
         screen.render(canvas, 0, 0, 0f);
         assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("text FPS ")));
+    }
+
+    private static FakeCanvas canvasOfWidth(int w) {
+        return new FakeCanvas() {
+            @Override
+            public int width() {
+                return w;
+            }
+        };
+    }
+
+    private static java.util.List<String> textLines(FakeCanvas c) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        for (String call : c.calls) {
+            if (call.startsWith("text ")) {
+                String[] t = call.split(" ");
+                out.add(String.join(" ", java.util.Arrays.copyOfRange(t, 1, t.length - 4)));
+            }
+        }
+        return out;
+    }
+
+    @Test
+    void hint_is_wrapped_to_the_screen_width_in_both_languages() {
+        for (String lang : new String[] {"en_us", "de_de"}) {
+            I18n i18n = I18n.load(lang);
+            for (int width : new int[] {320, 480}) {
+                FakeCanvas c = canvasOfWidth(width);
+                new HudEditorScreen(model, ctx, i18n, () -> {}).render(c, 0, 0, 0f);
+                java.util.List<String> lines = textLines(c);
+                assertTrue(lines.size() > 1);
+                for (String line : lines) {
+                    assertTrue(6 * line.length() <= width, lang + " " + width + ": " + line);
+                }
+                assertEquals(i18n.get("hengst.editor.hint"), String.join(" ", lines));
+            }
+        }
+    }
+
+    @Test
+    void render_draws_exact_frames_and_bottom_up_hint() {
+        HudEditorScreen screen = screen(() -> {});
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(5, 5, 0);
+        screen.mouseReleased(5, 5, 0);
+        canvas.calls.clear();
+        screen.render(canvas, 0, 0, 0f);
+        java.util.List<String> c = canvas.calls;
+        assertEquals("fill 0 0 320 240 50000000", c.get(0));
+        // module a (selected, 0,0 40x10)
+        assertEquals("push 0.0 0.0 1.0", c.get(1));
+        assertEquals("fill 0 0 40 10 ffffffff", c.get(2));
+        assertEquals("pop", c.get(3));
+        assertEquals("fill 0 0 40 1 ffffaa00", c.get(4));
+        assertEquals("fill 0 9 40 10 ffffaa00", c.get(5));
+        assertEquals("fill 0 1 1 9 ffffaa00", c.get(6));
+        assertEquals("fill 39 1 40 9 ffffaa00", c.get(7));
+        // module b (250,100 40x10)
+        assertEquals("push 250.0 100.0 1.0", c.get(8));
+        assertEquals("fill 250 100 290 101 80ffffff", c.get(11));
+        assertEquals("fill 250 109 290 110 80ffffff", c.get(12));
+        assertEquals("fill 250 101 251 109 80ffffff", c.get(13));
+        assertEquals("fill 289 101 290 109 80ffffff", c.get(14));
+        java.util.List<String> lines = textLines(canvas);
+        int n = lines.size();
+        for (int k = 0; k < n; k++) {
+            String line = lines.get(k);
+            int y = 240 - 4 - 9 - (n - 1 - k) * 10;
+            int x = (320 - 6 * line.length()) / 2;
+            assertEquals("text " + line + " " + x + " " + y + " ffffffff true", c.get(15 + k));
+        }
+    }
+
+    @Test
+    void non_left_buttons_are_ignored() {
+        HudEditorScreen screen = screen(() -> {});
+        screen.render(canvas, 0, 0, 0f);
+        assertFalse(screen.mouseClicked(5, 5, 1));
+        assertEquals(-1, model.selected());
+        screen.mouseClicked(5, 5, 0);
+        assertFalse(screen.mouseDragged(100, 100, 1));
+        assertFalse(screen.mouseReleased(100, 100, 1));
+        assertTrue(model.dragging());
+        model.layout(canvas);
+        assertEquals(0, model.rect(0).x);
+    }
+
+    @Test
+    void mouse_up_without_mouse_down_changes_nothing() {
+        HudEditorScreen screen = screen(() -> {});
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseReleased(5, 5, 0);
+        screen.mouseDragged(100, 100, 0);
+        assertFalse(model.dragging());
+        assertFalse(model.dirty());
+        assertEquals(-1, model.selected());
+    }
+
+    @Test
+    void close_still_closes_when_the_save_throws_unchecked() {
+        screen(() -> {}).render(canvas, 0, 0, 0f);
+        model.press(5, 5);
+        model.drag(100, 100);
+        model.release();
+        new HudEditorClose(model, store, "bad/name", profile, renderer, platform).run();
+        assertEquals(1, platform.closeCount);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(model.dirty());
+    }
+
+    @Test
+    void close_still_closes_when_rebuild_throws() {
+        new HudEditorClose(model, store, ProfileStore.DEFAULT, null, renderer, platform).run();
+        assertEquals(1, platform.closeCount);
+        assertEquals(1, platform.warnings.size());
     }
 }
