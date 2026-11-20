@@ -58,7 +58,7 @@ enum Cmd {
         java: Option<PathBuf>,
         #[arg(long, default_value_t = 2048)]
         memory: u32,
-        /// Mod loader: fabric, quilt, legacy-fabric, neoforge or forge
+        /// Mod loader: fabric, quilt, legacy-fabric, neoforge or forge (case-insensitive)
         #[arg(long, value_parser = LoaderKind::from_str)]
         loader: Option<LoaderKind>,
         /// Loader version (default: the newest stable one)
@@ -70,12 +70,14 @@ enum Cmd {
     },
     /// List loader versions for a game version, newest first
     Loaders {
+        /// Loader: fabric, quilt, legacy-fabric, neoforge or forge (case-insensitive)
         #[arg(value_parser = LoaderKind::from_str)]
         loader: LoaderKind,
         /// Game version id, or `latest` / `latest-snapshot`
         version: String,
-        #[arg(long, default_value_t = 20)]
-        limit: usize,
+        /// Maximum number of versions to list
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..))]
+        limit: u64,
     },
     /// Sign in with a Microsoft account and save it
     Login,
@@ -121,9 +123,14 @@ impl KindFilter {
     }
 }
 
+/// Whether the unstable-fallback note can apply at all (no explicit version, unstable pick).
+fn note_applies(requested: Option<&str>, resolved: &ResolvedLoader) -> bool {
+    requested.is_none() && !resolved.version.stable
+}
+
 /// Warns when the default pick had to fall back to a non-stable loader build.
 fn unstable_note(requested: Option<&str>, resolved: &ResolvedLoader, game: &str) -> Option<String> {
-    if requested.is_some() || resolved.version.stable {
+    if !note_applies(requested, resolved) {
         return None;
     }
     Some(format!(
@@ -219,10 +226,16 @@ async fn main() -> anyhow::Result<()> {
                 }),
             };
             let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
-            if let Some(resolved) = &prepared.loader {
-                let game = resolve_game(&paths, &opts.version).await?;
-                if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &game) {
-                    eprintln!("{note}");
+            if let Some(resolved) = prepared
+                .loader
+                .as_ref()
+                .filter(|r| note_applies(loader_version.as_deref(), r))
+            {
+                // The note is cosmetic: a failed lookup skips it silently.
+                if let Ok(game) = resolve_game(&paths, &opts.version).await {
+                    if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &game) {
+                        eprintln!("{note}");
+                    }
                 }
             }
             if dry_run {
@@ -241,11 +254,12 @@ async fn main() -> anyhow::Result<()> {
             limit,
         } => {
             let game = resolve_game(&paths, &version).await?;
+            // Task 8 routes Forge and NeoForge to their own version lists.
             let versions =
                 fabric::list_versions(&http_client(), &LoaderEndpoints::default(), loader, &game)
                     .await?;
             let default = pick_version(&versions, None, loader, &game)?;
-            for line in loader_lines(&versions, limit, &default.id) {
+            for line in loader_lines(&versions, limit as usize, &default.id) {
                 println!("{line}");
             }
         }
@@ -389,13 +403,13 @@ mod tests {
             } => {
                 assert_eq!(loader, LoaderKind::Quilt);
                 assert_eq!(version, "1.21.11");
-                assert_eq!(limit, 5);
+                assert_eq!(limit, 5u64);
             }
             _ => panic!("expected loaders"),
         }
         let cli = Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11"]).unwrap();
         match cli.cmd {
-            Cmd::Loaders { limit, .. } => assert_eq!(limit, 20),
+            Cmd::Loaders { limit, .. } => assert_eq!(limit, 20u64),
             _ => panic!("expected loaders"),
         }
     }
@@ -428,6 +442,21 @@ mod tests {
                 "1.21.11"
             ),
             None
+        );
+    }
+
+    #[test]
+    fn note_lookup_only_for_unrequested_unstable_picks() {
+        assert!(note_applies(None, &resolved("0.31.0-beta.6", false)));
+        assert!(!note_applies(None, &resolved("0.30.2", true)));
+        assert!(!note_applies(Some("1"), &resolved("1", false)));
+    }
+
+    #[test]
+    fn rejects_zero_limit() {
+        assert!(
+            Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11", "--limit", "0"])
+                .is_err()
         );
     }
 
