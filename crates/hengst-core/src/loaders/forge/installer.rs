@@ -17,7 +17,7 @@ use serde::Deserialize;
 use crate::download::sha1_file;
 use crate::libraries::maven_path;
 use crate::loaders::LoaderKind;
-use crate::paths::{join_relative, unique_temp, validate_id, validate_sha1};
+use crate::paths::{join_relative, remove_stale_temps, unique_temp, validate_id, validate_sha1};
 use crate::version::{Artifact, Library, LibraryDownloads, VersionJson};
 use crate::{Error, Result};
 
@@ -269,6 +269,7 @@ fn extract_entry<R: Read + Seek>(
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    remove_stale_temps(dest);
     let tmp = unique_temp(dest);
     let mut out = File::create(&tmp)?;
     let copied = std::io::copy(&mut (&mut entry).take(limit + 1), &mut out);

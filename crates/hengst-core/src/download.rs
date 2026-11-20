@@ -1,9 +1,10 @@
-use crate::paths::{unique_temp, validate_sha1};
+use crate::paths::{remove_stale_temps, unique_temp, validate_sha1};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const USER_AGENT: &str = concat!(
@@ -35,6 +36,8 @@ pub struct Downloader {
     concurrency: usize,
     retries: u32,
     sha1_cache: Option<PathBuf>,
+    /// URLs whose hash `fill_missing_sha1` took from the cache (shared between clones).
+    from_cache: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Downloader {
@@ -44,6 +47,7 @@ impl Downloader {
             concurrency: 16,
             retries: 3,
             sha1_cache: None,
+            from_cache: Arc::default(),
         }
     }
 
@@ -83,6 +87,49 @@ impl Downloader {
 
     /// Returns `Ok(false)` if the file already existed and was valid.
     pub async fn fetch_one(&self, item: &Download) -> Result<bool> {
+        self.fetch_verified(item).await.map(|(fetched, _)| fetched)
+    }
+
+    /// Like `fetch_one`, and also returns the SHA-1 the file was verified against. When the
+    /// expected hash came from the hash cache and the download does not match it, the cache entry
+    /// is evicted, the hash fetched again from `<url>.sha1` and the download retried once with it
+    /// (a republished artifact or an earlier bad answer). A hash the caller supplied is never
+    /// replaced.
+    pub async fn fetch_verified(&self, item: &Download) -> Result<(bool, Option<String>)> {
+        match self.fetch_attempts(item).await {
+            Err(e @ Error::Checksum { .. }) if self.take_cached(&item.url) => {
+                if let Some(file) = self.cache_file(&item.url) {
+                    let _ = tokio::fs::remove_file(file).await;
+                }
+                let fresh = sidecar_sha1(self, item).await?;
+                if item.sha1.as_deref() == Some(fresh.as_str()) {
+                    return Err(e);
+                }
+                let retry = Download {
+                    sha1: Some(fresh.clone()),
+                    ..item.clone()
+                };
+                Ok((self.fetch_attempts(&retry).await?, Some(fresh)))
+            }
+            other => other.map(|fetched| (fetched, item.sha1.clone())),
+        }
+    }
+
+    fn cache_file(&self, url: &str) -> Option<PathBuf> {
+        self.sha1_cache
+            .as_ref()
+            .map(|dir| dir.join(sha1_hex(url.as_bytes())))
+    }
+
+    /// True (once) if the hash for `url` was taken from the cache.
+    fn take_cached(&self, url: &str) -> bool {
+        self.from_cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(url)
+    }
+
+    async fn fetch_attempts(&self, item: &Download) -> Result<bool> {
         if is_valid(&item.path, item.sha1.as_deref()).await? {
             return Ok(false);
         }
@@ -114,6 +161,7 @@ impl Downloader {
         if let Some(parent) = item.path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
+        remove_stale_temps(&item.path);
         let tmp = unique_temp(&item.path);
         tokio::fs::write(&tmp, &bytes).await?;
         if let Err(e) = tokio::fs::rename(&tmp, &item.path).await {
@@ -152,14 +200,15 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
     legacy.push(".sha1");
     let _ = tokio::fs::remove_file(PathBuf::from(legacy)).await;
 
-    let cache_file = dl
-        .sha1_cache
-        .as_ref()
-        .map(|dir| dir.join(sha1_hex(item.url.as_bytes())));
+    let cache_file = dl.cache_file(&item.url);
     if let Some(file) = &cache_file {
         if let Ok(text) = tokio::fs::read_to_string(file).await {
             let hash = text.trim();
             if validate_sha1(hash).is_ok() {
+                dl.from_cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(item.url.clone());
                 return Ok(hash.to_ascii_lowercase());
             }
         }
@@ -179,17 +228,24 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
     validate_sha1(hash)?;
     let hash = hash.to_ascii_lowercase();
     if let Some(file) = cache_file {
-        if let Some(parent) = file.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
-        let tmp = unique_temp(&file);
-        tokio::fs::write(&tmp, &hash).await?;
-        if let Err(e) = tokio::fs::rename(&tmp, &file).await {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(e.into());
-        }
+        // Best effort: the hash is verified in memory; a locked or unwritable cache only means
+        // it is asked for again next time.
+        let _ = write_cache_entry(&file, &hash).await;
     }
     Ok(hash)
+}
+
+async fn write_cache_entry(file: &Path, hash: &str) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = unique_temp(file);
+    tokio::fs::write(&tmp, hash).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, file).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    Ok(())
 }
 
 pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -458,6 +514,116 @@ mod tests {
             .unwrap();
         assert_eq!(it.sha1.as_deref(), Some(HELLO_SHA1));
         assert_eq!(std::fs::read_to_string(&entry).unwrap(), HELLO_SHA1);
+    }
+
+    #[tokio::test]
+    async fn unwritable_cache_does_not_fail_the_lookup() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        // The cache "directory" is a file, so the entry cannot be written.
+        let cache = dir.path().join("cache");
+        std::fs::write(&cache, b"not a directory").unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache);
+        let mut it = item(&server, dir.path(), "lib.jar", None);
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut it))
+            .await
+            .unwrap();
+        assert_eq!(it.sha1.as_deref(), Some(HELLO_SHA1));
+        assert!(dl.fetch_one(&it).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn stale_cached_hash_is_evicted_and_the_download_retried_once() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut it = item(&server, dir.path(), "lib.jar", None);
+        std::fs::create_dir_all(&cache).unwrap();
+        let entry = cache.join(sha1_hex(it.url.as_bytes()));
+        std::fs::write(&entry, sha1_hex(b"an older release")).unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache);
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut it))
+            .await
+            .unwrap();
+        assert_eq!(it.sha1, Some(sha1_hex(b"an older release")));
+        let (fetched, sha) = dl.fetch_verified(&it).await.unwrap();
+        assert!(fetched);
+        assert_eq!(sha.as_deref(), Some(HELLO_SHA1));
+        assert_eq!(std::fs::read(&it.path).unwrap(), b"hello");
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), HELLO_SHA1);
+    }
+
+    #[tokio::test]
+    async fn refetched_hash_that_still_mismatches_is_an_error() {
+        // The server's sidecar does not match the file it serves.
+        let server = hello_server("/lib.jar", &sha1_hex(b"what the sidecar claims")).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut it = item(&server, dir.path(), "lib.jar", None);
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(
+            cache.join(sha1_hex(it.url.as_bytes())),
+            sha1_hex(b"an older release"),
+        )
+        .unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache);
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut it))
+            .await
+            .unwrap();
+        let err = dl.fetch_one(&it).await.unwrap_err();
+        assert!(matches!(err, Error::Checksum { .. }), "{err}");
+        assert!(!it.path.exists());
+        let sidecar_requests = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path().ends_with(".sha1"))
+            .count();
+        assert_eq!(sidecar_requests, 1);
+    }
+
+    #[tokio::test]
+    async fn hash_from_the_caller_is_never_replaced_by_a_sidecar() {
+        let server = hello_server("/lib.jar", &sha1_hex(b"evil")).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(dir.path().join("cache"));
+        let it = item(&server, dir.path(), "lib.jar", Some(sha1_hex(b"trusted")));
+        assert!(matches!(
+            dl.fetch_one(&it).await,
+            Err(Error::Checksum { .. })
+        ));
+        assert!(!server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with(".sha1")));
+    }
+
+    #[tokio::test]
+    async fn stale_temp_files_next_to_the_destination_are_removed() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        let it = item(&server, dir.path(), "lib.jar", Some(HELLO_SHA1.into()));
+        let sub = it.path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&sub).unwrap();
+        let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let mk = |name: &str, aged: bool| {
+            let p = sub.join(name);
+            let f = std::fs::File::create(&p).unwrap();
+            if aged {
+                f.set_modified(old).unwrap();
+            }
+            p
+        };
+        let stale = mk("lib.jar.999999.3.part", true);
+        let fresh = mk("lib.jar.999999.4.part", false);
+        let other = mk("other.jar.999999.3.part", true);
+        let odd = mk("lib.jar.x.3.part", true);
+        assert!(Downloader::new(http_client()).fetch_one(&it).await.unwrap());
+        assert!(!stale.exists());
+        assert!(fresh.exists() && other.exists() && odd.exists());
     }
 
     #[tokio::test]

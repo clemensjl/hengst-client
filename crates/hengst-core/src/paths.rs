@@ -133,6 +133,50 @@ pub fn unique_temp(dest: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+/// How long a temp file of another process must have been untouched before it counts as left over
+/// by a crashed run. Real writes finish within seconds.
+const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// Removes temp files `unique_temp` left next to `dest` by a crashed run: exactly
+/// `<file name>.<pid>.<n>.part`, from another process, untouched for `STALE_TEMP_AGE`. Only the
+/// parent directory is listed (no recursion). Best effort: failures are ignored.
+pub fn remove_stale_temps(dest: &Path) {
+    let (Some(dir), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str())) else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let digits = |s: &str| !s.is_empty() && s.bytes().all(|b| b.is_ascii_digit());
+    let own = std::process::id().to_string();
+    for entry in entries.flatten() {
+        let file_name = entry.file_name();
+        let Some(rest) = file_name
+            .to_str()
+            .and_then(|n| n.strip_prefix(name))
+            .and_then(|r| r.strip_prefix('.'))
+            .and_then(|r| r.strip_suffix(".part"))
+        else {
+            continue;
+        };
+        let Some((pid, n)) = rest.split_once('.') else {
+            continue;
+        };
+        if !digits(pid) || !digits(n) || pid == own {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age >= STALE_TEMP_AGE);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Components Windows strips or maps to something else: trailing dots and spaces, and device
 /// names (with or without an extension, any case).
 fn is_windows_reserved(name: &str) -> bool {
