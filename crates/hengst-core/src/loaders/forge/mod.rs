@@ -147,26 +147,34 @@ pub async fn list_neoforge(
 }
 
 /// Maven coordinate of the installer jar. Only Forge and NeoForge have installers.
-fn installer_coords(kind: LoaderKind, game: &str, maven: &str) -> String {
+fn installer_coords(kind: LoaderKind, game: &str, maven: &str) -> Result<String> {
     match kind {
-        LoaderKind::Forge => format!("net.minecraftforge:forge:{maven}:installer"),
+        LoaderKind::Forge => Ok(format!("net.minecraftforge:forge:{maven}:installer")),
         LoaderKind::NeoForge if game == "1.20.1" => {
-            format!("net.neoforged:forge:{maven}:installer")
+            Ok(format!("net.neoforged:forge:{maven}:installer"))
         }
-        LoaderKind::NeoForge => format!("net.neoforged:neoforge:{maven}:installer"),
-        other => unreachable!("{other} has no installer"),
+        LoaderKind::NeoForge => Ok(format!("net.neoforged:neoforge:{maven}:installer")),
+        other => Err(Error::LoaderUnsupported {
+            loader: other.to_string(),
+            game: game.to_string(),
+            reason: "it has no installer".into(),
+        }),
     }
 }
 
 /// Download URL of the installer for a Forge or NeoForge build (`maven` is the full Maven version).
-///
-/// Panics for any other loader kind.
-pub fn installer_url(kind: LoaderKind, game: &str, maven: &str, ep: &LoaderEndpoints) -> String {
-    let rel = maven_path(&installer_coords(kind, game, maven)).expect("installer coordinates");
-    match kind {
+/// Any other loader kind is `Error::LoaderUnsupported`.
+pub fn installer_url(
+    kind: LoaderKind,
+    game: &str,
+    maven: &str,
+    ep: &LoaderEndpoints,
+) -> Result<String> {
+    let rel = maven_path(&installer_coords(kind, game, maven)?).expect("installer coordinates");
+    Ok(match kind {
         LoaderKind::Forge => format!("{}/{rel}", ep.forge_maven),
         _ => format!("{}/releases/{rel}", ep.neoforge_maven),
-    }
+    })
 }
 
 /// Downloads the installer into the shared libraries directory (at its Maven path), verified
@@ -181,9 +189,9 @@ pub async fn fetch_installer(
 ) -> Result<PathBuf> {
     validate_id(game)?;
     validate_id(maven)?;
-    let rel = maven_path(&installer_coords(kind, game, maven)).expect("installer coordinates");
+    let rel = maven_path(&installer_coords(kind, game, maven)?).expect("installer coordinates");
     let mut item = [Download {
-        url: installer_url(kind, game, maven, ep),
+        url: installer_url(kind, game, maven, ep)?,
         path: join_relative(&paths.libraries(), &rel)?,
         sha1: None,
     }];
@@ -489,17 +497,26 @@ mod tests {
     fn installer_urls() {
         let ep = LoaderEndpoints::default();
         assert_eq!(
-            installer_url(LoaderKind::Forge, "1.7.10", "1.7.10-10.13.4.1614-1.7.10", &ep),
+            installer_url(LoaderKind::Forge, "1.7.10", "1.7.10-10.13.4.1614-1.7.10", &ep).unwrap(),
             "https://maven.minecraftforge.net/net/minecraftforge/forge/1.7.10-10.13.4.1614-1.7.10/forge-1.7.10-10.13.4.1614-1.7.10-installer.jar"
         );
         assert_eq!(
-            installer_url(LoaderKind::NeoForge, "1.20.1", "1.20.1-47.1.106", &ep),
+            installer_url(LoaderKind::NeoForge, "1.20.1", "1.20.1-47.1.106", &ep).unwrap(),
             "https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.106/forge-1.20.1-47.1.106-installer.jar"
         );
         assert_eq!(
-            installer_url(LoaderKind::NeoForge, "26.3", "26.3.0.115", &ep),
+            installer_url(LoaderKind::NeoForge, "26.3", "26.3.0.115", &ep).unwrap(),
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.115/neoforge-26.3.0.115-installer.jar"
         );
+    }
+
+    #[test]
+    fn installer_url_for_other_loaders_is_unsupported() {
+        let ep = LoaderEndpoints::default();
+        assert!(matches!(
+            installer_url(LoaderKind::Fabric, "1.21.1", "0.17.3", &ep),
+            Err(Error::LoaderUnsupported { .. })
+        ));
     }
 
     const NEO_INSTALLER: &str =

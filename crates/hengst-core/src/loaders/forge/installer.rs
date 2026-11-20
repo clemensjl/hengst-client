@@ -1,6 +1,7 @@
 //! Reading Forge and NeoForge installers (jars) in both formats. An installer is untrusted remote
-//! data: every name taken from it is validated, only the entries the later steps need are
-//! extracted, and entry sizes are capped.
+//! data: every name taken from it is validated, only the entries the profile itself names as
+//! installer-provided are extracted (each verified against the SHA-1 the profile declares, never
+//! trusted from disk, never any sidecar file), and entry counts and sizes are capped.
 //!
 //! The modern format (`install_profile.json` + `version.json` + processors) is used from Forge
 //! 1.12.2-14.23.5.2851 and by NeoForge. The legacy format (`install` + `versionInfo` in one JSON)
@@ -15,7 +16,7 @@ use serde::Deserialize;
 
 use crate::download::sha1_file;
 use crate::libraries::maven_path;
-use crate::paths::{join_relative, validate_id};
+use crate::paths::{join_relative, validate_id, validate_sha1};
 use crate::version::{Artifact, Library, LibraryDownloads, VersionJson};
 use crate::{Error, Result};
 
@@ -27,6 +28,8 @@ pub const MAX_TOTAL_BYTES: u64 = 256 * 1024 * 1024;
 /// Largest JSON document (`install_profile.json`, `version.json`) we parse. Real ones are up to
 /// about 130 KB.
 pub const MAX_JSON_BYTES: u64 = 16 * 1024 * 1024;
+/// Largest number of entries an installer jar may have (real ones: 350 to 650).
+pub const MAX_ENTRIES: usize = 4096;
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct SidedData {
@@ -116,9 +119,16 @@ fn bad(msg: impl std::fmt::Display) -> Error {
     Error::Installer(msg.to_string())
 }
 
-fn open(installer: &Path) -> Result<zip::ZipArchive<File>> {
-    zip::ZipArchive::new(File::open(installer)?)
-        .map_err(|e| bad(format!("not a readable jar: {e}")))
+fn open(installer: &Path, max_entries: usize) -> Result<zip::ZipArchive<File>> {
+    let zip = zip::ZipArchive::new(File::open(installer)?)
+        .map_err(|e| bad(format!("not a readable jar: {e}")))?;
+    if zip.len() > max_entries {
+        return Err(bad(format!(
+            "installer has {} entries, more than the allowed {max_entries}",
+            zip.len()
+        )));
+    }
+    Ok(zip)
 }
 
 /// Reads a whole entry into memory, refusing it if it is larger than `limit`.
@@ -163,7 +173,7 @@ fn parse<T: for<'de> Deserialize<'de>>(bytes: &[u8], what: &str) -> Result<T> {
 
 /// Parses `install_profile.json` (and `version.json` for the modern format) of an installer.
 pub fn read_installer(installer: &Path) -> Result<InstallerContents> {
-    let mut zip = open(installer)?;
+    let mut zip = open(installer, MAX_ENTRIES)?;
     let profile_bytes = read_entry(&mut zip, "install_profile.json", MAX_JSON_BYTES)?;
     let profile: serde_json::Value = parse(&profile_bytes, "install_profile.json")?;
 
@@ -179,6 +189,12 @@ pub fn read_installer(installer: &Path) -> Result<InstallerContents> {
             version_info,
         } = parse(&profile_bytes, "install_profile.json")?;
         check_coordinate(&install.path)?;
+        if !install.path.starts_with("net.minecraftforge:forge:") {
+            return Err(bad(format!(
+                "legacy installer path {} is not a net.minecraftforge:forge coordinate",
+                install.path
+            )));
+        }
         check_relative(&install.file_path)?;
         InstallerContents {
             kind: InstallerKind::Legacy {
@@ -223,16 +239,24 @@ pub fn read_installer(installer: &Path) -> Result<InstallerContents> {
 struct Limits {
     entry: u64,
     total: u64,
+    entries: usize,
 }
 
+const LIMITS: Limits = Limits {
+    entry: MAX_ENTRY_BYTES,
+    total: MAX_TOTAL_BYTES,
+    entries: MAX_ENTRIES,
+};
+
 /// Copies one entry to `dest` (via a `.part` file), enforcing the per-entry limit and the remaining
-/// total budget.
+/// total budget. With `sha1` the copied bytes must match it before anything is put at `dest`.
 fn extract_entry<R: Read + Seek>(
     zip: &mut zip::ZipArchive<R>,
     name: &str,
     dest: &Path,
     budget: &mut u64,
     limits: Limits,
+    sha1: Option<&str>,
 ) -> Result<u64> {
     let mut entry = zip
         .by_name(name)
@@ -250,37 +274,104 @@ fn extract_entry<R: Read + Seek>(
     let mut out = File::create(&tmp)?;
     let copied = std::io::copy(&mut (&mut entry).take(limit + 1), &mut out);
     drop(out);
-    let copied = match copied {
-        Ok(n) if n <= limit => n,
-        other => {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(match other {
-                Ok(_) => too_large(name),
-                Err(e) => e.into(),
-            });
-        }
+    let result = match copied {
+        Ok(n) if n > limit => Err(too_large(name)),
+        Ok(n) => match sha1 {
+            Some(want) if !sha1_file(&tmp)?.eq_ignore_ascii_case(want) => Err(bad(format!(
+                "installer entry {name} does not match the SHA-1 {want} its profile declares"
+            ))),
+            _ => Ok(n),
+        },
+        Err(e) => Err(e.into()),
     };
-    std::fs::rename(&tmp, dest)?;
-    *budget += copied;
-    Ok(copied)
+    match result {
+        Ok(n) => {
+            std::fs::rename(&tmp, dest)?;
+            *budget += n;
+            Ok(n)
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&tmp);
+            Err(e)
+        }
+    }
 }
 
-/// Extracts what the installer ships for the later steps into the shared libraries directory.
+/// File names that are checksum or signature sidecars. They are never taken from an installer:
+/// a later download would trust a local `<file>.sha1` over the repository.
+fn is_sidecar(rel: &str) -> bool {
+    let lower = rel.to_ascii_lowercase();
+    [
+        ".sha1", ".md5", ".sha256", ".sha512", ".sha384", ".asc", ".sig", ".part",
+    ]
+    .iter()
+    .any(|ext| lower.ends_with(ext))
+}
+
+/// The artifacts a modern profile marks as installer-provided (empty `url`), as relative path and
+/// declared SHA-1. The same path in profile and version must declare the same hash; a missing or
+/// malformed hash is refused.
+fn provided_artifacts(
+    profile: &ModernProfile,
+    version: &VersionJson,
+    max: usize,
+) -> Result<BTreeMap<String, String>> {
+    let mut out = BTreeMap::new();
+    let provided = profile
+        .libraries
+        .iter()
+        .chain(&version.libraries)
+        .filter_map(|l| l.downloads.as_ref()?.artifact.as_ref())
+        .filter(|a| a.url.is_empty());
+    for a in provided {
+        check_relative(&a.path)?;
+        if is_sidecar(&a.path) {
+            return Err(bad(format!(
+                "provided artifact {} is a sidecar file",
+                a.path
+            )));
+        }
+        validate_sha1(&a.sha1).map_err(|_| {
+            bad(format!(
+                "provided artifact {} has no valid SHA-1 in the profile",
+                a.path
+            ))
+        })?;
+        let sha1 = a.sha1.to_ascii_lowercase();
+        if out
+            .insert(a.path.clone(), sha1.clone())
+            .is_some_and(|old| old != sha1)
+        {
+            return Err(bad(format!(
+                "profile declares two different SHA-1 values for {}",
+                a.path
+            )));
+        }
+        if out.len() > max {
+            return Err(bad("profile lists too many provided artifacts"));
+        }
+    }
+    Ok(out)
+}
+
+/// Extracts what the installer provides for the later steps into the shared libraries directory.
 ///
-/// Modern: every file below `maven/` goes to `libraries/<rest>` unless it is already there; a
-/// library the profile marks as installer-provided (empty `url`) must be among them. Legacy: the
-/// universal jar goes to its Maven path and the matching library in `contents.version` is rewritten
-/// to point at it (empty `url`, real SHA-1 and size).
+/// Modern: only the artifacts the profile marks as installer-provided (empty `url`) are taken from
+/// `maven/<path>`. Each is checked against the SHA-1 the profile declares: a matching file on disk
+/// is kept, anything else is replaced by the entry from this installer, but only after the entry
+/// bytes matched; on a mismatch nothing is left at the destination and it is an error. Every other
+/// entry (including sidecars such as `.sha1`) is ignored, so an installer cannot plant files in
+/// the cache shared with other loaders. A provided artifact without a valid declared SHA-1 is
+/// refused (all seven real installers declare one). Legacy: the universal jar goes to its Maven
+/// path and the matching library in `contents.version` is rewritten to point at it (empty `url`,
+/// real SHA-1 and size). That jar is rewritten on every install, which fails with an error while a
+/// running game holds it open.
 pub fn extract_embedded(
     installer: &Path,
     contents: &mut InstallerContents,
     libraries: &Path,
 ) -> Result<()> {
-    let limits = Limits {
-        entry: MAX_ENTRY_BYTES,
-        total: MAX_TOTAL_BYTES,
-    };
-    extract_embedded_with(installer, contents, libraries, limits)
+    extract_embedded_with(installer, contents, libraries, LIMITS)
 }
 
 fn extract_embedded_with(
@@ -289,39 +380,25 @@ fn extract_embedded_with(
     libraries: &Path,
     limits: Limits,
 ) -> Result<()> {
-    let mut zip = open(installer)?;
+    let mut zip = open(installer, limits.entries)?;
     let mut budget = 0u64;
     match &contents.kind {
         InstallerKind::Modern(profile) => {
-            let names = zip
-                .file_names()
-                .map(|n| n.map(|n| n.into_owned()))
-                .filter(|n| {
-                    n.as_ref()
-                        .map_or(true, |n| n.starts_with(MAVEN_DIR) && !n.ends_with('/'))
-                })
-                .collect::<std::result::Result<Vec<String>, _>>()
-                .map_err(|e| bad(format!("unreadable entry name: {e}")))?;
-            for name in &names {
-                let dest = join_relative(libraries, &name[MAVEN_DIR.len()..])?;
-                if !dest.is_file() {
-                    extract_entry(&mut zip, name, &dest, &mut budget, limits)?;
+            let provided = provided_artifacts(profile, &contents.version, limits.entries)?;
+            for (rel, sha1) in &provided {
+                let dest = join_relative(libraries, rel)?;
+                if dest.is_file() && sha1_file(&dest).is_ok_and(|h| h == *sha1) {
+                    continue;
                 }
-            }
-            let provided = profile
-                .libraries
-                .iter()
-                .chain(&contents.version.libraries)
-                .filter_map(|l| l.downloads.as_ref()?.artifact.as_ref())
-                .filter(|a| a.url.is_empty());
-            for artifact in provided {
-                check_relative(&artifact.path)?;
-                if !names.iter().any(|n| n[MAVEN_DIR.len()..] == artifact.path) {
+                // A file with the wrong hash must not survive a failed extraction either.
+                let _ = std::fs::remove_file(&dest);
+                let name = format!("{MAVEN_DIR}{rel}");
+                if zip.by_name(&name).is_err() {
                     return Err(bad(format!(
-                        "installer is missing maven/{}, which its profile marks as provided",
-                        artifact.path
+                        "installer is missing {name}, which its profile marks as provided"
                     )));
                 }
+                extract_entry(&mut zip, &name, &dest, &mut budget, limits, Some(sha1))?;
             }
         }
         InstallerKind::Legacy {
@@ -330,8 +407,8 @@ fn extract_embedded_with(
             let rel = maven_path(path).ok_or_else(|| Error::UnsafePath(path.clone()))?;
             let dest = join_relative(libraries, &rel)?;
             let (path, file_path) = (path.clone(), file_path.clone());
-            // Always rewritten: the SHA-1 recorded below must be that of the installer's jar.
-            let size = extract_entry(&mut zip, &file_path, &dest, &mut budget, limits)?;
+            // Always rewritten: the SHA-1 recorded below must be that of this installer jar.
+            let size = extract_entry(&mut zip, &file_path, &dest, &mut budget, limits, None)?;
             let artifact = Artifact {
                 path: rel,
                 url: String::new(),
@@ -356,16 +433,14 @@ fn extract_embedded_with(
 
 /// Extracts single named entries to explicit destinations, sharing one total budget and the usual
 /// per-entry limit. Used for the data files the processors read (e.g. `data/client.lzma`); the
-/// caller has already validated every destination.
+/// caller has already validated every destination. The destinations lie in the per-install work
+/// directory and are rewritten from the installer on every run (never trusted from disk).
 pub fn extract_files(installer: &Path, jobs: &[(String, std::path::PathBuf)]) -> Result<()> {
-    let limits = Limits {
-        entry: MAX_ENTRY_BYTES,
-        total: MAX_TOTAL_BYTES,
-    };
-    let mut zip = open(installer)?;
+    let limits = LIMITS;
+    let mut zip = open(installer, limits.entries)?;
     let mut budget = 0u64;
     for (name, dest) in jobs {
-        extract_entry(&mut zip, name, dest, &mut budget, limits)?;
+        extract_entry(&mut zip, name, dest, &mut budget, limits, None)?;
     }
     Ok(())
 }
@@ -402,6 +477,7 @@ mod tests {
     }
 
     const UNIVERSAL_189: &str = "forge-1.8.9-11.15.1.2318-1.8.9-universal.jar";
+    const REAL_SHA_2859: &str = "bfc07a510e23e5181b6a32fdcea9c9d9a1445a46";
     const FORGE_2859: &str =
         "maven/net/minecraftforge/forge/1.12.2-14.23.5.2859/forge-1.12.2-14.23.5.2859.jar";
 
@@ -477,12 +553,15 @@ mod tests {
     fn reads_modern_spec0_without_processors() {
         let tmp = tempfile::tempdir().unwrap();
         let libs = tmp.path().join("libs");
+        let declared = sha1_hex(b"forge");
+        let profile = PROFILE_2859.replace(REAL_SHA_2859, &declared);
+        let version = VERSION_2859.replace(REAL_SHA_2859, &declared);
         let jar = jar(
             tmp.path(),
             "i.jar",
             &[
-                ("install_profile.json", PROFILE_2859.as_bytes()),
-                ("version.json", VERSION_2859.as_bytes()),
+                ("install_profile.json", profile.as_bytes()),
+                ("version.json", version.as_bytes()),
                 (FORGE_2859, b"forge"),
             ],
         );
@@ -564,53 +643,6 @@ mod tests {
         );
         assert_eq!(p.data["BINPATCH"].client, "/data/client.lzma");
         assert_eq!(c.version.id, "neoforge-26.3.0.115");
-    }
-
-    #[test]
-    fn refuses_embedded_paths_that_escape() {
-        let tmp = tempfile::tempdir().unwrap();
-        let libs = tmp.path().join("work").join("libs");
-        let jar = jar(
-            tmp.path(),
-            "i.jar",
-            &[
-                ("install_profile.json", PROFILE_2859.as_bytes()),
-                ("version.json", VERSION_2859.as_bytes()),
-                ("maven/../../evil.jar", b"evil"),
-            ],
-        );
-        let mut c = read_installer(&jar).unwrap();
-        assert!(matches!(
-            extract_embedded(&jar, &mut c, &libs),
-            Err(Error::UnsafePath(_))
-        ));
-        assert!(!libs.parent().unwrap().join("evil.jar").exists());
-        assert!(!tmp.path().join("evil.jar").exists());
-    }
-
-    #[test]
-    fn refuses_backslash_and_drive_entries() {
-        for name in ["maven/..\\evil.jar", "maven/C:/evil.jar", "maven//evil.jar"] {
-            let tmp = tempfile::tempdir().unwrap();
-            let libs = tmp.path().join("libs");
-            let jar = jar(
-                tmp.path(),
-                "i.jar",
-                &[
-                    ("install_profile.json", PROFILE_2859.as_bytes()),
-                    ("version.json", VERSION_2859.as_bytes()),
-                    (name, b"evil"),
-                ],
-            );
-            let mut c = read_installer(&jar).unwrap();
-            assert!(
-                matches!(
-                    extract_embedded(&jar, &mut c, &libs),
-                    Err(Error::UnsafePath(_))
-                ),
-                "{name:?} must be refused"
-            );
-        }
     }
 
     #[test]
@@ -730,52 +762,294 @@ mod tests {
         );
     }
 
+    /// A modern installer jar whose profile marks every `libs` entry as installer-provided. The
+    /// declared SHA-1 is that of the bytes unless overridden; `extra` entries are added as they are.
+    fn synth(
+        dir: &Path,
+        libs: &[(&str, Option<&str>, &[u8])],
+        extra: &[(&str, &[u8])],
+    ) -> std::path::PathBuf {
+        let libraries: Vec<_> = libs
+            .iter()
+            .enumerate()
+            .map(|(i, (path, sha1, bytes))| {
+                serde_json::json!({
+                    "name": format!("t:l{i}:1"),
+                    "downloads": {"artifact": {
+                        "path": path,
+                        "url": "",
+                        "sha1": sha1.map_or_else(|| sha1_hex(bytes), str::to_string),
+                        "size": bytes.len()
+                    }}
+                })
+            })
+            .collect();
+        let profile = serde_json::json!({
+            "spec": 1, "minecraft": "1.20.1", "json": "/version.json", "libraries": libraries
+        })
+        .to_string();
+        let version = serde_json::json!({
+            "id": "t-1", "mainClass": "m", "inheritsFrom": "1.20.1", "libraries": []
+        })
+        .to_string();
+        let names: Vec<String> = libs.iter().map(|(p, ..)| format!("maven/{p}")).collect();
+        let mut entries: Vec<(&str, &[u8])> = vec![
+            ("install_profile.json", profile.as_bytes()),
+            ("version.json", version.as_bytes()),
+        ];
+        entries.extend(
+            names
+                .iter()
+                .zip(libs)
+                .map(|(n, (_, _, b))| (n.as_str(), *b)),
+        );
+        entries.extend_from_slice(extra);
+        jar(dir, "synth.jar", &entries)
+    }
+
     const SMALL: Limits = Limits {
         entry: 1000,
         total: 1500,
+        entries: 8,
     };
 
     #[test]
-    fn oversized_embedded_entry_is_refused_and_leaves_no_file() {
+    fn extracts_only_provided_artifacts_and_no_sidecars() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        let jar = synth(
+            tmp.path(),
+            &[("a/b/1/b-1.jar", None, b"provided")],
+            &[
+                ("maven/a/b/1/b-1.jar.sha1", sha1_hex(b"evil").as_bytes()),
+                ("maven/x.sha1", b"x"),
+                (
+                    "maven/net/fabricmc/fabric-loader/1/fabric-loader-1.jar",
+                    b"evil",
+                ),
+                (
+                    "maven/net/fabricmc/fabric-loader/1/fabric-loader-1.jar.sha1",
+                    b"x",
+                ),
+            ],
+        );
+        let mut c = read_installer(&jar).unwrap();
+        extract_embedded(&jar, &mut c, &libs).unwrap();
+        assert_eq!(
+            std::fs::read(libs.join("a/b/1/b-1.jar")).unwrap(),
+            b"provided"
+        );
+        let mut files = Vec::new();
+        collect(&libs, &mut files);
+        assert_eq!(files.len(), 1, "{files:?}");
+    }
+
+    fn collect(p: &Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(p).unwrap() {
+            let e = e.unwrap().path();
+            if e.is_dir() {
+                collect(&e, out);
+            } else {
+                out.push(e);
+            }
+        }
+    }
+
+    #[test]
+    fn wrong_hash_file_at_destination_is_replaced_by_the_verified_one() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        std::fs::create_dir_all(libs.join("a/b/1")).unwrap();
+        std::fs::write(libs.join("a/b/1/b-1.jar"), b"foreign").unwrap();
+        let jar = synth(tmp.path(), &[("a/b/1/b-1.jar", None, b"provided")], &[]);
+        let mut c = read_installer(&jar).unwrap();
+        extract_embedded(&jar, &mut c, &libs).unwrap();
+        assert_eq!(
+            std::fs::read(libs.join("a/b/1/b-1.jar")).unwrap(),
+            b"provided"
+        );
+    }
+
+    #[test]
+    fn matching_file_at_destination_is_kept() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        std::fs::create_dir_all(libs.join("a/b/1")).unwrap();
+        std::fs::write(libs.join("a/b/1/b-1.jar"), b"provided").unwrap();
+        // The jar entry is wrong, which would fail if it were extracted.
+        let wrong = sha1_hex(b"provided");
+        let jar = synth(
+            tmp.path(),
+            &[("a/b/1/b-1.jar", Some(&wrong), b"other")],
+            &[],
+        );
+        let mut c = read_installer(&jar).unwrap();
+        extract_embedded(&jar, &mut c, &libs).unwrap();
+        assert_eq!(
+            std::fs::read(libs.join("a/b/1/b-1.jar")).unwrap(),
+            b"provided"
+        );
+    }
+
+    #[test]
+    fn entry_not_matching_the_declared_hash_is_refused_and_leaves_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        let declared = sha1_hex(b"what the profile promises");
+        let jar = synth(
+            tmp.path(),
+            &[("a/b/1/b-1.jar", Some(&declared), b"tampered")],
+            &[],
+        );
+        let mut c = read_installer(&jar).unwrap();
+        let err = extract_embedded(&jar, &mut c, &libs).unwrap_err();
+        assert!(
+            matches!(&err, Error::Installer(m) if m.contains("SHA-1")),
+            "{err}"
+        );
+        let mut files = Vec::new();
+        if libs.exists() {
+            collect(&libs, &mut files);
+        }
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    #[test]
+    fn stale_wrong_file_is_removed_when_the_entry_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        std::fs::create_dir_all(libs.join("a/b/1")).unwrap();
+        std::fs::write(libs.join("a/b/1/b-1.jar"), b"foreign").unwrap();
+        let declared = sha1_hex(b"what the profile promises");
+        let jar = synth(
+            tmp.path(),
+            &[("a/b/1/b-1.jar", Some(&declared), b"tampered")],
+            &[],
+        );
+        let mut c = read_installer(&jar).unwrap();
+        assert!(extract_embedded(&jar, &mut c, &libs).is_err());
+        assert!(!libs.join("a/b/1/b-1.jar").exists());
+    }
+
+    #[test]
+    fn provided_artifact_without_a_declared_hash_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        let jar = synth(tmp.path(), &[("a/b/1/b-1.jar", Some(""), b"x")], &[]);
+        let mut c = read_installer(&jar).unwrap();
+        let err = extract_embedded(&jar, &mut c, &libs).unwrap_err();
+        assert!(
+            matches!(&err, Error::Installer(m) if m.contains("SHA-1")),
+            "{err}"
+        );
+        assert!(!libs.join("a/b/1/b-1.jar").exists());
+    }
+
+    #[test]
+    fn provided_sidecar_paths_are_refused() {
+        for rel in ["a/b/1/b-1.jar.sha1", "a/b/1/b-1.jar.ASC", "a/b/1/b-1.md5"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let libs = tmp.path().join("libs");
+            let jar = synth(tmp.path(), &[(rel, None, b"x")], &[]);
+            let mut c = read_installer(&jar).unwrap();
+            assert!(
+                matches!(
+                    extract_embedded(&jar, &mut c, &libs),
+                    Err(Error::Installer(_))
+                ),
+                "{rel}"
+            );
+            assert!(!libs.join(rel).exists());
+        }
+    }
+
+    #[test]
+    fn hostile_artifact_paths_are_refused_and_write_nothing() {
+        for rel in [
+            "../../evil.jar",
+            "x/../../evil.jar",
+            "x/.. /evil.jar",
+            "x/.../evil.jar",
+            "x/CON",
+            "x/nul.jar",
+            "a.jar:s",
+            "//server/share/evil.jar",
+            "\\\\server\\share\\evil.jar",
+            "x\\evil.jar",
+            "C:/evil.jar",
+        ] {
+            let tmp = tempfile::tempdir().unwrap();
+            let libs = tmp.path().join("work").join("libs");
+            let jar = synth(tmp.path(), &[(rel, None, b"evil")], &[]);
+            let mut c = read_installer(&jar).unwrap();
+            assert!(
+                matches!(
+                    extract_embedded(&jar, &mut c, &libs),
+                    Err(Error::UnsafePath(_))
+                ),
+                "{rel:?} must be refused"
+            );
+            let mut files = Vec::new();
+            collect(tmp.path(), &mut files);
+            let written: Vec<_> = files
+                .iter()
+                .filter(|f| f.file_name().is_some_and(|n| n != "synth.jar"))
+                .collect();
+            assert!(written.is_empty(), "{rel:?}: {written:?}");
+        }
+    }
+
+    #[test]
+    fn entry_count_is_capped() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        let names: Vec<String> = (0..SMALL.entries + 1)
+            .map(|i| format!("maven/pad/{i}.txt"))
+            .collect();
+        let extra: Vec<(&str, &[u8])> = names.iter().map(|n| (n.as_str(), &b""[..])).collect();
+        let jar = synth(tmp.path(), &[("a/b/1/b-1.jar", None, b"x")], &extra);
+        let mut c = read_installer(&jar).unwrap();
+        let err = extract_embedded_with(&jar, &mut c, &libs, SMALL).unwrap_err();
+        assert!(
+            matches!(&err, Error::Installer(m) if m.contains("entries")),
+            "{err}"
+        );
+        assert!(!libs.exists());
+        let mut ok = SMALL;
+        ok.entries = 100;
+        extract_embedded_with(&jar, &mut c, &libs, ok).unwrap();
+    }
+
+    #[test]
+    fn oversized_entry_is_refused_and_leaves_no_file() {
         let tmp = tempfile::tempdir().unwrap();
         let libs = tmp.path().join("libs");
         // Highly compressible, so the jar itself stays tiny.
         let huge = vec![0u8; SMALL.entry as usize + 1];
-        let jar = jar(
-            tmp.path(),
-            "a.jar",
-            &[
-                ("install_profile.json", PROFILE_2859.as_bytes()),
-                ("version.json", VERSION_2859.as_bytes()),
-                (FORGE_2859, &huge),
-            ],
-        );
+        let jar = synth(tmp.path(), &[("a/b/1/b-1.jar", None, &huge)], &[]);
         let mut c = read_installer(&jar).unwrap();
         let err = extract_embedded_with(&jar, &mut c, &libs, SMALL).unwrap_err();
         assert!(
             matches!(&err, Error::Installer(m) if m.contains("size limit")),
             "{err}"
         );
-        let target = libs.join("net/minecraftforge/forge/1.12.2-14.23.5.2859");
-        assert!(!target.join("forge-1.12.2-14.23.5.2859.jar").exists());
-        assert!(!target.join("forge-1.12.2-14.23.5.2859.jar.part").exists());
+        assert!(!libs.join("a/b/1/b-1.jar").exists());
+        assert!(!libs.join("a/b/1/b-1.jar.part").exists());
     }
 
     #[test]
     fn total_extraction_budget_is_enforced() {
         let tmp = tempfile::tempdir().unwrap();
         let libs = tmp.path().join("libs");
-        // Two entries of 800 bytes each fit the per-entry limit but not the total of 1500.
-        let chunk = vec![0u8; 800];
-        let jar = jar(
+        // Two entries of 800 bytes fit the per-entry limit but not the total of 1500.
+        let chunk = [vec![1u8; 800], vec![2u8; 800]];
+        let jar = synth(
             tmp.path(),
-            "a.jar",
             &[
-                ("install_profile.json", PROFILE_NEO.as_bytes()),
-                ("version.json", VERSION_1201.as_bytes()),
-                ("maven/a/b/1/b-1.jar", &chunk),
-                ("maven/a/b/2/b-2.jar", &chunk),
+                ("a/b/1/b-1.jar", None, &chunk[0]),
+                ("a/b/2/b-2.jar", None, &chunk[1]),
             ],
+            &[],
         );
         let mut c = read_installer(&jar).unwrap();
         let err = extract_embedded_with(&jar, &mut c, &libs, SMALL).unwrap_err();
@@ -786,27 +1060,70 @@ mod tests {
         extract_embedded(&jar, &mut c, &libs).unwrap();
     }
 
+    /// Overwrites the declared uncompressed size in the local and central headers of every entry.
+    fn lie_about_size(path: &Path, declared: u32) {
+        let mut b = std::fs::read(path).unwrap();
+        for (sig, off) in [([0x50u8, 0x4b, 3, 4], 22usize), ([0x50, 0x4b, 1, 2], 24)] {
+            let mut i = 0;
+            while i + 4 <= b.len() {
+                if b[i..i + 4] == sig {
+                    b[i + off..i + off + 4].copy_from_slice(&declared.to_le_bytes());
+                    i += 4;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+        std::fs::write(path, b).unwrap();
+    }
+
     #[test]
-    fn existing_files_are_not_overwritten() {
+    fn entry_with_a_lying_size_header_is_refused() {
         let tmp = tempfile::tempdir().unwrap();
         let libs = tmp.path().join("libs");
-        let dest = libs.join("net/minecraftforge/forge/1.12.2-14.23.5.2859");
-        std::fs::create_dir_all(&dest).unwrap();
-        std::fs::write(dest.join("forge-1.12.2-14.23.5.2859.jar"), b"old").unwrap();
+        let big = vec![0u8; 2 * SMALL.entry as usize];
+        let path = tmp.path().join("lie.jar");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        zip.start_file("maven/a/b/1/b-1.jar", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(&big).unwrap();
+        zip.finish().unwrap();
+        lie_about_size(&path, 10);
+        let mut zip = open(&path, 8).unwrap();
+        let mut budget = 0;
+        let dest = libs.join("a/b/1/b-1.jar");
+        let res = extract_entry(
+            &mut zip,
+            "maven/a/b/1/b-1.jar",
+            &dest,
+            &mut budget,
+            SMALL,
+            None,
+        );
+        assert!(
+            res.is_err(),
+            "a lying header must not get 2000 bytes through"
+        );
+        assert!(!dest.exists());
+        assert!(!libs.join("a/b/1/b-1.jar.part").exists());
+    }
+
+    #[test]
+    fn legacy_path_outside_net_minecraftforge_forge_is_refused() {
+        let tmp = tempfile::tempdir().unwrap();
+        let bad_legacy = LEGACY_189.replacen(
+            "\"path\": \"net.minecraftforge:forge:1.8.9-11.15.1.2318-1.8.9\"",
+            "\"path\": \"net.fabricmc:fabric-loader:0.17.3\"",
+            1,
+        );
+        assert_ne!(bad_legacy, LEGACY_189);
         let jar = jar(
             tmp.path(),
             "a.jar",
-            &[
-                ("install_profile.json", PROFILE_2859.as_bytes()),
-                ("version.json", VERSION_2859.as_bytes()),
-                (FORGE_2859, b"new"),
-            ],
+            &[("install_profile.json", bad_legacy.as_bytes())],
         );
-        let mut c = read_installer(&jar).unwrap();
-        extract_embedded(&jar, &mut c, &libs).unwrap();
-        assert_eq!(
-            std::fs::read(dest.join("forge-1.12.2-14.23.5.2859.jar")).unwrap(),
-            b"old"
+        assert!(
+            matches!(read_installer(&jar), Err(Error::Installer(m)) if m.contains("net.minecraftforge:forge"))
         );
     }
 }

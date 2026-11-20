@@ -90,7 +90,8 @@ impl Paths {
 }
 
 /// Joins a relative path taken from remote metadata onto `base`, refusing anything that could
-/// leave it: only plain components, no drive letters, roots, `..`, `:` or backslashes.
+/// leave it: only plain components, no drive letters, roots, `..`, `:` or backslashes, and nothing
+/// Windows would reinterpret (components ending in `.` or a space, device names such as `CON`).
 pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
     let unsafe_path = || Error::UnsafePath(rel.to_string());
     if rel.is_empty() || rel.contains([':', '\\']) {
@@ -99,11 +100,29 @@ pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
     let mut out = base.to_path_buf();
     for component in Path::new(rel).components() {
         match component {
-            Component::Normal(part) => out.push(part),
+            Component::Normal(part) => {
+                if part.to_str().is_none_or(is_windows_reserved) {
+                    return Err(unsafe_path());
+                }
+                out.push(part)
+            }
             _ => return Err(unsafe_path()),
         }
     }
     Ok(out)
+}
+
+/// Components Windows strips or maps to something else: trailing dots and spaces, and device
+/// names (with or without an extension, any case).
+fn is_windows_reserved(name: &str) -> bool {
+    if name.ends_with('.') || name.ends_with(' ') {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4
+            && (stem.starts_with("COM") || stem.starts_with("LPT"))
+            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 /// Version, asset index, runtime and instance ids end up in file names: ASCII alphanumerics and
@@ -156,6 +175,42 @@ mod tests {
                 matches!(join_relative(base, bad), Err(Error::UnsafePath(_))),
                 "{bad:?} must be rejected"
             );
+        }
+    }
+
+    #[test]
+    fn join_relative_refuses_windows_reinterpreted_names() {
+        let base = Path::new("C:/h/libs");
+        for bad in [
+            "a/.. /x",
+            "a/.../x",
+            "a/x.",
+            "a/x ",
+            "a/CON",
+            "a/con.txt",
+            "a/Nul.tar.gz",
+            "AUX",
+            "a/COM1",
+            "a/lpt9.jar",
+            "prn",
+            "a/a.jar:s",
+            "//server/share/x",
+        ] {
+            assert!(
+                matches!(join_relative(base, bad), Err(Error::UnsafePath(_))),
+                "{bad:?} must be rejected"
+            );
+        }
+        for ok in [
+            "a/console.jar",
+            "a/COM10",
+            "a/COM0",
+            "a/com.x",
+            "a/lpt",
+            "a/.hidden",
+            "a/b c/d",
+        ] {
+            join_relative(base, ok).unwrap_or_else(|_| panic!("{ok:?} must be accepted"));
         }
     }
 
