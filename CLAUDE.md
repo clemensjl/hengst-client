@@ -4,6 +4,7 @@ Open-Source-Minecraft-Launcher (Alternative zu Lunar Client). Gesamtplan: docs/P
 
 ## Stack
 - Rust-Workspace: crates/hengst-core (Kern), apps/cli (Binary `hengst`). Desktop-App (Tauri 2 + React) ab Phase 4 unter apps/desktop.
+- Begleitmod unter mod/ (Gradle 9.8.2, JDK 25): `./gradlew :common:test`, `./gradlew buildAll` aus `mod/`.
 - Tests: `cargo test --workspace --all-features`. Lint: `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo fmt --all`.
 
 ## Regeln

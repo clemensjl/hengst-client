@@ -1,0 +1,5 @@
+rootProject.name = 'hengst-mod'
+
+includeBuild 'common'
+includeBuild 'modern'
+includeBuild 'legacy'

@@ -2,3 +2,7 @@
 *.part
 .env
 .superpowers/
+mod/**/build/
+mod/**/.gradle/
+mod/**/run/
+mod/dist/

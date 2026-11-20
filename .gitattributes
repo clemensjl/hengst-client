@@ -1,0 +1,2 @@
+mod/gradlew text eol=lf
+mod/gradlew.bat text eol=crlf

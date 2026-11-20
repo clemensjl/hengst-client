@@ -106,12 +106,9 @@ Drei Ebenen, jede einzeln abschaltbar:
 HUD-Module: FPS, CPS, Keystrokes, Rüstungsanzeige, Trankeffekte, Koordinaten, Richtung, Ping, Uhr, Server-Adresse, Speicher.
 Komfort: Zoom, Freelook, Toggle Sprint/Sneak, Fullbright, Fadenkreuz-Editor, Trefferfarbe, Motion Blur, Chat-Verbesserungen (Zeitstempel, Stapeln, Suche), Nametag-Optionen, Screenshot-Manager, Waypoints (nur wo Server es erlauben).
 
-Zwei Wege:
+Entscheidung 20.11.2026: eigene Begleitmod mit 50 Funktionen für 1.8.9, 1.21.11 und 26.3, von Grund auf geschrieben, kein Code aus geschlossenen Clients. Details und Fahrplan M0 bis M8 in `docs/begleitmod-spec.md`.
 
-- **A: AxolotlClient bündeln** (offen, LGPL, Fabric/Legacy Fabric, deckt 1.8.9 bis aktuell mit HUD-System ab). Schnell, aber fremde Roadmap.
-- **B: Eigene Begleitmod** (Fabric, Multi-Version per Stonecutter). Volle Kontrolle, deutlich mehr Arbeit, Pflege für jede neue Version.
-
-Empfehlung: Start mit A, eigene Mod nur für Dinge, die A nicht kann (Benchmark-Skript, Launcher-Anbindung). Server-Anti-Cheats (Hypixel etc.) erlauben HUD-Mods dieser Art; keine Funktion darf Spielvorteile über Vanilla-Info hinaus geben.
+Server-Anti-Cheats (Hypixel etc.) erlauben HUD-Mods dieser Art; keine Funktion darf Spielvorteile über Vanilla-Info hinaus geben.
 
 ## 7. Launcher-Funktionen (Gesamtliste)
 
@@ -209,7 +206,7 @@ Stand 31.10.2026: Phase 0 (ohne Azure-/CurseForge-Antrag, die liegen bei Clemens
 | 4 Oberfläche MVP | Startseite, Instanzen, Log, Einstellungen | **v0.1 MVP** (Windows) |
 | 5 Inhalte | Modrinth- und CurseForge-Suche, Install, Updates, .mrpack | v0.2 |
 | 6 FPS | Profile, JVM-Tuning, Benchmark | v0.3 mit Messwerten |
-| 7 In-Game | AxolotlClient-Bündel, Begleitmod-Grundlage | v0.4 |
+| 7 In-Game | Begleitmod M0 bis M8 (docs/begleitmod-spec.md), Auslieferung über den Launcher | v0.4 |
 | 8 Ausbau | Server, Crash-Analyse, Backups, Skins, Import, Deep Links, i18n | v0.9 Beta |
 | 9 Release | Linux/macOS, Signatur, Auto-Update, Website, Security-Review | **v1.0** |
 
@@ -230,7 +227,7 @@ Phasen 1 und 5 können parallel laufen (unabhängige Crates), ebenso 6 und 7.
 
 1. Name und GitHub-Ort: `clemensjl`, öffentlich. Name "Hengst Client" (31.10., "Swift Launcher" wegen Namenskollision verworfen)
 2. Entschieden 31.10.: Eigenbau mit Tauri 2 und Rust
-3. Entschieden 31.10.: AxolotlClient bündeln, eigene Begleitmod nur für Lücken (Benchmark, Launcher-Anbindung, Cosmetics)
+3. Entschieden 20.11.2026 (ersetzt 31.10.): eigene Begleitmod statt AxolotlClient, siehe docs/begleitmod-spec.md
 4. Entschieden 31.10.: GPL-3.0
 5. ~~Plattformen im MVP~~ Entschieden 31.10.: nur Windows im MVP, Linux/macOS zu v1.0
 6. Entschieden 31.10.: Cosmetics mit eigenem Backend ja. Kommt nach v0.4 als eigene Phase (Cape/Hut-Server, Darstellung über Begleitmod, nur für Nutzer des Launchers sichtbar, kein Pay-to-win)

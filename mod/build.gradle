@@ -1,0 +1,14 @@
+// Builds all three mod jars and collects them in dist/.
+tasks.register('buildAll', Sync) {
+    dependsOn gradle.includedBuild('common').task(':test')
+    dependsOn gradle.includedBuild('modern').task(':1.21.11:build')
+    dependsOn gradle.includedBuild('modern').task(':26.3:build')
+    dependsOn gradle.includedBuild('legacy').task(':build')
+
+    from 'modern/versions/1.21.11/build/libs'
+    from 'modern/versions/26.3/build/libs'
+    from 'legacy/build/libs'
+    include 'hengst-mod-*.jar'
+    exclude '*-sources.jar'
+    into 'dist'
+}

@@ -1,0 +1,37 @@
+// Shared build script for every Stonecutter version node (versions/<mc>/).
+// 1.21.11 is obfuscated and needs the remapping Loom plugin; 26.3 is unobfuscated.
+def remap = project.property('loom_remap').toBoolean()
+apply plugin: remap ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom'
+
+group = project.maven_group
+version = "${project.mod_version}+${project.minecraft_version}"
+
+base {
+    archivesName = 'hengst-mod'
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    if (remap) {
+        mappings loom.officialMojangMappings()
+    }
+    add(remap ? 'modImplementation' : 'implementation', 'net.fabricmc:fabric-loader:0.20.1')
+    add(remap ? 'modImplementation' : 'implementation', "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}")
+
+    implementation 'io.github.clemensjl.hengst:common:0.1.0'
+    include 'io.github.clemensjl.hengst:common:0.1.0'
+}
+
+processResources {
+    def props = [version: project.version, minecraft_version: project.minecraft_version]
+    inputs.properties props
+
+    filesMatching('fabric.mod.json') {
+        expand props
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = project.java_release as int
+    options.encoding = 'UTF-8'
+}

@@ -1,0 +1,17 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        maven {
+            name = 'Legacy Fabric'
+            url = 'https://maven.legacyfabric.net/'
+        }
+        gradlePluginPortal()
+    }
+}
+
+rootProject.name = 'legacy'
+
+includeBuild '../common'
