@@ -1,17 +1,17 @@
-//! Planning the processors of a modern Forge or NeoForge installer and checking whether an
-//! installation is complete. Nothing here runs a JVM, an installer or a processor.
+//! Planning and running the processors of a modern Forge or NeoForge installer and checking
+//! whether an installation is complete. Processes are started only through a `ProcessRunner`.
 //!
 //! Everything in the install profile is untrusted remote data that ends up on a command line and
 //! in file paths, so each string is validated where it becomes a path or an argument.
 //!
-//! Intended use (Task 11): hash the installer, `plan`, and skip all processors only if
-//! `install_state_valid` is true. Otherwise run the commands in order with the work directory as
-//! current directory, calling `ProcessorCommand::verify_files` right before each spawn and
-//! `check_outputs` after it, then `write_marker`.
+//! Use (see `forge::finish_install`): hash the installer, `plan`, and skip all processors only if
+//! `install_state_valid` is true. Otherwise `run_processors` (which checks the files before and
+//! the outputs after every processor), then `write_marker`.
 
 use std::collections::{HashMap, HashSet};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use super::installer::{extract_files, ModernProfile, Processor};
 use crate::download::sha1_file;
@@ -668,6 +668,97 @@ pub fn install_state_valid(
         }
     }
     Ok(true)
+}
+
+/// Starts one prepared processor command and waits for it. Injected so tests can run the loop
+/// without a JVM.
+pub trait ProcessRunner: Send + Sync {
+    /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none).
+    fn run(&self, cmd: &mut Command) -> std::io::Result<i32>;
+}
+
+/// Starts the real process.
+pub struct SystemRunner;
+
+impl ProcessRunner for SystemRunner {
+    fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+        Ok(cmd.status()?.code().unwrap_or(-1))
+    }
+}
+
+/// Variables a JVM reads options or a classpath from; never inherited by a processor.
+pub const CLEARED_JAVA_ENV: [&str; 4] = [
+    "JAVA_TOOL_OPTIONS",
+    "_JAVA_OPTIONS",
+    "JDK_JAVA_OPTIONS",
+    "CLASSPATH",
+];
+
+fn processor_name(c: &ProcessorCommand) -> String {
+    format!("processor {} ({})", c.index, c.coordinate)
+}
+
+/// `java -cp <jar;classpath> <main_class> <args...>` with `cwd` as working directory, no shell,
+/// every argument a separate OS argument, the JVM option variables removed and stdin closed.
+/// Nothing from the profile comes before the main class.
+fn processor_command(java: &Path, c: &ProcessorCommand, cwd: &Path) -> Result<Command> {
+    let classpath = std::env::join_paths(std::iter::once(&c.jar).chain(&c.classpath))
+        .map_err(|_| bad(format!("{}: invalid classpath", processor_name(c))))?;
+    let mut cmd = Command::new(java);
+    cmd.arg("-cp")
+        .arg(classpath)
+        .arg(&c.main_class)
+        .args(&c.args)
+        .current_dir(cwd)
+        .stdin(Stdio::null());
+    for key in CLEARED_JAVA_ENV {
+        cmd.env_remove(key);
+    }
+    Ok(cmd)
+}
+
+/// Runs the commands one after another. stdout and stderr of every processor go to `log`
+/// (truncated first), each preceded by a header line naming the processor and its arguments.
+/// Right before each start the jar and classpath are checked against their declared SHA-1, and
+/// after a zero exit the declared outputs. Any failure stops the run with an error naming the
+/// processor and the log; a non-zero exit is `Error::Processor`.
+pub fn run_processors(
+    runner: &dyn ProcessRunner,
+    java: &Path,
+    cmds: &[ProcessorCommand],
+    cwd: &Path,
+    log: &Path,
+) -> Result<()> {
+    if let Some(dir) = log.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut out = std::fs::File::create(log)?;
+    let see = || log.display().to_string();
+    for c in cmds {
+        let name = processor_name(c);
+        let fail = |e: Error| bad(format!("{name}: {}; see {}", inner(e), see()));
+        c.verify_files().map_err(fail)?;
+        writeln!(out, "== {name}: {} {}", c.main_class, c.args.join(" "))?;
+        out.flush()?;
+        let mut cmd = processor_command(java, c, cwd)?;
+        cmd.stdout(out.try_clone()?).stderr(out.try_clone()?);
+        let code = runner.run(&mut cmd).map_err(|e| {
+            bad(format!(
+                "{name}: could not start {}: {e}; see {}",
+                java.display(),
+                see()
+            ))
+        })?;
+        if code != 0 {
+            return Err(Error::Processor {
+                jar: name,
+                code,
+                log: log.to_path_buf(),
+            });
+        }
+        c.check_outputs().map_err(fail)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1424,6 +1515,240 @@ mod tests {
         for (line, arg) in lines.zip(nasty) {
             assert_eq!(line, format!("ARG[{arg}]"));
         }
+    }
+
+    // --- running ---------------------------------------------------------------------------
+
+    #[derive(Debug)]
+    struct Call {
+        program: PathBuf,
+        args: Vec<String>,
+        cwd: Option<PathBuf>,
+        envs: Vec<(String, Option<String>)>,
+    }
+
+    /// Records every command instead of starting it; exits with `codes[i]` (default 0).
+    #[derive(Default)]
+    struct Recorder {
+        calls: std::sync::Mutex<Vec<Call>>,
+        codes: Vec<i32>,
+        /// Called with the index of each run, as if the process did something.
+        effect: Option<Box<dyn Fn(usize) + Send + Sync>>,
+    }
+
+    impl ProcessRunner for Recorder {
+        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+            let mut calls = self.calls.lock().unwrap();
+            let i = calls.len();
+            calls.push(Call {
+                program: PathBuf::from(cmd.get_program()),
+                args: cmd
+                    .get_args()
+                    .map(|a| a.to_string_lossy().into_owned())
+                    .collect(),
+                cwd: cmd.get_current_dir().map(Path::to_path_buf),
+                envs: cmd
+                    .get_envs()
+                    .map(|(k, v)| {
+                        (
+                            k.to_string_lossy().into_owned(),
+                            v.map(|v| v.to_string_lossy().into_owned()),
+                        )
+                    })
+                    .collect(),
+            });
+            if let Some(effect) = &self.effect {
+                effect(i);
+            }
+            Ok(self.codes.get(i).copied().unwrap_or(0))
+        }
+    }
+
+    /// Two client processors: the first with a declared output that is already in place.
+    fn two_step() -> (tempfile::TempDir, InstallEnv, Plan) {
+        let sha = sha1_hex(b"out");
+        let (tmp, env, plan) = build(
+            processors_profile(json!([
+                {"jar": "x:tool:1", "classpath": ["x:dep:2"], "args": ["--first", "{LIBRARY_DIR}/o.bin"],
+                    "outputs": {"{LIBRARY_DIR}/o.bin": sha}},
+                {"jar": "x:dep:2", "args": ["--second", "two words"]}
+            ])),
+            "1.20.1",
+        );
+        write(&env.libraries.join("o.bin"), b"out");
+        std::fs::create_dir_all(&env.work).unwrap();
+        (tmp, env, plan)
+    }
+
+    #[test]
+    fn runs_processors_in_order_without_a_shell_and_with_a_clean_environment() {
+        let (_t, env, plan) = two_step();
+        let java = env.root.join("java/bin/java.exe");
+        let log = env.root.join("logs/install.log");
+        let runner = Recorder::default();
+        run_processors(&runner, &java, &plan.commands, &env.work, &log).unwrap();
+        let calls = runner.calls.lock().unwrap();
+        assert_eq!(calls.len(), 2);
+        let cp = format!(
+            "{};{}",
+            plan.commands[0].jar.display(),
+            plan.commands[0].classpath[0].display()
+        );
+        let first = &calls[0];
+        assert_eq!(first.program, java);
+        assert_eq!(first.cwd.as_deref(), Some(env.work.as_path()));
+        assert_eq!(first.args[..3], ["-cp".to_string(), cp, "test.Main".into()]);
+        assert_eq!(first.args[3], "--first");
+        let second = &calls[1];
+        assert_eq!(second.args[1], plan.commands[1].jar.display().to_string());
+        assert_eq!(second.args[2..], ["test.Main", "--second", "two words"]);
+        for call in calls.iter() {
+            let mut removed: Vec<String> = call
+                .envs
+                .iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(k, _)| k.to_ascii_uppercase())
+                .collect();
+            removed.sort();
+            assert_eq!(
+                removed,
+                [
+                    "CLASSPATH",
+                    "JAVA_TOOL_OPTIONS",
+                    "JDK_JAVA_OPTIONS",
+                    "_JAVA_OPTIONS"
+                ]
+            );
+            // Nothing is added to the inherited environment.
+            assert!(call.envs.iter().all(|(_, v)| v.is_none()), "{call:?}");
+        }
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("processor 0 (x:tool:1)"), "{text}");
+        assert!(text.contains("processor 1 (x:dep:2)"), "{text}");
+    }
+
+    #[test]
+    fn failing_processor_stops_the_run_and_names_index_and_log() {
+        let (_t, env, plan) = two_step();
+        let log = env.root.join("logs/install.log");
+        let runner = Recorder {
+            codes: vec![3],
+            ..Recorder::default()
+        };
+        let err = run_processors(&runner, Path::new("java"), &plan.commands, &env.work, &log)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Processor { jar, code: 3, log: l } if jar == "processor 0 (x:tool:1)" && *l == log),
+            "{err}"
+        );
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn tampered_processor_jar_is_not_started() {
+        let (_t, env, plan) = two_step();
+        // The first processor replaces the jar the second one is about to run.
+        let second = plan.commands[1].jar.clone();
+        let log = env.root.join("logs/install.log");
+        let runner = Recorder {
+            effect: Some(Box::new(move |_| {
+                std::fs::write(&second, b"tampered").unwrap()
+            })),
+            ..Recorder::default()
+        };
+        let err = run_processors(&runner, Path::new("java"), &plan.commands, &env.work, &log)
+            .unwrap_err();
+        let m = err.to_string();
+        assert!(
+            m.contains("processor 1") && m.contains("SHA-1") && m.contains("install.log"),
+            "{m}"
+        );
+        // The first ran, the second was refused before it started.
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn wrong_output_after_a_processor_is_an_error_naming_it() {
+        let (_t, env, plan) = two_step();
+        write(&env.libraries.join("o.bin"), b"not what was declared");
+        let log = env.root.join("logs/install.log");
+        let runner = Recorder::default();
+        let err = run_processors(&runner, Path::new("java"), &plan.commands, &env.work, &log)
+            .unwrap_err();
+        let m = err.to_string();
+        assert!(
+            m.contains("processor 0") && m.contains("o.bin") && m.contains("install.log"),
+            "{m}"
+        );
+        assert_eq!(runner.calls.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn real_failing_child_process_is_reported_with_its_output_in_the_log() {
+        let (_t, env, plan) = two_step();
+        let log = env.root.join("logs/install.log");
+        // where.exe rejects `-cp` and exits with a non-zero code; it stands in for a JVM.
+        let helper = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("where.exe");
+        let err =
+            run_processors(&SystemRunner, &helper, &plan.commands, &env.work, &log).unwrap_err();
+        assert!(
+            matches!(&err, Error::Processor { jar, code, .. } if jar.starts_with("processor 0") && *code != 0),
+            "{err}"
+        );
+        // The helper's own error message (console code page, localized) follows the header.
+        let text = String::from_utf8_lossy(&std::fs::read(&log).unwrap()).into_owned();
+        let mut lines = text.lines();
+        assert!(
+            lines
+                .next()
+                .unwrap()
+                .starts_with("== processor 0 (x:tool:1)"),
+            "{text}"
+        );
+        assert!(lines.next().is_some_and(|l| !l.trim().is_empty()), "{text}");
+    }
+
+    #[test]
+    fn missing_executable_is_an_error_naming_the_processor() {
+        let (_t, env, plan) = two_step();
+        let log = env.root.join("logs/install.log");
+        let err = run_processors(
+            &SystemRunner,
+            &env.root.join("no-such-java.exe"),
+            &plan.commands,
+            &env.work,
+            &log,
+        )
+        .unwrap_err();
+        let m = err.to_string();
+        assert!(
+            m.contains("processor 0") && m.contains("install.log"),
+            "{m}"
+        );
+    }
+
+    /// A real JVM with a main class that does not exist exits with 1. Needs a Java runtime: set
+    /// `HENGST_TEST_JAVA` to a java.exe, or have the managed runtime of a live run under
+    /// `%TEMP%\hengst-live`.
+    #[test]
+    #[ignore]
+    fn real_java_with_missing_main_class_fails() {
+        let java = std::env::var_os("HENGST_TEST_JAVA")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                std::env::temp_dir().join("hengst-live/java/java-runtime-delta/bin/java.exe")
+            });
+        assert!(java.is_file(), "no Java at {}", java.display());
+        let (_t, env, mut plan) = two_step();
+        plan.commands[0].main_class = "does.not.Exist".into();
+        let log = env.root.join("logs/install.log");
+        let err =
+            run_processors(&SystemRunner, &java, &plan.commands, &env.work, &log).unwrap_err();
+        assert!(matches!(&err, Error::Processor { code: 1, .. }), "{err}");
+        let text = std::fs::read_to_string(&log).unwrap();
+        assert!(text.contains("does.not.Exist"), "{text}");
     }
 
     // --- install state ---------------------------------------------------------------------
