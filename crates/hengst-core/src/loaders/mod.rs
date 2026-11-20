@@ -1,3 +1,4 @@
+pub mod fabric;
 pub mod merge;
 
 use std::cmp::Ordering;
