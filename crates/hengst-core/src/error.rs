@@ -24,6 +24,8 @@ pub enum Error {
     NoRuntime { component: String, platform: String },
     #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
     OfflineLaunchDisabled,
+    #[error("Windows Credential Manager error: {0}")]
+    CredentialStore(String),
     #[error(transparent)]
     Auth(#[from] crate::auth::AuthError),
     #[error(transparent)]

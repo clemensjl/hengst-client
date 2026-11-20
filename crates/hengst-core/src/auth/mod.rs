@@ -4,6 +4,7 @@ pub mod error;
 pub mod flow;
 pub mod minecraft;
 pub mod msa;
+pub mod store;
 pub mod xbox;
 
 pub use error::AuthError;

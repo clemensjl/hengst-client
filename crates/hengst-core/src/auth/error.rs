@@ -28,9 +28,9 @@ pub enum AuthError {
     GameNotOwned,
     #[error("this account owns the game but has no player name yet; choose one on minecraft.net, then try again")]
     NoProfile,
-    #[error("no saved account matches {selector}")]
+    #[error("no account matches \"{selector}\"; run \"hengst accounts\" to list them")]
     AccountNotFound { selector: String },
-    #[error("no account is signed in; run \"hengst login\"")]
+    #[error("no Microsoft account signed in; run \"hengst login\" first")]
     NoAccount,
     #[error("unexpected response from {0}")]
     BadResponse(&'static str),

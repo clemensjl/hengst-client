@@ -26,6 +26,10 @@ impl Paths {
         &self.root
     }
 
+    pub fn accounts_file(&self) -> PathBuf {
+        self.root.join("accounts.json")
+    }
+
     pub fn manifest_file(&self) -> PathBuf {
         self.root.join("meta").join("version_manifest_v2.json")
     }
@@ -202,5 +206,6 @@ mod tests {
             PathBuf::from("C:/h/java/jre-legacy")
         );
         assert_eq!(p.instance("pvp"), PathBuf::from("C:/h/instances/pvp"));
+        assert_eq!(p.accounts_file(), PathBuf::from("C:/h/accounts.json"));
     }
 }
