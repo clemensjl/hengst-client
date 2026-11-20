@@ -34,23 +34,42 @@ import java.time.Clock;
 
 /**
  * The one object the game adapters talk to. It owns the registry, the stored settings and profile, the HUD renderer
- * and the counters, and turns the adapters' hooks into work. Client thread only.
+ * and the counters, and turns the adapters' hooks into work.
  *
- * <p>Saving is batched: when a screen closes, at most every two seconds from the client tick while changes are
- * pending, and in {@link #shutdown}. A failed save keeps the pending state, so the next attempt retries.
- * The frame and tick hooks allocate nothing in the healthy case, and no exception from a module or screen leaves them.
+ * <p>Contract for adapter authors:
+ * <ul>
+ * <li>All methods, including {@link #start} and {@link #shutdown}, run on the client thread. Never call
+ * {@link #shutdown} from a JVM shutdown hook.</li>
+ * <li>{@link #start} may be called from the client mod initializer. It uses only the platform's version, config
+ * directory and {@code logWarning}, and reads files synchronously. No hook may fire before it returned. If it
+ * throws, the adapter keeps no core and treats every hook as a no-op.</li>
+ * <li>Hooks are safe after {@link #shutdown}; a change made later is saved again by the tick.</li>
+ * <li>{@link Platform#game()} and {@link Platform#input()} return long-lived objects and must not allocate.</li>
+ * <li>No exception from a module or screen leaves a hook. The frame and tick hooks allocate nothing in the healthy
+ * case.</li>
+ * <li>Saves are rate-limited: a pending change is written on the next tick at least 2 s after the previous save
+ * attempt, on every screen close and in {@link #shutdown}. A failing save is retried every 2 s and logged once.</li>
+ * <li>The platform's screen host: see {@link #onOpenSettingsKey} and {@link Platform#closeScreen()} for the removal
+ * rule. The screens handed to {@link Platform#openScreen} never throw.</li>
+ * <li>First start: the four M0 modules are enabled in memory at their default places and nothing is written until
+ * the first change. A broken profile file that was moved aside as a backup counts as a first start; an unreadable
+ * file or one from a newer version does not (nothing is written over it, no module is enabled).</li>
+ * </ul>
  */
 public final class HengstCore {
     private static final long SAVE_INTERVAL_NANOS = 2_000_000_000L;
 
-    // Failure sites: each logs once (the save site logs again after a success followed by a new failure).
+    // Failure sites. Each logs once per distinct exception class and is re-armed by the next success of that site.
     private static final int SITE_RENDER = 0;
     private static final int SITE_TICK = 1;
     private static final int SITE_MOUSE = 2;
     private static final int SITE_SCREEN = 3;
     private static final int SITE_OPEN = 4;
     private static final int SITE_SAVE = 5;
-    private static final int SITES = 6;
+    private static final int SITE_FRAME = 6;
+    private static final int SITE_SETTINGS = 7;
+    private static final int SITES = 8;
+    private static final int MAX_KINDS = 4;
 
     private final Platform platform;
     private final TimeSource time;
@@ -62,13 +81,18 @@ public final class HengstCore {
     private final CpsCounter cps;
     private final HudContext ctx;
     private final HudRenderer renderer;
-    private final boolean[] failureLogged = new boolean[SITES];
+    private final Class<?>[][] loggedKinds = new Class<?>[SITES][MAX_KINDS];
+    private final int[] loggedCount = new int[SITES];
     private final boolean[] held = new boolean[2];
 
     private Profile profile;
     // The name the loaded profile belongs to; saves go there, and only while it is still the active one.
     private String profileName;
     private boolean dirty;
+    // The loaded profile exists only in memory (first start): the next save request writes it even if nothing changed.
+    private boolean unwritten;
+    // settings.json does not yet name the active profile (a write after a delete failed): retried with the saves.
+    private boolean settingsDirty;
     private long lastSaveNanos;
     private Session current;
 
@@ -91,6 +115,7 @@ public final class HengstCore {
                 && !settingsStore.settingsLoadFailed();
         if (firstStart) {
             applyFirstStartDefaults(profile);
+            unwritten = true;
         }
         frames = new FrameCounter(time);
         cps = new CpsCounter(time);
@@ -100,6 +125,7 @@ public final class HengstCore {
         lastSaveNanos = time.nanoTime();
     }
 
+    /** See the class comment for when to call it. Throws only if the platform itself fails. */
     public static HengstCore start(Platform platform, TimeSource time) {
         return start(platform, time, Clock.systemDefaultZone());
     }
@@ -125,43 +151,76 @@ public final class HengstCore {
 
     // ---- hooks for the adapters ----
 
-    /** Once per rendered frame, after the game drew its own HUD. Counts the frame even if nothing is drawn. */
+    /**
+     * Exactly once per rendered game frame, from a per-frame hook that also fires under F1 and while screens are
+     * open. It feeds the FPS counter; {@link #onHudRender} does not count frames, because the versions' HUD hooks
+     * stop under F1. Allocation free.
+     */
+    public void onFrame() {
+        try {
+            frames.onFrame();
+            ok(SITE_FRAME);
+        } catch (RuntimeException e) {
+            failure(SITE_FRAME, "frame counter", e);
+        }
+    }
+
+    /**
+     * From the version's HUD hook, with a valid canvas of the current GUI scale. Draws the active modules unless the
+     * HUD is hidden (F1), the player is not in a world or one of the mod's own screens is open; vanilla screens
+     * such as chat and inventory do not hide it. {@code partialTick} is currently unused. Allocation free.
+     */
     public void onHudRender(Canvas canvas, float partialTick) {
-        frames.onFrame();
         try {
             renderer.render(canvas, ctx);
+            ok(SITE_RENDER);
         } catch (RuntimeException e) {
             failure(SITE_RENDER, "HUD render", e);
         }
     }
 
-    /** Once per client tick (20 Hz), also outside a world. */
+    /**
+     * At the end of every client tick (20 Hz), also outside a world and while any screen is open. Ticks the modules,
+     * counts nothing, writes pending changes (at most every 2 s) and ends a mod screen the game dropped without
+     * telling us. Allocation free unless a displayed value changed or a save runs.
+     */
     public void onClientTick() {
         try {
             GameView game = platform.game();
-            if (game.screenOpen()) {
+            boolean screenOpen = game.screenOpen();
+            if (screenOpen) {
                 // A release may have gone to the screen: do not let a stale "held" swallow the next click.
                 held[0] = false;
                 held[1] = false;
             }
-            if (game.inWorld()) {
-                renderer.tick(ctx);
-            }
             Session s = current;
+            if (s != null && !screenOpen) {
+                // The game removed our screen without calling closed(): end the session as a close would.
+                s.run();
+                s = null;
+            }
+            renderer.tick(ctx);
             if (s != null && s.editorModel != null && s.editorModel.dirty()) {
                 dirty = true;
             }
-            if (dirty && time.nanoTime() - lastSaveNanos >= SAVE_INTERVAL_NANOS) {
+            if ((dirty || settingsDirty) && time.nanoTime() - lastSaveNanos >= SAVE_INTERVAL_NANOS) {
                 trySave();
             }
+            ok(SITE_TICK);
         } catch (RuntimeException e) {
             failure(SITE_TICK, "client tick", e);
         }
     }
 
     /**
-     * Every mouse button event of the game, in a world or not, screen open or not. Only the press edge of the left
-     * (0) and right (1) button counts, and only in a world without any screen open.
+     * Every physical mouse button transition, press and release, regardless of key bindings and of open screens:
+     * 0 left, 1 right, 2 middle (ignored). Only the press edge of left and right counts, and only in a world without
+     * any screen open; two presses without a release in between count once. Releases the game routes to a screen
+     * may be missing: the core tolerates that.
+     *
+     * <p>1.8.9: use {@code KeyBinding.setKeyBindState(IZ)V}, which sees press and release ({@code onKeyPressed}
+     * fires on press only), and map the codes {@code -100} to 0 and {@code -99} to 1; keyboard codes are dropped.
+     * Modern versions: {@code MouseHandler.onButton}.
      */
     public void onMouseButton(int button, boolean pressed) {
         if (button < 0 || button > 1) {
@@ -183,60 +242,85 @@ public final class HengstCore {
             }
             held[button] = true;
             cps.onPress(button);
+            ok(SITE_MOUSE);
         } catch (RuntimeException e) {
             failure(SITE_MOUSE, "mouse button", e);
         }
     }
 
-    /** The settings key was pressed. Does nothing if one of the mod's screens is already open. */
+    /**
+     * Once per key-binding press of the settings key, only in a world. Does nothing if one of the mod's screens is
+     * already open.
+     *
+     * <p>Screen removal rule: when the game removes a mod screen (any reason), the adapter first marks its host
+     * screen as removed and then forwards {@code closed()} to the {@link UiScreen}. The core answers with
+     * {@link Platform#closeScreen()}, which must do nothing for a host that is removed or no longer current, so the
+     * game's set-screen is never called re-entrantly. As a safety net the tick ends a session whose screen is gone.
+     *
+     * <p>{@link UiScreen} conventions: mouse coordinates are integer scaled GUI pixels, origin top left, the same
+     * space as {@link Canvas} (modern adapters floor the double positions); {@code mouseDragged} receives the
+     * absolute position; the scroll amount is in wheel notches, positive when the wheel is rolled away from the user
+     * (1.8.9: the sign of the wheel delta); {@code keyPressed} receives key repeats as further presses on all
+     * versions (1.8.9: enable repeat events while the host is open); Escape is forwarded to the screen, not handled
+     * by the host.
+     */
     public void onOpenSettingsKey() {
         if (current != null) {
             return;
         }
         try {
             openSettings();
+            ok(SITE_OPEN);
         } catch (RuntimeException e) {
             failure(SITE_OPEN, "opening the settings", e);
         }
     }
 
-    /** The HUD editor key was pressed. Does nothing if one of the mod's screens is already open. */
+    /** Like {@link #onOpenSettingsKey()} for the HUD editor key. */
     public void onOpenHudEditorKey() {
         if (current != null) {
             return;
         }
         try {
             openEditor();
+            ok(SITE_OPEN);
         } catch (RuntimeException e) {
             failure(SITE_OPEN, "opening the HUD editor", e);
         }
     }
 
-    /** The game is closing: saves pending changes. Safe to call more than once. */
+    /**
+     * When the client stops (client thread, never from a JVM shutdown hook): writes pending changes. Safe to call
+     * more than once; hooks stay usable afterwards.
+     */
     public void shutdown() {
         Session s = current;
         if (s != null && s.editorModel != null && s.editorModel.dirty()) {
             dirty = true;
         }
-        if (dirty) {
+        if (dirty || settingsDirty) {
             trySave();
         }
     }
 
     // ---- for tests ----
 
+    /** For tests: the loaded profile. */
     public Profile activeProfile() {
         return profile;
     }
 
+    /** For tests: the HUD renderer. */
     public HudRenderer renderer() {
         return renderer;
     }
 
+    /** For tests: the shared counters and platform. */
     public HudContext context() {
         return ctx;
     }
 
+    /** For tests: lets a test register an extra feature, then call {@code renderer().rebuild(activeProfile())}. */
     public FeatureRegistry registry() {
         return registry;
     }
@@ -340,33 +424,47 @@ public final class HengstCore {
             // HudEditorClose saved it (no longer dirty) or failed (still dirty: the tick retries).
             dirty = model.dirty();
             if (!dirty) {
+                unwritten = false;
                 lastSaveNanos = time.nanoTime();
-                failureLogged[SITE_SAVE] = false;
+                ok(SITE_SAVE);
             }
         }
     }
 
     // ---- profile and saving ----
 
+    /**
+     * The settings model's switch hook. Normally atomic: on a failed settings.json write nothing changes and the
+     * exception goes up. If the loaded profile is no longer the active one (the model already selected "default"
+     * after deleting it), the in-memory switch is carried out anyway and settings.json is retried by the saves.
+     */
     private void switchProfile(String name) {
+        boolean forced = !ProfileStore.sameName(profileName, settings.activeProfile());
         String old = settings.activeProfile();
         Profile loaded = profileStore.load(name);
         settings.setActiveProfile(name);
+        boolean written = true;
         try {
             settingsStore.save(settings);
         } catch (IOException e) {
-            settings.setActiveProfile(old);
-            throw new UncheckedIOException(e);
+            if (!forced) {
+                settings.setActiveProfile(old);
+                throw new UncheckedIOException(e);
+            }
+            written = false;
+            failure(SITE_SETTINGS, "writing settings.json", e);
         }
+        settingsDirty = !written;
         profile = loaded;
         profileName = name;
         dirty = false;
+        unwritten = false;
         renderer.rebuild(profile);
     }
 
     /** The settings model's save hook: an IO failure goes up as a RuntimeException, the state stays dirty. */
     private void saveForModel() {
-        if (!dirty) {
+        if (!dirty && !unwritten) {
             return;
         }
         try {
@@ -386,27 +484,63 @@ public final class HengstCore {
             lastSaveNanos = time.nanoTime();
         }
         dirty = false;
-        failureLogged[SITE_SAVE] = false;
+        unwritten = false;
+        ok(SITE_SAVE);
         Session s = current;
         if (s != null && s.editorModel != null) {
             s.editorModel.markSaved();
         }
     }
 
-    /** Batched save for tick and shutdown: a failure is logged once and leaves the state dirty. */
-    private void trySave() {
+    private void saveSettings() throws IOException {
         try {
-            saveProfile();
-        } catch (IOException | RuntimeException e) {
-            failure(SITE_SAVE, "saving profile " + profileName, e);
+            settingsStore.save(settings);
+        } finally {
+            lastSaveNanos = time.nanoTime();
+        }
+        settingsDirty = false;
+        ok(SITE_SETTINGS);
+    }
+
+    /** Batched save for tick and shutdown: a failure is logged and leaves the state pending. */
+    private void trySave() {
+        if (dirty) {
+            try {
+                saveProfile();
+            } catch (IOException | RuntimeException e) {
+                failure(SITE_SAVE, "saving profile " + profileName, e);
+            }
+        }
+        if (settingsDirty) {
+            try {
+                saveSettings();
+            } catch (IOException | RuntimeException e) {
+                failure(SITE_SETTINGS, "saving settings.json", e);
+            }
         }
     }
 
-    private void failure(int site, String what, Exception e) {
-        if (!failureLogged[site]) {
-            failureLogged[site] = true;
-            platform.logWarning("Hengst: " + what + " failed: " + e);
+    /** Healthy path of a site: re-arms its failure log. No allocation. */
+    private void ok(int site) {
+        if (loggedCount[site] != 0) {
+            loggedCount[site] = 0;
         }
+    }
+
+    /** Logs a failure once per site and exception class until {@link #ok} re-arms the site. */
+    private void failure(int site, String what, Exception e) {
+        Class<?> kind = e.getClass();
+        int n = loggedCount[site];
+        for (int i = 0; i < n; i++) {
+            if (loggedKinds[site][i] == kind) {
+                return;
+            }
+        }
+        if (n < MAX_KINDS) {
+            loggedKinds[site][n] = kind;
+            loggedCount[site] = n + 1;
+        }
+        platform.logWarning("Hengst: " + what + " failed: " + e);
     }
 
     /** Hands a screen to the platform with every call fenced: an exception never reaches the game. */
@@ -421,6 +555,7 @@ public final class HengstCore {
         public void render(Canvas canvas, int mouseX, int mouseY, float partialTick) {
             try {
                 screen.render(canvas, mouseX, mouseY, partialTick);
+                ok(SITE_SCREEN);
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "drawing a screen", e);
             }
@@ -429,7 +564,9 @@ public final class HengstCore {
         @Override
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
             try {
-                return screen.mouseClicked(mouseX, mouseY, button);
+                boolean r = screen.mouseClicked(mouseX, mouseY, button);
+                ok(SITE_SCREEN);
+                return r;
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "a mouse click on a screen", e);
                 return false;
@@ -439,7 +576,9 @@ public final class HengstCore {
         @Override
         public boolean mouseReleased(int mouseX, int mouseY, int button) {
             try {
-                return screen.mouseReleased(mouseX, mouseY, button);
+                boolean r = screen.mouseReleased(mouseX, mouseY, button);
+                ok(SITE_SCREEN);
+                return r;
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "a mouse release on a screen", e);
                 return false;
@@ -449,7 +588,9 @@ public final class HengstCore {
         @Override
         public boolean mouseDragged(int mouseX, int mouseY, int button) {
             try {
-                return screen.mouseDragged(mouseX, mouseY, button);
+                boolean r = screen.mouseDragged(mouseX, mouseY, button);
+                ok(SITE_SCREEN);
+                return r;
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "a mouse drag on a screen", e);
                 return false;
@@ -459,7 +600,9 @@ public final class HengstCore {
         @Override
         public boolean mouseScrolled(int mouseX, int mouseY, double amount) {
             try {
-                return screen.mouseScrolled(mouseX, mouseY, amount);
+                boolean r = screen.mouseScrolled(mouseX, mouseY, amount);
+                ok(SITE_SCREEN);
+                return r;
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "scrolling on a screen", e);
                 return false;
@@ -469,7 +612,9 @@ public final class HengstCore {
         @Override
         public boolean keyPressed(UiKey key, boolean shift, boolean control) {
             try {
-                return screen.keyPressed(key, shift, control);
+                boolean r = screen.keyPressed(key, shift, control);
+                ok(SITE_SCREEN);
+                return r;
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "a key press on a screen", e);
                 return false;
@@ -480,6 +625,7 @@ public final class HengstCore {
         public void closed() {
             try {
                 screen.closed();
+                ok(SITE_SCREEN);
             } catch (RuntimeException e) {
                 failure(SITE_SCREEN, "closing a screen", e);
             }

@@ -196,7 +196,8 @@ Einstiegspunkte von den Adaptern in `common` (Klasse `io.github.clemensjl.hengst
 ```java
 public static HengstCore start(Platform platform, TimeSource time);
 public void onClientTick();                               // Ende jedes Client-Ticks, 20 Hz
-public void onHudRender(Canvas canvas, float partialTick); // einmal pro Frame
+public void onFrame();                                     // genau einmal pro gerendertem Frame, auch unter F1 und bei offenen Bildschirmen (FPS-Zähler)
+public void onHudRender(Canvas canvas, float partialTick); // aus dem HUD-Hook der Version; zählt keine Frames
 public void onMouseButton(int button, boolean pressed);    // 0 links, 1 rechts, 2 Mitte
 public void onOpenSettingsKey();
 public void onOpenHudEditorKey();
@@ -235,14 +236,15 @@ Gemeinsame Hooks:
 - **HUD:** 1.8.9 `HudRenderCallback.EVENT` (Legacy Fabric API, `onHudRender(client, tickDelta)`) [B]; 1.21.11 `HudElementRegistry.addLast(id, HudElement)` mit `render(GuiGraphics, DeltaTracker)` [B]; 26.3 dasselbe mit `extractRenderState(GuiGraphicsExtractor, DeltaTracker)` [B]. Ein einziges registriertes Element ruft `HengstCore.onHudRender`.
 - **Tick:** `ClientTickEvents.END_CLIENT_TICK` in allen drei APIs [B].
 - **Tasten:** 1.8.9 `KeyBindingHelper.registerKeyBinding(KeyBinding)` [B]; 1.21.11 `KeyBindingHelper.registerKeyBinding(KeyMapping)` [B]; 26.3 `KeyMappingHelper.registerKeyMapping(KeyMapping)` [B].
-- **Klicks:** 1.8.9 Mixin `KeyBinding.onKeyPressed(I)V` (statisch, Maustasten kommen dort als `button - 100` an) [B Name, K Semantik]; modern Mixin `MouseHandler.onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V` HEAD [B].
+- **Frames:** `HengstCore.onFrame()` kommt aus einem Hook, der in jedem gerenderten Frame läuft, auch unter F1 und bei offenen Bildschirmen. Die HUD-Hooks der Versionen laufen unter F1 nicht, deshalb zählt `onHudRender` keine Frames.
+- **Klicks:** 1.8.9 Mixin `KeyBinding.setKeyBindState(IZ)V` (statisch, Drücken und Loslassen; Maustasten kommen als `button - 100` an: `-100` links = 0, `-99` rechts = 1, Tastaturcodes werden verworfen). `KeyBinding.onKeyPressed(I)V` taugt nicht, es feuert nur beim Drücken und der Kantenfilter würde nach dem ersten Klick nichts mehr zählen [B Name, K Semantik]; modern Mixin `MouseHandler.onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V` HEAD [B].
 - **Bildschirm öffnen:** 1.8.9 `MinecraftClient.setScreen(Screen)` [B]; 1.21.11 `Minecraft.setScreen(Screen)` [B]; 26.3 `Gui.setScreen(Screen)` [B].
 - **Welt-Rendern:** 1.8.9 Mixin `GameRenderer.renderWorld(IFJ)V` [B]; 1.21.11 `WorldRenderEvents` [B]; 26.3 `LevelRenderEvents` [B].
 - **Chat empfangen:** modern `ClientReceiveMessageEvents` [B]; 1.8.9 Mixin `ChatHud.addMessage(Text, int)` [B Name].
 
 | Nr | Feature | 1.8.9 | 1.21.11 | 26.3 | Hook / Hinweis |
 |---|---|---|---|---|---|
-| 1 | FPS | ja | ja | ja | common: Frame-Zähler im HUD-Hook, Text einmal pro Sekunde |
+| 1 | FPS | ja | ja | ja | common: Frame-Zähler über `onFrame()`, Text einmal pro Sekunde |
 | 2 | CPS | ja | ja | ja | Klick-Hook (oben); links/rechts getrennt |
 | 3 | Keystrokes (WASD, Maus, Leertaste) | ja | ja | ja | `InputView.isDown` pro Frame: 1.8.9 `GameOptions.forwardKey ... attackKey/useKey/jumpKey` + `KeyBinding.isPressed()` [B]; modern `KeyMapping.isDown()` [K] |
 | 4 | Rüstung mit Haltbarkeit | ja | ja | ja | Tick liest Rüstungsplätze: 1.8.9 `PlayerInventory.armor` [K]; modern `getItemBySlot(EquipmentSlot)` [K]; Item-Icon: 1.21.11 `GuiGraphics.renderItem` [K], 26.3 [K] |

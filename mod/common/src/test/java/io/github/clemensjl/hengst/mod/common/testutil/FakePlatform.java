@@ -31,7 +31,10 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public List<String> warnings = new ArrayList<String>();
     public UiScreen openedScreen;
     public int closeCount;
+    private boolean hostRemoved;
     public Path configDir;
+    /** If set, {@link #screenOpen()} throws it (a platform call that fails). */
+    public RuntimeException screenOpenFailure;
 
     public FakePlatform(Path configDir) {
         this.configDir = configDir;
@@ -71,13 +74,29 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public void openScreen(UiScreen screen) {
         openedScreen = screen;
         screenOpen = true;
+        hostRemoved = false;
     }
 
     @Override
     public void closeScreen() {
+        // Same contract as the real hosts: nothing happens for a screen that is removed or no longer current.
+        if (hostRemoved || (openedScreen != null && !screenOpen)) {
+            return;
+        }
         openedScreen = null;
         screenOpen = false;
         closeCount++;
+    }
+
+    /** The game removes the open screen on its own: the host is marked removed first, then closed() is forwarded. */
+    public void removeScreenFromGame() {
+        UiScreen s = openedScreen;
+        hostRemoved = true;
+        openedScreen = null;
+        screenOpen = false;
+        if (s != null) {
+            s.closed();
+        }
     }
 
     @Override
@@ -117,6 +136,9 @@ public final class FakePlatform implements Platform, GameView, InputView {
 
     @Override
     public boolean screenOpen() {
+        if (screenOpenFailure != null) {
+            throw screenOpenFailure;
+        }
         return screenOpen;
     }
 

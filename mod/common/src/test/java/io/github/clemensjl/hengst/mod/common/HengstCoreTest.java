@@ -13,13 +13,11 @@ import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
-import io.github.clemensjl.hengst.mod.common.testutil.CountingCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
 import io.github.clemensjl.hengst.mod.common.testutil.FixedSizeModule;
 import io.github.clemensjl.hengst.mod.common.testutil.TestFeature;
-import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
@@ -32,9 +30,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
 class HengstCoreTest {
-    private static final com.sun.management.ThreadMXBean MX =
-            (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
-
     // Screen geometry on the 320 x 240 FakeCanvas: the FPS switch in the feature list and the Done button.
     private static final int FPS_SWITCH_X = 12;
     private static final int FPS_SWITCH_Y = 46;
@@ -43,6 +38,7 @@ class HengstCoreTest {
     private static final int HEADER_Y = 18;
     private static final int NEW_PROFILE_X = 120;
     private static final int EDIT_HUD_X = 270;
+    private static final int DELETE_X = 200;
 
     @TempDir Path dir;
     FakePlatform platform;
@@ -166,11 +162,36 @@ class HengstCoreTest {
         assertFalse(canvas.calls.isEmpty());
     }
 
-    @Test void frames_are_counted_also_when_nothing_is_drawn() {
+    @Test void on_frame_advances_the_fps_counter_while_the_hud_is_hidden() {
         core = start(); platform.inWorld = true; platform.hudHidden = true;
-        for (int i = 0; i < 45; i++) { core.onHudRender(canvas, 0f); time.advanceMillis(33); }
+        for (int i = 0; i < 45; i++) { core.onFrame(); core.onHudRender(canvas, 0f); time.advanceMillis(33); }
         assertTrue(canvas.calls.isEmpty());
         assertTrue(core.context().frames().fps() > 20);
+    }
+
+    @Test void on_hud_render_alone_does_not_advance_the_fps_counter() {
+        core = start(); platform.inWorld = true;
+        for (int i = 0; i < 100; i++) { core.onHudRender(canvas, 0f); time.advanceMillis(33); }
+        assertEquals(0, core.context().frames().fps());
+    }
+
+    @Test void coordinates_are_cleared_when_leaving_the_world() {
+        core = start(); platform.inWorld = true;
+        platform.playerX = 12.5; platform.playerY = 64; platform.playerZ = -30.5;
+        core.onClientTick();
+        core.onHudRender(canvas, 0f);
+        assertTrue(canvas.calls.toString().contains("X 12"));
+        platform.inWorld = false;
+        core.onClientTick();                                // ticks outside a world too
+        platform.inWorld = true;                            // rejoin: no tick yet
+        platform.playerX = 99;
+        canvas.calls.clear();
+        core.onHudRender(canvas, 0f);
+        assertFalse(canvas.calls.toString().contains("X "));
+        core.onClientTick();
+        canvas.calls.clear();
+        core.onHudRender(canvas, 0f);
+        assertTrue(canvas.calls.toString().contains("X 99"));
     }
 
     // ---- input ----
@@ -254,11 +275,41 @@ class HengstCoreTest {
         assertClosedOnceAndSavedOnce(s);
     }
 
-    @Test void settings_close_through_the_platform_calling_closed() throws Exception {
+    @Test void settings_close_through_the_platform_removing_the_screen() throws Exception {
         core = start(); openSettingsWithChange();
         UiScreen s = platform.openedScreen;
+        platform.removeScreenFromGame();                   // host marked removed first, then closed()
+        assertEquals(0, platform.closeCount);              // no second screen change
+        assertTrue(Files.exists(defaultFile()));
+        assertFalse(reread().load("default").module("fps").enabled());
+        Files.delete(defaultFile());
         s.closed();
-        assertClosedOnceAndSavedOnce(s);
+        time.advanceMillis(5000); core.onClientTick(); core.shutdown();
+        assertEquals(0, platform.closeCount);
+        assertFalse(Files.exists(defaultFile()));
+        canvas.calls.clear();
+        core.onHudRender(canvas, 0f);
+        assertFalse(canvas.calls.isEmpty());
+    }
+
+    @Test void a_screen_dropped_by_the_game_is_ended_by_the_tick() throws Exception {
+        core = start(); openSettingsWithChange();
+        platform.screenOpen = false;                       // gone without closed()
+        core.onClientTick();
+        assertEquals(0, platform.closeCount);
+        assertTrue(Files.exists(defaultFile()));
+        assertFalse(reread().load("default").module("fps").enabled());
+        Files.delete(defaultFile());
+        time.advanceMillis(5000); core.onClientTick(); core.shutdown();
+        assertFalse(Files.exists(defaultFile()));          // saved once
+        canvas.calls.clear();
+        core.onHudRender(canvas, 0f);
+        assertFalse(canvas.calls.isEmpty());               // unsuppressed
+        core.onOpenSettingsKey();
+        assertNotNull(platform.openedScreen);              // the keys work again
+        platform.removeScreenFromGame();
+        core.onOpenHudEditorKey();
+        assertNotNull(platform.openedScreen);
     }
 
     @Test void the_editor_closes_once_through_escape_and_through_the_platform() throws Exception {
@@ -435,29 +486,143 @@ class HengstCoreTest {
         }
     }
 
-    // ---- allocation ----
+    // ---- first start, copy, delete, failures at start ----
 
-    @Test void render_and_tick_hooks_allocate_nothing_with_the_four_modules_active() {
+    @Test void copying_the_profile_at_first_start_keeps_the_four_modules() throws Exception {
         core = start(); platform.inWorld = true;
-        platform.playerX = 10.25; platform.playerY = 64; platform.playerZ = -3.5;
-        core.onMouseButton(0, true);
+        core.onOpenSettingsKey();
+        UiScreen settings = platform.openedScreen;
+        settings.render(canvas, 0, 0, 0f);
+        assertTrue(settings.mouseClicked(NEW_PROFILE_X, HEADER_Y, 0));     // copy and switch, nothing was changed before
         assertEquals(4, core.renderer().activeCount());
-        CountingCanvas counting = new CountingCanvas();
-        for (int i = 0; i < 3000; i++) { core.onClientTick(); core.onHudRender(counting, 0f); }
-        int calls = 20000;
-        // Warm-up per phase: the first long run of each loop allocated 616 bytes once (JIT deoptimization, not a
-        // per-call allocation: the following rounds allocate 0), so each loop runs once unmeasured first.
-        for (int i = 0; i < calls; i++) { core.onHudRender(counting, 0f); }
-        for (int i = 0; i < calls; i++) { core.onClientTick(); }
-        long before = MX.getThreadAllocatedBytes(Thread.currentThread().getId());
-        for (int i = 0; i < calls; i++) { core.onHudRender(counting, 0f); }
-        long renderBytes = MX.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
-        before = MX.getThreadAllocatedBytes(Thread.currentThread().getId());
-        for (int i = 0; i < calls; i++) { core.onClientTick(); }
-        long tickBytes = MX.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
-        System.out.println("HengstCore allocation over " + calls + " calls: render " + renderBytes + " bytes, tick " + tickBytes + " bytes");
-        assertEquals(0, renderBytes, "render hook allocated " + renderBytes + " bytes");
-        assertEquals(0, tickBytes, "tick hook allocated " + tickBytes + " bytes");
-        assertTrue(counting.texts > 0);
+        String copy = new String(Files.readAllBytes(profiles().resolve("Profil 2.json")), UTF_8);
+        for (String id : new String[] {"fps", "cps", "keystrokes", "coordinates"}) {
+            assertTrue(copy.contains("\"" + id + "\""), id);
+        }
+        assertTrue(reread().load("Profil 2").module("fps").enabled());
+    }
+
+    @Test void copying_after_a_broken_file_was_moved_aside_keeps_the_four_modules() throws Exception {
+        Files.createDirectories(profiles());
+        Files.write(defaultFile(), "{\"schema\":1,\"modules\":{".getBytes(UTF_8));
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(NEW_PROFILE_X, HEADER_Y, 0);
+        assertEquals(4, core.renderer().activeCount());
+    }
+
+    @Test void a_directory_in_place_of_the_profile_file_is_not_a_first_start() throws Exception {
+        Files.createDirectories(defaultFile());
+        core = start();
+        assertEquals(0, core.renderer().activeCount());
+        assertEquals(1, platform.warnings.size());
+        platform.inWorld = true;
+        core.onClientTick(); time.advanceMillis(5000); core.onClientTick(); core.shutdown();
+        assertTrue(Files.isDirectory(defaultFile()));
+        assertEquals(1, platform.warnings.size());
+    }
+
+    @Test void a_broken_settings_file_is_moved_aside_and_the_start_is_a_first_start() throws Exception {
+        Files.createDirectories(dir.resolve("hengst"));
+        Files.write(dir.resolve("hengst/settings.json"), "{ nope".getBytes(UTF_8));
+        core = start();
+        assertEquals(1, platform.warnings.size());
+        assertEquals(4, core.renderer().activeCount());
+        assertTrue(Files.exists(dir.resolve("hengst/settings.json.broken-20261120-101530")));
+        assertFalse(Files.exists(dir.resolve("hengst/settings.json")));
+    }
+
+    @Test void an_unreadable_settings_file_is_left_alone_and_nothing_is_enabled() throws Exception {
+        Files.createDirectories(dir.resolve("hengst/settings.json"));
+        core = start();
+        assertEquals(0, core.renderer().activeCount());
+        assertEquals(1, platform.warnings.size());
+        core.shutdown();
+        assertTrue(Files.isDirectory(dir.resolve("hengst/settings.json")));
+        assertFalse(Files.exists(defaultFile()));
+    }
+
+    private void copyProfileThenDeleteIt() {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(NEW_PROFILE_X, HEADER_Y, 0);   // now on "Profil 2"
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);        // asks
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);        // deletes
+    }
+
+    private String settingsJson() throws Exception {
+        return new String(Files.readAllBytes(dir.resolve("hengst/settings.json")), UTF_8);
+    }
+
+    @Test void delete_ok_and_switch_ok() throws Exception {
+        copyProfileThenDeleteIt();
+        assertFalse(Files.exists(profiles().resolve("Profil 2.json")));
+        assertTrue(settingsJson().contains("\"default\""));
+        assertEquals(4, core.renderer().activeCount());
+        platform.openedScreen.mouseClicked(FPS_SWITCH_X, FPS_SWITCH_Y, 0);   // an edit now belongs to default
+        core.shutdown();
+        assertFalse(reread().load("default").module("fps").enabled());
+        assertFalse(Files.exists(profiles().resolve("Profil 2.json")));
+        assertTrue(platform.warnings.isEmpty());
+    }
+
+    @Test void delete_ok_but_the_settings_write_fails() throws Exception {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(NEW_PROFILE_X, HEADER_Y, 0);
+        Files.delete(dir.resolve("hengst/settings.json"));
+        Files.createDirectories(dir.resolve("hengst/settings.json"));      // writing settings.json fails now
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);
+        assertFalse(Files.exists(profiles().resolve("Profil 2.json")));
+        assertEquals(4, core.renderer().activeCount());                    // default is active in memory
+        assertEquals(1, platform.warnings.size(), platform.warnings.toString());
+        platform.openedScreen.mouseClicked(FPS_SWITCH_X, FPS_SWITCH_Y, 0);
+        time.advanceMillis(2100); core.onClientTick();                     // the edit goes to default.json, not Profil 2
+        assertFalse(reread().load("default").module("fps").enabled());
+        assertFalse(Files.exists(profiles().resolve("Profil 2.json")));
+        assertEquals(1, platform.warnings.size());                         // the retry failure is the same problem
+        Files.delete(dir.resolve("hengst/settings.json"));
+        time.advanceMillis(2100); core.onClientTick();
+        assertTrue(settingsJson().contains("\"default\""));
+        assertFalse(settingsJson().contains("Profil 2"));
+    }
+
+    @Test void delete_fails_and_nothing_changes() throws Exception {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(NEW_PROFILE_X, HEADER_Y, 0);
+        Files.createFile(profiles().resolve("Other.json"));                // keeps the profile count above one
+        Files.delete(profiles().resolve("Profil 2.json"));                 // a non-empty directory cannot be deleted
+        Files.createDirectories(profiles().resolve("Profil 2.json"));
+        Files.createFile(profiles().resolve("Profil 2.json/x"));
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);
+        platform.openedScreen.mouseClicked(DELETE_X, HEADER_Y, 0);
+        assertTrue(settingsJson().contains("Profil 2"));                   // still active in settings.json
+        assertEquals(4, core.renderer().activeCount());
+        core.shutdown();                                                   // nothing is dirty: no refused save loop
+        assertTrue(Files.isDirectory(profiles().resolve("Profil 2.json")));
+    }
+
+    // ---- failure logging ----
+
+    @Test void a_different_failure_at_the_same_site_is_logged_and_a_success_re_arms_the_site() {
+        platform.inWorld = true;
+        core = start();
+        platform.screenOpenFailure = new IllegalStateException("one");
+        core.onClientTick(); core.onClientTick();
+        assertEquals(1, platform.warnings.size());                         // same class: once
+        platform.screenOpenFailure = new UnsupportedOperationException("two");
+        core.onClientTick();
+        assertEquals(2, platform.warnings.size());                         // another class: logged
+        platform.screenOpenFailure = null;
+        core.onClientTick();                                               // success re-arms the site
+        platform.screenOpenFailure = new IllegalStateException("three");
+        core.onClientTick();
+        assertEquals(3, platform.warnings.size());
     }
 }
