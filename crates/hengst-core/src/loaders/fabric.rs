@@ -51,7 +51,7 @@ fn is_missing(e: &Error) -> bool {
     )
 }
 
-fn is_unreachable(e: &Error) -> bool {
+pub(super) fn is_unreachable(e: &Error) -> bool {
     match e {
         Error::Http { .. } => true,
         Error::Status { status, .. } => *status >= 500,

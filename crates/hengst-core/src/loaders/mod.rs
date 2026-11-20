@@ -5,6 +5,10 @@ use std::cmp::Ordering;
 use std::fmt;
 use std::str::FromStr;
 
+use crate::download::{Download, Downloader};
+use crate::paths::Paths;
+use crate::rules::Env;
+use crate::version::VersionJson;
 use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +90,67 @@ impl Default for LoaderEndpoints {
             forge_maven: "https://maven.minecraftforge.net".into(),
             neoforge_maven: "https://maven.neoforged.net".into(),
         }
+    }
+}
+
+/// The loader build a launch resolved to.
+#[derive(Clone, Debug)]
+pub struct ResolvedLoader {
+    pub kind: LoaderKind,
+    pub version: LoaderVersion,
+}
+
+/// Everything `prepare` needs from a resolved loader.
+#[derive(Debug)]
+pub struct LoaderSetup {
+    pub resolved: ResolvedLoader,
+    /// The loader's launcher profile, to be merged onto the vanilla version.
+    pub child: VersionJson,
+    /// Files beyond the profile's libraries that must be fetched.
+    pub extra_downloads: Vec<Download>,
+}
+
+/// Resolves a loader request for a game version: picks the build and fetches its profile.
+/// Fails before anything is downloaded.
+pub async fn prepare_loader(
+    dl: &Downloader,
+    paths: &Paths,
+    ep: &LoaderEndpoints,
+    req: &LoaderRequest,
+    game: &str,
+    _env: &Env,
+) -> Result<LoaderSetup> {
+    match req.kind {
+        LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
+            let version = match fabric::list_versions(dl.client(), ep, req.kind, game).await {
+                Ok(list) => pick_version(&list, req.version.as_deref(), req.kind, game)?.clone(),
+                // Service down but the user named a build: the profile fetch falls back to the
+                // stored copy. The build is not checked against the list.
+                Err(e) => match &req.version {
+                    Some(id) if fabric::is_unreachable(&e) => LoaderVersion {
+                        id: id.clone(),
+                        maven: id.clone(),
+                        stable: false,
+                    },
+                    _ => return Err(e),
+                },
+            };
+            let child =
+                fabric::fetch_profile(dl.client(), paths, ep, req.kind, game, &version.id).await?;
+            Ok(LoaderSetup {
+                resolved: ResolvedLoader {
+                    kind: req.kind,
+                    version,
+                },
+                child,
+                extra_downloads: Vec::new(),
+            })
+        }
+        LoaderKind::Forge | LoaderKind::NeoForge => Err(Error::LoaderUnsupported {
+            loader: req.kind.to_string(),
+            game: game.to_string(),
+            reason: "not implemented yet".into(),
+        }),
     }
 }
 

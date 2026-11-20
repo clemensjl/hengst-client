@@ -159,6 +159,7 @@ async fn main() -> anyhow::Result<()> {
                 account,
                 java,
                 memory_mb: memory,
+                loader: None,
             };
             let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
             if dry_run {
