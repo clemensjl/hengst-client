@@ -98,7 +98,7 @@ pub struct LaunchContext {
 
 const WINDOWS_HEAPDUMP: &str =
     "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump";
-const LEGACY_JVM: &[&str] = &[
+pub const LEGACY_JVM: &[&str] = &[
     "-Djava.library.path=${natives_directory}",
     "-cp",
     "${classpath}",

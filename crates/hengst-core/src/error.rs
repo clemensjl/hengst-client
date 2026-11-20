@@ -24,6 +24,32 @@ pub enum Error {
     NoRuntime { component: String, platform: String },
     #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
     OfflineLaunchDisabled,
+    #[error("no {loader} versions available for Minecraft {game}")]
+    NoLoaderVersions { loader: String, game: String },
+    #[error("{loader} {version} is not available for Minecraft {game} (see `hengst loaders {loader} {game}`)")]
+    UnknownLoaderVersion {
+        loader: String,
+        game: String,
+        version: String,
+    },
+    #[error("{loader} for Minecraft {game} is not supported ({reason})")]
+    LoaderUnsupported {
+        loader: String,
+        game: String,
+        reason: String,
+    },
+    #[error("no checksum available for {url}; refusing to download it unverified")]
+    NoChecksum { url: String },
+    #[error("loader profile inherits from {found}, expected {expected}")]
+    ParentMismatch { expected: String, found: String },
+    #[error("invalid loader installer: {0}")]
+    Installer(String),
+    #[error("loader installer step {jar} failed with exit code {code}, see {log}")]
+    Processor {
+        jar: String,
+        code: i32,
+        log: PathBuf,
+    },
     #[error("Windows Credential Manager error: {0}")]
     CredentialStore(String),
     #[error(transparent)]

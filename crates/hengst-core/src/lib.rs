@@ -9,6 +9,7 @@ pub mod error;
 pub mod java;
 pub mod launch;
 pub mod libraries;
+pub mod loaders;
 pub mod manifest;
 pub mod paths;
 pub mod rules;

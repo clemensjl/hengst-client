@@ -72,6 +72,18 @@ impl Paths {
         self.root.join("java").join(component)
     }
 
+    pub fn loader_dir(&self, loader: &str) -> PathBuf {
+        self.root.join("meta").join("loaders").join(loader)
+    }
+
+    pub fn logs(&self) -> PathBuf {
+        self.root.join("logs")
+    }
+
+    pub fn tmp(&self) -> PathBuf {
+        self.root.join("tmp")
+    }
+
     pub fn instance(&self, name: &str) -> PathBuf {
         self.root.join("instances").join(name)
     }
@@ -206,6 +218,12 @@ mod tests {
             PathBuf::from("C:/h/java/jre-legacy")
         );
         assert_eq!(p.instance("pvp"), PathBuf::from("C:/h/instances/pvp"));
+        assert_eq!(
+            p.loader_dir("fabric"),
+            PathBuf::from("C:/h/meta/loaders/fabric")
+        );
+        assert_eq!(p.logs(), PathBuf::from("C:/h/logs"));
+        assert_eq!(p.tmp(), PathBuf::from("C:/h/tmp"));
         assert_eq!(p.accounts_file(), PathBuf::from("C:/h/accounts.json"));
     }
 }
