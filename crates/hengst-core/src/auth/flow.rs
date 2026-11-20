@@ -44,7 +44,7 @@ impl MicrosoftAuth {
             profile,
             xuid: xsts.xid.unwrap_or_else(|| "0".to_string()),
             minecraft_token: mc.token,
-            minecraft_expires_at: now + mc.expires_in,
+            minecraft_expires_at: now.saturating_add(mc.expires_in),
             refresh_token: msa.refresh_token,
         })
     }

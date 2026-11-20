@@ -2,7 +2,7 @@ use hengst_core::auth::msa::MsaTokens;
 use hengst_core::auth::{AuthEndpoints, MicrosoftAuth};
 use hengst_core::secret::Secret;
 use serde_json::json;
-use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 const UUID: &str = "069A79F444E94726A5BEFCA90E38AAF5";
@@ -28,6 +28,7 @@ async fn mount_chain(server: &MockServer, entitlements: serde_json::Value, xid: 
     }
     Mock::given(method("POST"))
         .and(path("/xuser/user/authenticate"))
+        .and(body_string_contains("d=at-1"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "Token": "xbl-token",
             "DisplayClaims": {"xui": [{"uhs": "uhs1"}]}
@@ -37,6 +38,7 @@ async fn mount_chain(server: &MockServer, entitlements: serde_json::Value, xid: 
         .await;
     Mock::given(method("POST"))
         .and(path("/xsts/xsts/authorize"))
+        .and(body_string_contains("xbl-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "Token": "xsts-token",
             "DisplayClaims": {"xui": [xui]}
@@ -46,6 +48,7 @@ async fn mount_chain(server: &MockServer, entitlements: serde_json::Value, xid: 
         .await;
     Mock::given(method("POST"))
         .and(path("/mc/authentication/login_with_xbox"))
+        .and(body_string_contains("XBL3.0 x=uhs1;xsts-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "access_token": "mc-token", "expires_in": 86400
         })))
@@ -54,12 +57,14 @@ async fn mount_chain(server: &MockServer, entitlements: serde_json::Value, xid: 
         .await;
     Mock::given(method("GET"))
         .and(path("/mc/entitlements/mcstore"))
+        .and(header("authorization", "Bearer mc-token"))
         .respond_with(ResponseTemplate::new(200).set_body_json(entitlements))
         .expect(1)
         .mount(server)
         .await;
     Mock::given(method("GET"))
         .and(path("/mc/minecraft/profile"))
+        .and(header("authorization", "Bearer mc-token"))
         .respond_with(
             ResponseTemplate::new(200).set_body_json(json!({"id": UUID, "name": "Notch"})),
         )
@@ -144,10 +149,11 @@ async fn device_login_runs_the_whole_chain() {
 #[tokio::test]
 async fn game_pass_profile_without_entitlement_is_accepted() {
     let server = MockServer::start().await;
-    mount_chain(&server, json!({"items": []}), None).await;
+    mount_chain(&server, json!({"items": []}), Some("2535400000000002")).await;
     let tokens = msa_tokens(&server).await;
     let s = auth(&server).complete_login(tokens, 5).await.unwrap();
     assert_eq!(s.profile.name, "Notch");
+    assert_eq!(s.xuid, "2535400000000002");
 }
 
 #[tokio::test]
