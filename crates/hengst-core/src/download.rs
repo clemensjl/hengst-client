@@ -1,3 +1,4 @@
+use crate::paths::validate_sha1;
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
@@ -111,6 +112,61 @@ impl Downloader {
         tokio::fs::rename(&tmp, &item.path).await?;
         Ok(())
     }
+}
+
+/// Fills in `sha1` for items without one, from `<path>.sha1` if present, otherwise from
+/// `GET <url>.sha1` (then stored as `<path>.sha1`). HTTP 404 is `Error::NoChecksum`; a body that
+/// is not a SHA-1 is rejected.
+pub async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Result<()> {
+    let todo: Vec<(usize, Download)> = items
+        .iter()
+        .enumerate()
+        .filter(|(_, d)| d.sha1.is_none())
+        .map(|(i, d)| (i, d.clone()))
+        .collect();
+    let found: Vec<(usize, String)> = stream::iter(todo)
+        .map(|(i, item)| async move { Ok::<_, Error>((i, sidecar_sha1(dl, &item).await?)) })
+        .buffer_unordered(dl.concurrency)
+        .try_collect()
+        .await?;
+    for (i, sha1) in found {
+        items[i].sha1 = Some(sha1);
+    }
+    Ok(())
+}
+
+async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
+    let mut file = item.path.clone().into_os_string();
+    file.push(".sha1");
+    let file = PathBuf::from(file);
+    if let Ok(text) = tokio::fs::read_to_string(&file).await {
+        if let Some(hash) = text
+            .split_whitespace()
+            .next()
+            .filter(|h| validate_sha1(h).is_ok())
+        {
+            return Ok(hash.to_ascii_lowercase());
+        }
+    }
+    let url = format!("{}.sha1", item.url);
+    let body = match get_bytes(&dl.client, &url).await {
+        Ok(b) => b,
+        Err(Error::Status { status: 404, .. }) => {
+            return Err(Error::NoChecksum {
+                url: item.url.clone(),
+            })
+        }
+        Err(e) => return Err(e),
+    };
+    let text = String::from_utf8_lossy(&body);
+    let hash = text.split_whitespace().next().unwrap_or("");
+    validate_sha1(hash)?;
+    let hash = hash.to_ascii_lowercase();
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    tokio::fs::write(&file, &hash).await?;
+    Ok(hash)
 }
 
 pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
@@ -250,6 +306,79 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Status { status: 404, .. }));
+    }
+
+    const HELLO_SHA1: &str = "aaf4c61ddcc5e8a2dabede0f3b482cd9aea9434d";
+
+    #[tokio::test]
+    async fn fills_sha1_from_sidecar_and_caches_it() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/lib.jar.sha1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(format!("{HELLO_SHA1}  lib.jar\n")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client());
+        let mut items = vec![item(&server, dir.path(), "lib.jar", None)];
+        fill_missing_sha1(&dl, &mut items).await.unwrap();
+        assert_eq!(items[0].sha1.as_deref(), Some(HELLO_SHA1));
+        let mut again = vec![item(&server, dir.path(), "lib.jar", None)];
+        fill_missing_sha1(&dl, &mut again).await.unwrap();
+        assert_eq!(again[0].sha1, items[0].sha1);
+    }
+
+    #[tokio::test]
+    async fn missing_sidecar_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client());
+        let err = fill_missing_sha1(&dl, &mut [item(&server, dir.path(), "x.jar", None)])
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NoChecksum { url } if url.ends_with("/x.jar")));
+    }
+
+    #[tokio::test]
+    async fn rejects_garbage_sidecar() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>302 Found</html>"))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client());
+        let mut items = vec![item(&server, dir.path(), "g.jar", None)];
+        assert!(matches!(
+            fill_missing_sha1(&dl, &mut items).await,
+            Err(Error::UnsafePath(_))
+        ));
+        assert!(items[0].sha1.is_none());
+        assert!(!dir.path().join("sub").join("g.jar.sha1").exists());
+    }
+
+    #[tokio::test]
+    async fn items_with_sha1_are_left_alone() {
+        let server = MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client());
+        let mut items = vec![item(
+            &server,
+            dir.path(),
+            "k.jar",
+            Some(HELLO_SHA1.to_string()),
+        )];
+        let before = items.clone();
+        fill_missing_sha1(&dl, &mut items).await.unwrap();
+        assert_eq!(items, before);
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 
     #[tokio::test]

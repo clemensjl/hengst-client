@@ -68,6 +68,15 @@ fn native_classifier_arch(name: &str) -> Option<&'static str> {
     )
 }
 
+fn base_url(lib: &Library) -> String {
+    let base = lib.url.clone().unwrap_or_else(|| LIBRARIES_URL.to_string());
+    if base.ends_with('/') {
+        base
+    } else {
+        format!("{base}/")
+    }
+}
+
 pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLibraries> {
     let lib_dir = paths.libraries();
     let mut out = ResolvedLibraries::default();
@@ -79,7 +88,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
     };
 
     for lib in libs {
-        if !rules_allow(&lib.rules, env) {
+        if !rules_allow(&lib.rules, env) || lib.clientreq == Some(false) {
             continue;
         }
         if native_classifier_arch(&lib.name).is_some_and(|arch| arch != env.arch) {
@@ -95,7 +104,26 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
                 .as_ref()
                 .and_then(|d| d.classifiers.as_ref())
                 .and_then(|c| c.get(&classifier));
-            if let Some(a) = artifact {
+            if lib.downloads.is_none() {
+                // Maven-style natives (Legacy Fabric): only the classifier jar exists; its hash
+                // comes from the `.sha1` sidecar.
+                let coords = lib.name.split('@').next().unwrap_or(&lib.name);
+                let rel = maven_path(&format!("{coords}:{classifier}"))
+                    .ok_or_else(|| crate::Error::UnsafePath(lib.name.clone()))?;
+                let path = join_relative(&lib_dir, &rel)?;
+                push(
+                    &mut out,
+                    Download {
+                        url: format!("{}{rel}", base_url(lib)),
+                        path: path.clone(),
+                        sha1: None,
+                    },
+                );
+                out.natives.push(NativeJar {
+                    path,
+                    exclude: exclude.clone(),
+                });
+            } else if let Some(a) = artifact {
                 let path = join_relative(&lib_dir, &a.path)?;
                 push(
                     &mut out,
@@ -112,31 +140,33 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
             }
         }
 
+        // A natives map without `downloads` has no main jar, only the classifier jar above.
+        if lib.natives.is_some() && lib.downloads.is_none() {
+            continue;
+        }
         let artifact = match &lib.downloads {
             Some(d) => d
                 .artifact
                 .as_ref()
                 .map(|a| (a.path.clone(), a.url.clone(), Some(a.sha1.clone()))),
             None => maven_path(&lib.name).map(|rel| {
-                let base = lib.url.clone().unwrap_or_else(|| LIBRARIES_URL.to_string());
-                let base = if base.ends_with('/') {
-                    base
-                } else {
-                    format!("{base}/")
-                };
-                (rel.clone(), format!("{base}{rel}"), None)
+                let sha1 = lib.sha1.clone().or_else(|| lib.checksums.first().cloned());
+                (rel.clone(), format!("{}{rel}", base_url(lib)), sha1)
             }),
         };
         if let Some((rel, url, sha1)) = artifact {
             let path = join_relative(&lib_dir, &rel)?;
-            push(
-                &mut out,
-                Download {
-                    url,
-                    path: path.clone(),
-                    sha1,
-                },
-            );
+            // Empty url: the installer provides the jar. It is on the classpath, never downloaded.
+            if !url.is_empty() {
+                push(
+                    &mut out,
+                    Download {
+                        url,
+                        path: path.clone(),
+                        sha1,
+                    },
+                );
+            }
             if is_native_classifier(&lib.name) {
                 out.natives.push(NativeJar {
                     path: path.clone(),
@@ -260,6 +290,70 @@ mod tests {
         assert_eq!(fabric.sha1, None);
         assert!(!r.downloads.iter().any(|d| d.url.contains("objc")));
         assert_eq!(r.downloads.len(), 4);
+    }
+
+    #[test]
+    fn resolves_legacy_fabric_maven_natives_without_main_jar() {
+        let list = libs(json!([
+            {"name": "org.lwjgl.lwjgl:lwjgl-platform:2.9.4+legacyfabric.17", "url": "https://maven.legacyfabric.net/",
+             "extract": {"exclude": ["META-INF/"]},
+             "natives": {"linux": "natives-linux", "osx": "natives-osx", "windows": "natives-windows"}},
+            {"name": "net.fabricmc:fabric-loader:0.20.1", "url": "https://maven.fabricmc.net/"},
+            {"name": "org.ow2.asm:asm:9.10.1", "url": "https://maven.fabricmc.net/", "sha1": "ada2141c0cc52ee8f5c48cd5fa4ce0e794f22236"}
+        ]));
+        let r = resolve(&list, &Env::windows_x64(), &Paths::new("C:/h")).unwrap();
+        let rel = "org/lwjgl/lwjgl/lwjgl-platform/2.9.4+legacyfabric.17/lwjgl-platform-2.9.4+legacyfabric.17-natives-windows.jar";
+        assert_eq!(r.natives.len(), 1);
+        assert_eq!(r.natives[0].path, Paths::new("C:/h").libraries().join(rel));
+        assert_eq!(r.natives[0].exclude, vec!["META-INF/".to_string()]);
+        assert!(r
+            .downloads
+            .iter()
+            .any(|d| d.url == format!("https://maven.legacyfabric.net/{rel}")));
+        assert!(!r
+            .classpath
+            .iter()
+            .any(|p| p.to_string_lossy().contains("lwjgl-platform")));
+        assert_eq!(r.classpath.len(), 2);
+        let asm = r
+            .downloads
+            .iter()
+            .find(|d| d.url.ends_with("asm-9.10.1.jar"))
+            .unwrap();
+        assert_eq!(
+            asm.sha1.as_deref(),
+            Some("ada2141c0cc52ee8f5c48cd5fa4ce0e794f22236")
+        );
+    }
+
+    #[test]
+    fn legacy_forge_checksums_clientreq_and_installer_provided_jars() {
+        let list = libs(json!([
+            {"name": "jline:jline:2.13", "url": "https://maven.minecraftforge.net/",
+             "checksums": ["2d9530d0a25daffaffda7c35037b046b627bb171"], "serverreq": true, "clientreq": false},
+            {"name": "org.scala-lang:scala-xml_2.11:1.0.2", "url": "https://maven.minecraftforge.net/",
+             "checksums": ["7a80ec00aec122fba7cd4e0d4cdd87ff7e4cb6d0", "62736b01689d56b6d09a0164b7ef9da2b0b9633d"]},
+            {"name": "net.minecraftforge:forge:1.16.5-36.2.34", "downloads": {"artifact": {
+             "path": "net/minecraftforge/forge/1.16.5-36.2.34/forge-1.16.5-36.2.34.jar", "url": "",
+             "sha1": "b05f056824252928b59c746f8a28fe2cf36db6c0", "size": 212608}}}
+        ]));
+        let r = resolve(&list, &Env::windows_x64(), &Paths::new("C:/h")).unwrap();
+        assert_eq!(r.downloads.len(), 1);
+        assert_eq!(
+            r.downloads[0].sha1.as_deref(),
+            Some("7a80ec00aec122fba7cd4e0d4cdd87ff7e4cb6d0")
+        );
+        assert_eq!(r.classpath.len(), 2);
+        assert!(r.classpath[1].ends_with("forge-1.16.5-36.2.34.jar"));
+    }
+
+    #[test]
+    fn rejects_maven_coordinates_that_escape() {
+        let list = libs(json!([{"name": "..:evil:1", "url": "https://x/"}]));
+        assert!(matches!(
+            resolve(&list, &Env::windows_x64(), &Paths::new("C:/h")),
+            Err(crate::Error::UnsafePath(_))
+        ));
     }
 
     #[test]
