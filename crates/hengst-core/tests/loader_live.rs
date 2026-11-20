@@ -1,11 +1,21 @@
 //! Live launches of the Fabric family against the real services. Run one game at a time:
 //! `cargo test -p hengst-core --features dev-offline --test loader_live -- --ignored --test-threads=1`
+//!
+//! A launch passes when, in this order, the game prints an LWJGL line (window and GL context
+//! exist), prints a late-loading marker (texture atlases created after the resource reload:
+//! `blocks.png-atlas` on modern versions, `textures-atlas` on 1.8.9 and 1.12.2), the loader
+//! banner has appeared, the process is still alive 15 s after the late marker, and no new file
+//! appeared in `crash-reports`. That proves the loader, libraries, natives and arguments are
+//! sound up to the end of initial resource loading. It does not prove the title screen is drawn
+//! (no pixels are checked), that worlds load, or that mods work; a crash later than 15 s after
+//! the marker is not seen.
 #![cfg(all(windows, feature = "dev-offline"))]
 
 use hengst_core::args::{Account, AccountKind};
 use hengst_core::launch::{ensure_launch_allowed, prepare, Endpoints, LaunchOptions, DEV_OFFLINE};
 use hengst_core::loaders::{LoaderKind, LoaderRequest};
 use hengst_core::paths::Paths;
+use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
@@ -16,6 +26,7 @@ use std::time::{Duration, Instant};
 static LOCK: Mutex<()> = Mutex::new(());
 
 const LWJGL_MARKERS: [&str; 2] = ["Backend library: LWJGL version", "LWJGL Version: "];
+const LOADED_MARKERS: [&str; 2] = ["blocks.png-atlas", "textures-atlas"];
 const START_TIMEOUT: Duration = Duration::from_secs(240);
 const SETTLE: Duration = Duration::from_secs(15);
 
@@ -59,18 +70,31 @@ fn live_home() -> PathBuf {
     }
 }
 
-/// Java processes started from the live home's managed runtimes, i.e. games of earlier runs.
-/// Other Java programs on the machine (IDEs, build daemons) are not ours and are ignored.
+/// Java processes started from inside the live home, i.e. games of earlier runs. Other Java
+/// programs on the machine (IDEs, build daemons) are not ours and are ignored. The home path is
+/// handed over through the environment so no character in it can break the script.
 fn game_processes(home: &Path) -> String {
-    let script = format!(
-        "Get-CimInstance Win32_Process | Where-Object {{ $_.ExecutablePath -and $_.ExecutablePath.StartsWith('{}', 'OrdinalIgnoreCase') -and $_.Name -like 'java*.exe' }} | ForEach-Object {{ $_.ProcessId.ToString() + ' ' + $_.ExecutablePath }}",
-        home.display()
-    );
+    let mut prefix = home.to_string_lossy().into_owned();
+    if !prefix.ends_with('\\') {
+        prefix.push('\\');
+    }
+    let script = "Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and $_.ExecutablePath.StartsWith($env:HENGST_LIVE_PREFIX, 'OrdinalIgnoreCase') -and $_.Name -like 'java*.exe' } | ForEach-Object { $_.ProcessId.ToString() + ' ' + $_.ExecutablePath }";
     let out = Command::new("powershell")
-        .args(["-NoProfile", "-Command", &script])
+        .args(["-NoProfile", "-Command", script])
+        .env("HENGST_LIVE_PREFIX", prefix)
         .output()
         .expect("powershell runs");
     String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+fn crash_reports(dir: &Path) -> BTreeSet<String> {
+    std::fs::read_dir(dir)
+        .map(|d| {
+            d.filter_map(|e| e.ok())
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn pump<R: std::io::Read + Send + 'static>(
@@ -92,6 +116,8 @@ fn pump<R: std::io::Read + Send + 'static>(
 #[allow(clippy::await_holding_lock)]
 async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Option<&str>) {
     let _serial = LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    // Offline accounts may only start the game in dev-offline builds; fail before any download.
+    ensure_launch_allowed(AccountKind::Offline, DEV_OFFLINE).expect("dev-offline launch allowed");
     // A killed process can linger for a moment; give it a few seconds before judging.
     let mut running = game_processes(&live_home());
     for _ in 0..10 {
@@ -124,28 +150,32 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
         .expect("prepare against the live services");
     println!("prepared in {:?}: {}", t0.elapsed(), p.version_id);
 
-    ensure_launch_allowed(AccountKind::Offline, DEV_OFFLINE).expect("dev-offline launch allowed");
     mute_sound(&p.game_dir).expect("mute sound");
     let log_dir = p.game_dir.join("logs");
     std::fs::create_dir_all(&log_dir).unwrap();
     let log = Arc::new(Mutex::new(
         std::fs::File::create(log_dir.join("hengst-live.log")).unwrap(),
     ));
+    // Crash reports of earlier runs stay as evidence; only new ones fail this run.
+    let crashes = p.game_dir.join("crash-reports");
+    let crashes_before = crash_reports(&crashes);
 
-    let mut child = Command::new(&p.java)
-        .args(&p.args)
-        .current_dir(&p.game_dir)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("spawn the game");
+    let mut guard = ChildGuard(
+        Command::new(&p.java)
+            .args(&p.args)
+            .current_dir(&p.game_dir)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("spawn the game"),
+    );
     let (tx, rx) = mpsc::channel();
-    let _h1 = pump(child.stdout.take().unwrap(), log.clone(), tx.clone());
-    let _h2 = pump(child.stderr.take().unwrap(), log.clone(), tx);
-    let mut guard = ChildGuard(child);
+    let _h1 = pump(guard.0.stdout.take().unwrap(), log.clone(), tx.clone());
+    let _h2 = pump(guard.0.stderr.take().unwrap(), log.clone(), tx);
 
     let started = Instant::now();
     let mut lwjgl_at: Option<Duration> = None;
+    let mut loaded_at: Option<Duration> = None;
     let mut banner_line: Option<String> = None;
     let mut settle_deadline: Option<Instant> = None;
     loop {
@@ -157,6 +187,13 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
             Ok(line) => {
                 if lwjgl_at.is_none() && LWJGL_MARKERS.iter().any(|m| line.contains(m)) {
                     lwjgl_at = Some(started.elapsed());
+                }
+                if lwjgl_at.is_some()
+                    && loaded_at.is_none()
+                    && line.contains("Created: ")
+                    && LOADED_MARKERS.iter().any(|m| line.contains(m))
+                {
+                    loaded_at = Some(started.elapsed());
                     settle_deadline = Some(Instant::now() + SETTLE);
                 }
                 if let Some(b) = banner {
@@ -166,7 +203,11 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // Both pipes closed: the game is gone or closing. Never a pass.
+                let status = guard.0.wait().expect("wait for the game");
+                panic!("game exited with {status} before the settle window ended; see logs/hengst-live.log");
+            }
         }
         if let Ok(Some(status)) = guard.0.try_wait() {
             panic!("game exited early with {status}; see logs/hengst-live.log");
@@ -174,19 +215,28 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
     }
 
     let lwjgl = lwjgl_at.expect("no LWJGL line within 240 s; see logs/hengst-live.log");
-    println!("{version} {kind:?}: LWJGL line after {lwjgl:?}");
+    let loaded = loaded_at.expect("no late-loading marker (atlas created) within 240 s");
+    println!("{version} {kind:?}: LWJGL line after {lwjgl:?}, loaded marker after {loaded:?}");
     if let Some(b) = banner {
         let line = banner_line.unwrap_or_else(|| panic!("banner {b:?} never appeared"));
         println!("banner line: {line}");
     }
     assert!(
         guard.0.try_wait().unwrap().is_none(),
-        "game died within 15 s after start"
+        "game died within 15 s after the loaded marker"
     );
-    let crashes = p.game_dir.join("crash-reports");
-    let n = std::fs::read_dir(&crashes).map(|d| d.count()).unwrap_or(0);
-    assert_eq!(n, 0, "crash reports present in {}", crashes.display());
+    let new: Vec<_> = crash_reports(&crashes)
+        .difference(&crashes_before)
+        .cloned()
+        .collect();
+    assert!(
+        new.is_empty(),
+        "new crash reports in {}: {new:?}",
+        crashes.display()
+    );
+    let killed = Instant::now();
     drop(guard);
+    println!("guard kill and wait took {:?}", killed.elapsed());
 }
 
 #[tokio::test]
@@ -266,6 +316,16 @@ fn mute_sound_rewrites_only_master_volume() {
     mute_sound(dir.path()).unwrap();
     let text = std::fs::read_to_string(dir.path().join("options.txt")).unwrap();
     assert_eq!(text, "fov:0.5\nsoundCategory_master:0.0\n");
+
+    // Duplicate master volume lines collapse to exactly one.
+    std::fs::write(
+        dir.path().join("options.txt"),
+        "soundCategory_master:1.0\nfov:0.5\nsoundCategory_master:0.3\n",
+    )
+    .unwrap();
+    mute_sound(dir.path()).unwrap();
+    let text = std::fs::read_to_string(dir.path().join("options.txt")).unwrap();
+    assert_eq!(text, "soundCategory_master:0.0\nfov:0.5\n");
 
     // No options.txt yet.
     let fresh = tempfile::tempdir().unwrap();
