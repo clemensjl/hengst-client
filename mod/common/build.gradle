@@ -30,5 +30,21 @@ tasks.named('compileTestJava') {
 }
 
 test {
-    useJUnitPlatform()
+    useJUnitPlatform {
+        excludeTags 'interpreted'
+    }
+    finalizedBy 'interpretedTest'
+}
+
+// Allocation tests count bytes per call and must be exact: in the interpreter they are (under the JIT, deoptimization
+// shows up as one-off allocations of the measuring thread).
+tasks.register('interpretedTest', Test) {
+    description = 'Runs the tests tagged "interpreted" with -Xint.'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'interpreted'
+    }
+    jvmArgs '-Xint'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
 }

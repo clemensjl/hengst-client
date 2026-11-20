@@ -9,6 +9,9 @@ public final class OptionSpec {
     private final float min;
     private final float max;
     private final float step;
+    // The decimal values of min and step (0.1f as 0.1), computed once: coerce runs on every option read.
+    private final double decMin;
+    private final double decStep;
     private final String[] values;
 
     private OptionSpec(String key, Kind kind, Object def, float min, float max, float step, String[] values) {
@@ -18,6 +21,8 @@ public final class OptionSpec {
         this.min = min;
         this.max = max;
         this.step = step;
+        this.decMin = Double.parseDouble(Float.toString(min));
+        this.decStep = Double.parseDouble(Float.toString(step));
         this.values = values;
     }
 
@@ -126,11 +131,11 @@ public final class OptionSpec {
                 if (step > 0f) {
                     // The grid is computed on the decimal values (0.1f as 0.1, not 0.100000001490116...), so the
                     // result is the float nearest the grid value: 1.8 is stored as 1.8f, not 1.8000001f.
-                    double decMin = Double.parseDouble(Float.toString(min));
-                    double decStep = Double.parseDouble(Float.toString(step));
                     d = decMin + Math.round((d - decMin) / decStep) * decStep;
                 }
-                return (float) Math.max(min, Math.min(max, d));
+                float f = (float) Math.max(min, Math.min(max, d));
+                // An input that is already on the grid is returned as it is: no new box per read.
+                return raw instanceof Float && ((Float) raw).floatValue() == f ? raw : (Object) f;
             }
             default:
                 if (raw instanceof String) {
