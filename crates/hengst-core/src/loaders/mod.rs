@@ -1,4 +1,5 @@
 pub mod fabric;
+pub mod forge;
 pub mod merge;
 
 use std::cmp::Ordering;
@@ -110,6 +111,30 @@ pub struct LoaderSetup {
     pub extra_downloads: Vec<Download>,
 }
 
+/// Loader builds for a game version, newest first. Errors with `NoLoaderVersions` when there are
+/// none.
+pub async fn list_versions(
+    client: &reqwest::Client,
+    ep: &LoaderEndpoints,
+    kind: LoaderKind,
+    game: &str,
+) -> Result<Vec<LoaderVersion>> {
+    let versions = match kind {
+        LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
+            fabric::list_versions(client, ep, kind, game).await?
+        }
+        LoaderKind::Forge => forge::list_forge(client, ep, game).await?,
+        LoaderKind::NeoForge => forge::list_neoforge(client, ep, game).await?,
+    };
+    if versions.is_empty() {
+        return Err(Error::NoLoaderVersions {
+            loader: kind.to_string(),
+            game: game.to_string(),
+        });
+    }
+    Ok(versions)
+}
+
 /// Resolves a loader request for a game version: picks the build and fetches its profile.
 /// Fails before anything is downloaded.
 pub async fn prepare_loader(
@@ -122,7 +147,7 @@ pub async fn prepare_loader(
 ) -> Result<LoaderSetup> {
     match req.kind {
         LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
-            let version = match fabric::list_versions(dl.client(), ep, req.kind, game).await {
+            let version = match list_versions(dl.client(), ep, req.kind, game).await {
                 Ok(list) => pick_version(&list, req.version.as_deref(), req.kind, game)?.clone(),
                 // Service down but the user named a build: the profile fetch falls back to the
                 // stored copy. The build is not checked against the list.

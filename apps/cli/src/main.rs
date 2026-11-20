@@ -12,7 +12,8 @@ use hengst_core::launch::{
     ensure_launch_allowed, prepare, run, Endpoints, LaunchOptions, DEV_OFFLINE,
 };
 use hengst_core::loaders::{
-    fabric, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion, ResolvedLoader,
+    list_versions, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion,
+    ResolvedLoader,
 };
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
@@ -254,10 +255,8 @@ async fn main() -> anyhow::Result<()> {
             limit,
         } => {
             let game = resolve_game(&paths, &version).await?;
-            // Task 8 routes Forge and NeoForge to their own version lists.
             let versions =
-                fabric::list_versions(&http_client(), &LoaderEndpoints::default(), loader, &game)
-                    .await?;
+                list_versions(&http_client(), &LoaderEndpoints::default(), loader, &game).await?;
             let default = pick_version(&versions, None, loader, &game)?;
             for line in loader_lines(&versions, limit as usize, &default.id) {
                 println!("{line}");
