@@ -5,13 +5,19 @@ use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountKind {
+    Microsoft,
+    Offline,
+}
+
 #[derive(Clone, Debug)]
 pub struct Account {
-    pub name: String,
-    pub uuid: String,
-    pub access_token: String,
-    pub user_type: String,
-    pub xuid: String,
+    name: String,
+    uuid: String,
+    access_token: String,
+    kind: AccountKind,
+    xuid: String,
 }
 
 impl Account {
@@ -25,8 +31,48 @@ impl Account {
             name: name.to_string(),
             uuid: hex::encode(d),
             access_token: "0".into(),
-            user_type: "legacy".into(),
+            kind: AccountKind::Offline,
             xuid: "0".into(),
+        }
+    }
+
+    /// Only the core builds Microsoft accounts, from a verified login.
+    #[allow(dead_code)] // first caller arrives with the auth module
+    pub(crate) fn microsoft(
+        name: String,
+        uuid: String,
+        access_token: String,
+        xuid: String,
+    ) -> Self {
+        Self {
+            name,
+            uuid,
+            access_token,
+            kind: AccountKind::Microsoft,
+            xuid,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn uuid(&self) -> &str {
+        &self.uuid
+    }
+
+    pub fn kind(&self) -> AccountKind {
+        self.kind
+    }
+
+    pub fn xuid(&self) -> &str {
+        &self.xuid
+    }
+
+    pub fn user_type(&self) -> &'static str {
+        match self.kind {
+            AccountKind::Microsoft => "msa",
+            AccountKind::Offline => "legacy",
         }
     }
 }
@@ -121,7 +167,7 @@ fn variables(v: &VersionJson, ctx: &LaunchContext) -> HashMap<&'static str, Stri
         ),
         ("auth_xuid", a.xuid.clone()),
         ("clientid", "0".to_string()),
-        ("user_type", a.user_type.clone()),
+        ("user_type", a.user_type().to_string()),
         ("user_properties", "{}".to_string()),
         ("version_name", v.id.clone()),
         (
@@ -199,11 +245,51 @@ mod tests {
     #[test]
     fn offline_uuid_is_version_3_and_stable() {
         let a = Account::offline("Dev");
-        assert_eq!(a.uuid.len(), 32);
-        assert_eq!(&a.uuid[12..13], "3");
-        assert!(matches!(&a.uuid[16..17], "8" | "9" | "a" | "b"));
-        assert_eq!(a.uuid, Account::offline("Dev").uuid);
-        assert_ne!(a.uuid, Account::offline("Other").uuid);
+        assert_eq!(a.uuid().len(), 32);
+        assert_eq!(&a.uuid()[12..13], "3");
+        assert!(matches!(&a.uuid()[16..17], "8" | "9" | "a" | "b"));
+        assert_eq!(a.uuid(), Account::offline("Dev").uuid());
+        assert_ne!(a.uuid(), Account::offline("Other").uuid());
+    }
+
+    #[test]
+    fn offline_uuid_matches_java_name_uuid_vector() {
+        assert_eq!(
+            Account::offline("Notch").uuid(),
+            "b50ad385829d3141a2167e7d7539ba7f"
+        );
+        assert_eq!(
+            Account::offline("Dev").uuid(),
+            "380df991f603344ca090369bad2a924a"
+        );
+    }
+
+    #[test]
+    fn user_type_follows_account_kind() {
+        let ms = Account::microsoft("Steve".into(), "a".repeat(32), "tok".into(), "123".into());
+        assert_eq!(ms.kind(), AccountKind::Microsoft);
+        assert_eq!(ms.user_type(), "msa");
+        assert_eq!(Account::offline("Dev").user_type(), "legacy");
+    }
+
+    #[test]
+    fn microsoft_account_fills_user_type_and_xuid_args() {
+        let v: VersionJson = serde_json::from_value(json!({
+            "id": "1.21.11", "type": "release", "mainClass": "net.minecraft.client.main.Main",
+            "arguments": {
+                "game": ["--userType", "${user_type}", "--xuid", "${auth_xuid}"],
+                "jvm": ["-cp", "${classpath}"]
+            }
+        }))
+        .unwrap();
+        let mut c = ctx();
+        c.account = Account::microsoft("Steve".into(), "a".repeat(32), "tok".into(), "123".into());
+        let args = build_args(&v, &c);
+        let main = args
+            .iter()
+            .position(|a| a == "net.minecraft.client.main.Main")
+            .unwrap();
+        assert_eq!(&args[main + 1..], &["--userType", "msa", "--xuid", "123"]);
     }
 
     #[test]
@@ -266,7 +352,7 @@ mod tests {
             &args[main + 1..],
             &[
                 "Dev".to_string(),
-                format!("token:0:{}", a.uuid),
+                format!("token:0:{}", a.uuid()),
                 "--gameDir".into(),
                 "C:/g".into(),
                 "--assetsDir".into(),
