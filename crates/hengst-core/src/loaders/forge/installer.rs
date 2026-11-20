@@ -354,6 +354,22 @@ fn extract_embedded_with(
     Ok(())
 }
 
+/// Extracts single named entries to explicit destinations, sharing one total budget and the usual
+/// per-entry limit. Used for the data files the processors read (e.g. `data/client.lzma`); the
+/// caller has already validated every destination.
+pub fn extract_files(installer: &Path, jobs: &[(String, std::path::PathBuf)]) -> Result<()> {
+    let limits = Limits {
+        entry: MAX_ENTRY_BYTES,
+        total: MAX_TOTAL_BYTES,
+    };
+    let mut zip = open(installer)?;
+    let mut budget = 0u64;
+    for (name, dest) in jobs {
+        extract_entry(&mut zip, name, dest, &mut budget, limits)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

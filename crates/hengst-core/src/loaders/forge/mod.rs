@@ -1,6 +1,7 @@
 //! Version lists and installers for Forge and NeoForge.
 
 pub mod installer;
+pub mod processors;
 
 use std::collections::HashMap;
 use std::path::PathBuf;
