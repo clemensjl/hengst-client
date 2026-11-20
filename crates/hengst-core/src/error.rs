@@ -25,6 +25,8 @@ pub enum Error {
     #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
     OfflineLaunchDisabled,
     #[error(transparent)]
+    Auth(#[from] crate::auth::AuthError),
+    #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
