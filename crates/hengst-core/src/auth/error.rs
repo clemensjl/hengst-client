@@ -22,11 +22,11 @@ pub enum AuthError {
     XboxChildAccount,
     #[error("Xbox Live refused the sign-in (XErr {code})")]
     XboxRefused { code: u64 },
-    #[error("the launcher app is not approved for the Minecraft services")]
+    #[error("the Minecraft services rejected this launcher's Azure app (HTTP 403): the client id is not approved by Mojang yet")]
     AppNotApproved,
-    #[error("this account does not own the game")]
+    #[error("this Microsoft account does not own Minecraft: Java Edition")]
     GameNotOwned,
-    #[error("this account has no Minecraft profile")]
+    #[error("this account owns the game but has no player name yet; choose one on minecraft.net, then try again")]
     NoProfile,
     #[error("no saved account matches {selector}")]
     AccountNotFound { selector: String },

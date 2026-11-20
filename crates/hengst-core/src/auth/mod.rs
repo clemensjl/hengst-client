@@ -1,6 +1,7 @@
 //! Microsoft / Xbox / Minecraft sign-in.
 
 pub mod error;
+pub mod minecraft;
 pub mod msa;
 pub mod xbox;
 
@@ -92,6 +93,22 @@ impl MicrosoftAuth {
             req = req.header(*name, *value);
         }
         req.send().await.map_err(http_error(url))
+    }
+
+    /// GET with a bearer token in the `Authorization` header (never in the
+    /// URL); transport errors become `Error::Http`.
+    pub(crate) async fn get_bearer(
+        &self,
+        url: &str,
+        token: &crate::secret::Secret,
+    ) -> Result<reqwest::Response> {
+        self.http
+            .get(url)
+            .header("Accept", "application/json")
+            .bearer_auth(token.expose())
+            .send()
+            .await
+            .map_err(http_error(url))
     }
 }
 
