@@ -1,8 +1,9 @@
-use anyhow::bail;
 use clap::{Parser, Subcommand, ValueEnum};
 use hengst_core::args::Account;
 use hengst_core::download::http_client;
-use hengst_core::launch::{prepare, run, Endpoints, LaunchOptions};
+use hengst_core::launch::{
+    ensure_launch_allowed, prepare, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+};
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
 use std::path::PathBuf;
@@ -94,10 +95,14 @@ async fn main() -> anyhow::Result<()> {
             memory,
             dry_run,
         } => {
+            let account = Account::offline(&username);
+            if !dry_run {
+                ensure_launch_allowed(account.kind(), DEV_OFFLINE)?;
+            }
             let opts = LaunchOptions {
                 version,
                 instance,
-                account: Account::offline(&username),
+                account,
                 java,
                 memory_mb: memory,
             };
@@ -108,9 +113,6 @@ async fn main() -> anyhow::Result<()> {
                     println!("  {arg}");
                 }
                 return Ok(());
-            }
-            if !cfg!(feature = "dev-offline") {
-                bail!("starting the game requires Microsoft login (phase 2); build with --features dev-offline for local testing");
             }
             let code = run(&prepared).await?;
             std::process::exit(code);

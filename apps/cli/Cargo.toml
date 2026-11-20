@@ -10,7 +10,7 @@ name = "hengst"
 path = "src/main.rs"
 
 [features]
-dev-offline = []
+dev-offline = ["hengst-core/dev-offline"]
 
 [dependencies]
 anyhow.workspace = true

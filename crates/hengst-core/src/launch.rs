@@ -165,7 +165,19 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
 }
 
 /// Starts the game and waits for it to exit. Output goes to the current console.
+/// True in builds with the `dev-offline` cargo feature.
+pub const DEV_OFFLINE: bool = cfg!(feature = "dev-offline");
+
+/// Offline accounts may only start the game when `dev_offline` is set.
+pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()> {
+    if kind == AccountKind::Offline && !dev_offline {
+        return Err(Error::OfflineLaunchDisabled);
+    }
+    Ok(())
+}
+
 pub async fn run(p: &Prepared) -> Result<i32> {
+    ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
     let status = tokio::process::Command::new(&p.java)
         .args(&p.args)
         .current_dir(&p.game_dir)
@@ -225,5 +237,24 @@ mod tests {
             Account::offline("Dev"),
         );
         assert_eq!(p.redacted_args(), p.args);
+    }
+
+    #[test]
+    fn offline_needs_dev_offline() {
+        assert!(matches!(
+            ensure_launch_allowed(AccountKind::Offline, false),
+            Err(Error::OfflineLaunchDisabled)
+        ));
+        ensure_launch_allowed(AccountKind::Offline, true).unwrap();
+        ensure_launch_allowed(AccountKind::Microsoft, false).unwrap();
+    }
+
+    #[cfg(not(feature = "dev-offline"))]
+    #[tokio::test]
+    async fn run_refuses_offline_account_in_release_builds() {
+        let mut p = prepared(&[], Account::offline("Dev"));
+        p.java = PathBuf::from("C:/does-not-exist/java.exe");
+        // Not Io: the lock applies before any process is spawned.
+        assert!(matches!(run(&p).await, Err(Error::OfflineLaunchDisabled)));
     }
 }
