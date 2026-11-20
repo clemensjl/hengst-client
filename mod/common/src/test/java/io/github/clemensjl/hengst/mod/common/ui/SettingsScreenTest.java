@@ -485,13 +485,12 @@ class SettingsScreenTest {
         java.util.Map<String, Object> o = savedOptions();
         assertEquals(Boolean.TRUE, o.get("t"));
         assertEquals(Long.valueOf(3), o.get("i"));                                  // a Long in the file, not 3.0
-        // On the grid (the click was at about 1.79): OptionSpec.coerce widens the float step, so the stored
-        // value is 1.8000001 (see report); an uncoerced widget value would be 1.7946 here.
-        assertEquals(1.8, (Double) o.get("f"), 1e-6);
+        // On the grid (the click was at about 1.79); an uncoerced widget value would be 1.7946 here.
+        assertEquals(1.8, (Double) o.get("f"));
         screen.mouseDragged(5000, 0, 0);
-        assertEquals(3.0, (Double) savedOptions().get("f"), 1e-6);
+        assertEquals(3.0, (Double) savedOptions().get("f"));
         screen.mouseDragged(-5000, 0, 0);
-        assertEquals(0.5, (Double) savedOptions().get("f"), 1e-6);
+        assertEquals(0.5, (Double) savedOptions().get("f"));
         screen.mouseReleased(0, 0, 0);
         screen.mouseClicked(200, 161, 0);
         assertEquals("b", savedOptions().get("c"));

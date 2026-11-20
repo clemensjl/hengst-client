@@ -124,7 +124,11 @@ public final class OptionSpec {
                     return def;
                 }
                 if (step > 0f) {
-                    d = min + Math.round((d - min) / step) * (double) step;
+                    // The grid is computed on the decimal values (0.1f as 0.1, not 0.100000001490116...), so the
+                    // result is the float nearest the grid value: 1.8 is stored as 1.8f, not 1.8000001f.
+                    double decMin = Double.parseDouble(Float.toString(min));
+                    double decStep = Double.parseDouble(Float.toString(step));
+                    d = decMin + Math.round((d - decMin) / decStep) * decStep;
                 }
                 return (float) Math.max(min, Math.min(max, d));
             }

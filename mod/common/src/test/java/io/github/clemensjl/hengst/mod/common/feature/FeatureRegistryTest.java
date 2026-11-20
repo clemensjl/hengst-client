@@ -63,6 +63,18 @@ class FeatureRegistryTest {
     }
 
     @Test
+    void float_coerce_snaps_to_the_decimal_grid() {
+        OptionSpec s = OptionSpec.floatRange("s", 1f, 0.5f, 3f, 0.1f);
+        assertEquals(1.8f, (Float) s.coerce(1.79), 0f);
+        assertEquals("1.8", Float.toString((Float) s.coerce(1.7946)));
+        assertEquals("2.7", Float.toString((Float) s.coerce(2.69)));
+        assertEquals(0.5f, (Float) s.coerce(-4.0), 0f);
+        assertEquals(3.0f, (Float) s.coerce(99.0), 0f);
+        OptionSpec q = OptionSpec.floatRange("q", 0.25f, 0f, 1f, 0.25f);
+        assertEquals(0.75f, (Float) q.coerce(0.7), 0f);
+    }
+
+    @Test
     void int_coerce_edge_cases() {
         OptionSpec i = OptionSpec.intRange("d", 1, 0, 5);
         assertEquals(1, i.coerce(Float.NaN));
