@@ -48,8 +48,6 @@ fn valid_profile(p: &Profile) -> bool {
 }
 
 /// Game Pass often returns empty entitlements, so a profile wins.
-// Task 7 (auth/flow.rs) is the first caller; remove this allow there.
-#[allow(dead_code)]
 pub(crate) fn ownership(owns: bool, profile: Option<Profile>) -> Result<Profile> {
     match (profile, owns) {
         (Some(p), _) => Ok(p),

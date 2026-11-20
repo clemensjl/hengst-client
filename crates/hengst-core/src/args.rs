@@ -38,7 +38,6 @@ impl Account {
     }
 
     /// Only the core builds Microsoft accounts, from a verified login.
-    #[allow(dead_code)] // first caller arrives with the auth module
     pub(crate) fn microsoft(
         name: String,
         uuid: String,

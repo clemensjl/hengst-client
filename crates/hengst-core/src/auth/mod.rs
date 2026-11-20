@@ -1,6 +1,7 @@
 //! Microsoft / Xbox / Minecraft sign-in.
 
 pub mod error;
+pub mod flow;
 pub mod minecraft;
 pub mod msa;
 pub mod xbox;
