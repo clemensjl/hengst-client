@@ -13,7 +13,7 @@ public abstract class HudModule extends Feature {
         super(id, number, FeatureGroup.HUD, versions);
     }
 
-    /** Called at 20 Hz while the module is active; the place to rebuild cached text. */
+    /** Called at 20 Hz while the module is active, also outside a world: tolerate that. Rebuild cached text here. */
     public void tick(HudContext ctx, ModuleConfig cfg) {}
 
     /** Unscaled width in GUI pixels. */

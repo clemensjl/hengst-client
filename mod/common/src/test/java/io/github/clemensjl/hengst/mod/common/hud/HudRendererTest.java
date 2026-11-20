@@ -172,12 +172,24 @@ class HudRendererTest {
     }
 
     @Test
-    void renders_nothing_while_a_screen_is_open() {
+    void renders_while_a_vanilla_screen_is_open() {
         HudRenderer r = rendererWith("a", new ModuleConfig[1]);
         platform.screenOpen = true;
         FakeCanvas c = new FakeCanvas();
         r.render(c, ctx);
+        assertTrue(!c.calls.isEmpty());
+    }
+
+    @Test
+    void renders_nothing_while_suppressed() {
+        HudRenderer r = rendererWith("a", new ModuleConfig[1]);
+        r.setSuppressed(true);
+        FakeCanvas c = new FakeCanvas();
+        r.render(c, ctx);
         assertTrue(c.calls.isEmpty());
+        r.setSuppressed(false);
+        r.render(c, ctx);
+        assertTrue(!c.calls.isEmpty());
     }
 
     @Test
@@ -246,6 +258,7 @@ class HudRendererTest {
         p.module("box").setEnabled(true);
         HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(p);
+        platform.screenOpen = true;
         CountingCanvas counting = new CountingCanvas();
         for (int i = 0; i < 2000; i++) {
             renderer.tick(ctx);

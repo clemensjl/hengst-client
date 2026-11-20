@@ -25,6 +25,7 @@ public final class HudRenderer {
     private final MutableRect rect = new MutableRect();
     private HudModule[] modules = NO_MODULES;
     private ModuleConfig[] configs = NO_CONFIGS;
+    private boolean suppressed;
 
     public HudRenderer(FeatureRegistry registry, GameVersion version) {
         this.registry = registry;
@@ -51,6 +52,11 @@ public final class HudRenderer {
         configs = Arrays.copyOf(c, n);
     }
 
+    /** Set by the owner while one of the mod's own screens (editor, settings) is open. */
+    public void setSuppressed(boolean suppressed) {
+        this.suppressed = suppressed;
+    }
+
     public int activeCount() {
         return modules.length;
     }
@@ -71,10 +77,10 @@ public final class HudRenderer {
         }
     }
 
-    /** Draws nothing when the HUD is hidden (F1), outside a world, or while a screen is open. */
+    /** Draws nothing when suppressed, when the HUD is hidden (F1) or outside a world. Vanilla screens do not hide it. */
     public void render(Canvas canvas, HudContext ctx) {
         GameView game = ctx.platform().game();
-        if (game.hudHidden() || !game.inWorld() || game.screenOpen()) {
+        if (suppressed || game.hudHidden() || !game.inWorld()) {
             return;
         }
         HudModule[] m = modules;
