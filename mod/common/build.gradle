@@ -20,6 +20,11 @@ tasks.withType(JavaCompile).configureEach {
     options.encoding = 'UTF-8'
 }
 
+// com.sun.management (allocation measurement) is not part of release 8; main stays at 8.
+tasks.named('compileTestJava') {
+    options.release = 17
+}
+
 test {
     useJUnitPlatform()
 }
