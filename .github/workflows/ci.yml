@@ -31,3 +31,21 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --offline Dev --dry-run
+
+  loader-matrix:
+    needs: test
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { loader: fabric, version: 1.21.11 }
+          - { loader: fabric, version: latest }
+          - { loader: quilt, version: 1.21.11 }
+          - { loader: legacy-fabric, version: 1.8.9 }
+          - { loader: legacy-fabric, version: 1.12.2 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --loader ${{ matrix.loader }} --offline Dev --dry-run

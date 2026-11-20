@@ -11,9 +11,13 @@ use hengst_core::download::http_client;
 use hengst_core::launch::{
     ensure_launch_allowed, prepare, run, Endpoints, LaunchOptions, DEV_OFFLINE,
 };
+use hengst_core::loaders::{
+    fabric, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion, ResolvedLoader,
+};
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(
@@ -54,9 +58,24 @@ enum Cmd {
         java: Option<PathBuf>,
         #[arg(long, default_value_t = 2048)]
         memory: u32,
+        /// Mod loader: fabric, quilt, legacy-fabric, neoforge or forge
+        #[arg(long, value_parser = LoaderKind::from_str)]
+        loader: Option<LoaderKind>,
+        /// Loader version (default: the newest stable one)
+        #[arg(long, requires = "loader")]
+        loader_version: Option<String>,
         /// Download everything and print the command line instead of starting
         #[arg(long)]
         dry_run: bool,
+    },
+    /// List loader versions for a game version, newest first
+    Loaders {
+        #[arg(value_parser = LoaderKind::from_str)]
+        loader: LoaderKind,
+        /// Game version id, or `latest` / `latest-snapshot`
+        version: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
     },
     /// Sign in with a Microsoft account and save it
     Login,
@@ -102,6 +121,39 @@ impl KindFilter {
     }
 }
 
+/// Warns when the default pick had to fall back to a non-stable loader build.
+fn unstable_note(requested: Option<&str>, resolved: &ResolvedLoader, game: &str) -> Option<String> {
+    if requested.is_some() || resolved.version.stable {
+        return None;
+    }
+    Some(format!(
+        "note: no stable {} release for Minecraft {game}, using {}",
+        resolved.kind, resolved.version.id
+    ))
+}
+
+/// One line per loader version (at most `limit`), the default marked.
+fn loader_lines(versions: &[LoaderVersion], limit: usize, default_id: &str) -> Vec<String> {
+    versions
+        .iter()
+        .take(limit)
+        .map(|v| {
+            let stable = if v.stable { "stable" } else { "unstable" };
+            let marker = if v.id == default_id { " (default)" } else { "" };
+            format!("{:<24} {stable}{marker}", v.id)
+        })
+        .collect()
+}
+
+/// Maps `latest` / `latest-snapshot` to a game version id; other ids pass through.
+async fn resolve_game(paths: &Paths, version: &str) -> anyhow::Result<String> {
+    let manifest = fetch_manifest(&http_client(), paths, MANIFEST_URL).await?;
+    Ok(manifest
+        .find(version)
+        .map(|v| v.id.clone())
+        .unwrap_or_else(|| version.to_string()))
+}
+
 #[cfg(windows)]
 fn open_store(paths: &Paths) -> anyhow::Result<AccountStore<KeyringSecretStore>> {
     Ok(AccountStore::new(
@@ -138,6 +190,8 @@ async fn main() -> anyhow::Result<()> {
             offline,
             java,
             memory,
+            loader,
+            loader_version,
             dry_run,
         } => {
             let account = match offline {
@@ -159,9 +213,18 @@ async fn main() -> anyhow::Result<()> {
                 account,
                 java,
                 memory_mb: memory,
-                loader: None,
+                loader: loader.map(|kind| LoaderRequest {
+                    kind,
+                    version: loader_version.clone(),
+                }),
             };
             let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
+            if let Some(resolved) = &prepared.loader {
+                let game = resolve_game(&paths, &opts.version).await?;
+                if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &game) {
+                    eprintln!("{note}");
+                }
+            }
             if dry_run {
                 println!("{}", prepared.java.display());
                 for arg in &prepared.redacted_args() {
@@ -171,6 +234,20 @@ async fn main() -> anyhow::Result<()> {
             }
             let code = run(&prepared).await?;
             std::process::exit(code);
+        }
+        Cmd::Loaders {
+            loader,
+            version,
+            limit,
+        } => {
+            let game = resolve_game(&paths, &version).await?;
+            let versions =
+                fabric::list_versions(&http_client(), &LoaderEndpoints::default(), loader, &game)
+                    .await?;
+            let default = pick_version(&versions, None, loader, &game)?;
+            for line in loader_lines(&versions, limit, &default.id) {
+                println!("{line}");
+            }
         }
         Cmd::Login => {
             let auth = MicrosoftAuth::new(client_id()?, AuthEndpoints::default());
@@ -236,5 +313,135 @@ mod tests {
         assert!(Cli::try_parse_from(["hengst", "accounts", "use", "Steve"]).is_ok());
         assert!(Cli::try_parse_from(["hengst", "logout", "Steve"]).is_ok());
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_loader_options() {
+        let cli = Cli::try_parse_from([
+            "hengst",
+            "launch",
+            "1.20.1",
+            "--loader",
+            "forge",
+            "--loader-version",
+            "47.4.28",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Launch {
+                version,
+                loader,
+                loader_version,
+                ..
+            } => {
+                assert_eq!(version, "1.20.1");
+                assert_eq!(loader, Some(LoaderKind::Forge));
+                assert_eq!(loader_version.as_deref(), Some("47.4.28"));
+            }
+            _ => panic!("expected launch"),
+        }
+    }
+
+    #[test]
+    fn loader_defaults_to_none() {
+        let cli = Cli::try_parse_from(["hengst", "launch", "1.20.1"]).unwrap();
+        match cli.cmd {
+            Cmd::Launch {
+                loader,
+                loader_version,
+                ..
+            } => {
+                assert_eq!(loader, None);
+                assert_eq!(loader_version, None);
+            }
+            _ => panic!("expected launch"),
+        }
+    }
+
+    #[test]
+    fn loader_version_needs_loader() {
+        assert!(
+            Cli::try_parse_from(["hengst", "launch", "1.20.1", "--loader-version", "1"]).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_loader() {
+        let err = Cli::try_parse_from(["hengst", "launch", "1.8.9", "--loader", "ornithe"])
+            .err()
+            .expect("unknown loader must be rejected")
+            .to_string();
+        assert!(
+            err.contains("unknown loader 'ornithe' (expected fabric, quilt, legacy-fabric, neoforge or forge)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parses_loaders_command() {
+        let cli =
+            Cli::try_parse_from(["hengst", "loaders", "quilt", "1.21.11", "--limit", "5"]).unwrap();
+        match cli.cmd {
+            Cmd::Loaders {
+                loader,
+                version,
+                limit,
+            } => {
+                assert_eq!(loader, LoaderKind::Quilt);
+                assert_eq!(version, "1.21.11");
+                assert_eq!(limit, 5);
+            }
+            _ => panic!("expected loaders"),
+        }
+        let cli = Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11"]).unwrap();
+        match cli.cmd {
+            Cmd::Loaders { limit, .. } => assert_eq!(limit, 20),
+            _ => panic!("expected loaders"),
+        }
+    }
+
+    fn resolved(id: &str, stable: bool) -> ResolvedLoader {
+        ResolvedLoader {
+            kind: LoaderKind::Quilt,
+            version: LoaderVersion {
+                id: id.into(),
+                maven: id.into(),
+                stable,
+            },
+        }
+    }
+
+    #[test]
+    fn notes_only_unrequested_unstable_picks() {
+        assert_eq!(
+            unstable_note(None, &resolved("0.31.0-beta.6", false), "1.21.11").as_deref(),
+            Some("note: no stable quilt release for Minecraft 1.21.11, using 0.31.0-beta.6")
+        );
+        assert_eq!(
+            unstable_note(None, &resolved("0.30.2", true), "1.21.11"),
+            None
+        );
+        assert_eq!(
+            unstable_note(
+                Some("0.31.0-beta.6"),
+                &resolved("0.31.0-beta.6", false),
+                "1.21.11"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn formats_loader_lines() {
+        let v = |id: &str, stable| LoaderVersion {
+            id: id.into(),
+            maven: id.into(),
+            stable,
+        };
+        let list = [v("0.31.0-beta.6", false), v("0.30.2", true)];
+        let lines = loader_lines(&list, 20, "0.30.2");
+        assert_eq!(lines[0], format!("{:<24} unstable", "0.31.0-beta.6"));
+        assert_eq!(lines[1], format!("{:<24} stable (default)", "0.30.2"));
+        assert_eq!(loader_lines(&list, 1, "0.30.2").len(), 1);
     }
 }
