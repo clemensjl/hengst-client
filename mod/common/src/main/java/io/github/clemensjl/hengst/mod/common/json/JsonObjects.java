@@ -7,6 +7,7 @@ import java.util.Map;
 public final class JsonObjects {
     private JsonObjects() {}
 
+    // Returns the live parsed map (or a shared empty map): callers must not mutate it.
     @SuppressWarnings("unchecked")
     public static Map<String, Object> object(Object value) {
         if (value instanceof Map) {

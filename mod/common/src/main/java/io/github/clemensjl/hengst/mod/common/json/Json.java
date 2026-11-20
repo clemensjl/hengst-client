@@ -39,11 +39,11 @@ public final class Json {
         }
 
         Object parseDocument() throws JsonException {
-            if (s.length > 0 && s[0] == '﻿') {
+            if (s.length > 0 && s[0] == '\ufeff') {
                 pos = 1;
             }
             skipWs();
-            Object v = parseValue(0);
+            Object v = parseValue(0, -1);
             skipWs();
             if (pos < s.length) {
                 throw new JsonException("unexpected trailing data", pos);
@@ -62,9 +62,9 @@ public final class Json {
             }
         }
 
-        private Object parseValue(int depth) throws JsonException {
+        private Object parseValue(int depth, int container) throws JsonException {
             if (pos >= s.length) {
-                throw new JsonException("unexpected end of input", pos);
+                throw new JsonException("unexpected end of input", container >= 0 ? container : pos);
             }
             char c = s[pos];
             switch (c) {
@@ -106,6 +106,7 @@ public final class Json {
             if (depth > MAX_DEPTH) {
                 throw new JsonException("too deep", pos);
             }
+            int open = pos;
             pos++; // opening brace
             Map<String, Object> map = new LinkedHashMap<String, Object>();
             skipWs();
@@ -116,7 +117,7 @@ public final class Json {
             while (true) {
                 skipWs();
                 if (pos >= s.length) {
-                    throw new JsonException("unexpected end of input", pos);
+                    throw new JsonException("unexpected end of input", open);
                 }
                 if (s[pos] != '"') {
                     throw new JsonException("expected string key", pos);
@@ -124,17 +125,17 @@ public final class Json {
                 String key = parseString();
                 skipWs();
                 if (pos >= s.length) {
-                    throw new JsonException("unexpected end of input", pos);
+                    throw new JsonException("unexpected end of input", open);
                 }
                 if (s[pos] != ':') {
                     throw new JsonException("expected colon", pos);
                 }
                 pos++;
                 skipWs();
-                map.put(key, parseValue(depth));
+                map.put(key, parseValue(depth, open));
                 skipWs();
                 if (pos >= s.length) {
-                    throw new JsonException("unexpected end of input", pos);
+                    throw new JsonException("unexpected end of input", open);
                 }
                 char c = s[pos];
                 if (c == ',') {
@@ -152,6 +153,7 @@ public final class Json {
             if (depth > MAX_DEPTH) {
                 throw new JsonException("too deep", pos);
             }
+            int open = pos;
             pos++; // opening bracket
             List<Object> list = new ArrayList<Object>();
             skipWs();
@@ -161,10 +163,10 @@ public final class Json {
             }
             while (true) {
                 skipWs();
-                list.add(parseValue(depth));
+                list.add(parseValue(depth, open));
                 skipWs();
                 if (pos >= s.length) {
-                    throw new JsonException("unexpected end of input", pos);
+                    throw new JsonException("unexpected end of input", open);
                 }
                 char c = s[pos];
                 if (c == ',') {
@@ -179,11 +181,12 @@ public final class Json {
         }
 
         private String parseString() throws JsonException {
+            int quote = pos;
             pos++; // opening quote
             StringBuilder b = new StringBuilder();
             while (true) {
                 if (pos >= s.length) {
-                    throw new JsonException("unterminated string", pos);
+                    throw new JsonException("unterminated string", quote);
                 }
                 char c = s[pos];
                 if (c == '"') {
@@ -201,7 +204,7 @@ public final class Json {
                 int escPos = pos;
                 pos++;
                 if (pos >= s.length) {
-                    throw new JsonException("unterminated string", pos);
+                    throw new JsonException("unterminated string", quote);
                 }
                 char e = s[pos++];
                 switch (e) {
@@ -322,9 +325,6 @@ public final class Json {
     // ---- writer ----
 
     private static void writeValue(StringBuilder out, Object v, int indent, int depth) {
-        if (depth > MAX_DEPTH) {
-            throw new IllegalArgumentException("value nested deeper than " + MAX_DEPTH);
-        }
         if (v == null) {
             out.append("null");
         } else if (v instanceof String) {
@@ -337,7 +337,14 @@ public final class Json {
                 throw new IllegalArgumentException("NaN and Infinity are not representable in JSON");
             }
             out.append(v.toString());
+        } else if (v instanceof Float) {
+            float f = (Float) v;
+            if (Float.isNaN(f) || Float.isInfinite(f)) {
+                throw new IllegalArgumentException("NaN and Infinity are not representable in JSON");
+            }
+            out.append(Float.toString(f));
         } else if (v instanceof Map) {
+            checkDepth(depth);
             Map<?, ?> m = (Map<?, ?>) v;
             if (m.isEmpty()) {
                 out.append("{}");
@@ -362,6 +369,7 @@ public final class Json {
             pad(out, indent);
             out.append('}');
         } else if (v instanceof List) {
+            checkDepth(depth);
             List<?> l = (List<?>) v;
             if (l.isEmpty()) {
                 out.append("[]");
@@ -380,6 +388,13 @@ public final class Json {
             out.append(']');
         } else {
             throw new IllegalArgumentException("unsupported type " + v.getClass().getName());
+        }
+    }
+
+    /** depth is the number of enclosing containers; the parser allows the same MAX_DEPTH nesting levels. */
+    private static void checkDepth(int depth) {
+        if (depth >= MAX_DEPTH) {
+            throw new IllegalArgumentException("value nested deeper than " + MAX_DEPTH);
         }
     }
 
