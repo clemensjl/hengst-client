@@ -1,6 +1,6 @@
 //! Microsoft identity platform: device code flow and token refresh.
 
-use super::{AuthError, MicrosoftAuth, SCOPE};
+use super::{http_error, AuthError, MicrosoftAuth, SCOPE};
 use crate::secret::Secret;
 use crate::{Error, Result};
 use serde::Deserialize;
@@ -44,10 +44,7 @@ pub(crate) fn next_interval(current: Duration, error: &str) -> Duration {
 /// `error_description` is deliberately ignored.
 async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
     let status = resp.status().as_u16();
-    let body = resp.bytes().await.map_err(|source| Error::Http {
-        url: url.to_string(),
-        source,
-    })?;
+    let body = resp.bytes().await.map_err(http_error(url))?;
     match serde_json::from_slice::<ErrorResponse>(&body) {
         Ok(e) if status == 400 => Ok(e.error),
         _ => Err(Error::Status {
@@ -67,10 +64,7 @@ fn map_client_error(code: String, other: Error) -> Error {
 }
 
 async fn parse_tokens(resp: reqwest::Response, url: &str) -> Result<MsaTokens> {
-    let t: TokenResponse = resp.json().await.map_err(|source| Error::Http {
-        url: url.to_string(),
-        source,
-    })?;
+    let t: TokenResponse = resp.json().await.map_err(http_error(url))?;
     Ok(MsaTokens {
         access_token: t.access_token,
         refresh_token: t.refresh_token,
@@ -88,9 +82,7 @@ impl MicrosoftAuth {
             let code = error_code(resp, &url).await?;
             return Err(map_client_error(code, Error::Status { url, status }));
         }
-        resp.json()
-            .await
-            .map_err(|source| Error::Http { url, source })
+        resp.json().await.map_err(http_error(&url))
     }
 
     pub async fn poll_device_login(&self, code: &DeviceCode) -> Result<MsaTokens> {

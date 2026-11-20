@@ -2,6 +2,7 @@
 
 pub mod error;
 pub mod msa;
+pub mod xbox;
 
 pub use error::AuthError;
 
@@ -71,10 +72,34 @@ impl MicrosoftAuth {
             .form(form)
             .send()
             .await
-            .map_err(|source| Error::Http {
-                url: url.to_string(),
-                source,
-            })
+            .map_err(http_error(url))
+    }
+
+    /// POST a JSON body (asking for a JSON answer) with extra headers;
+    /// transport errors become `Error::Http`.
+    pub(crate) async fn post_json(
+        &self,
+        url: &str,
+        body: &serde_json::Value,
+        headers: &[(&str, &str)],
+    ) -> Result<reqwest::Response> {
+        let mut req = self
+            .http
+            .post(url)
+            .header("Accept", "application/json")
+            .json(body);
+        for (name, value) in headers {
+            req = req.header(*name, *value);
+        }
+        req.send().await.map_err(http_error(url))
+    }
+}
+
+/// Wrap a transport or body-decoding error of a request to `url`.
+pub(crate) fn http_error(url: &str) -> impl FnOnce(reqwest::Error) -> Error + '_ {
+    move |source| Error::Http {
+        url: url.to_string(),
+        source,
     }
 }
 

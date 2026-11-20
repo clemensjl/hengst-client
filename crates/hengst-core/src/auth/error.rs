@@ -12,15 +12,15 @@ pub enum AuthError {
     AppMisconfigured { code: String },
     #[error("the saved login for {name} is no longer valid; run \"hengst login\" again")]
     LoginExpired { name: String },
-    #[error("no Xbox account")]
+    #[error("this Microsoft account has no Xbox profile yet; sign in once at https://www.xbox.com to create one, then try again")]
     NoXboxAccount,
-    #[error("Xbox is not available in this region")]
+    #[error("Xbox Live is not available in this account's country or region")]
     XboxRegionBlocked,
-    #[error("the Xbox account needs adult verification")]
+    #[error("this account needs adult verification on the Xbox website before it can sign in")]
     XboxAdultVerification,
-    #[error("the Xbox account is a child account")]
+    #[error("this is a child account; an adult must add it to a Microsoft family group before it can sign in")]
     XboxChildAccount,
-    #[error("Xbox refused the sign-in (code {code})")]
+    #[error("Xbox Live refused the sign-in (XErr {code})")]
     XboxRefused { code: u64 },
     #[error("the launcher app is not approved for the Minecraft services")]
     AppNotApproved,
