@@ -6,3 +6,10 @@ mod/**/build/
 mod/**/.gradle/
 mod/**/run/
 mod/dist/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+out/
+bin/
