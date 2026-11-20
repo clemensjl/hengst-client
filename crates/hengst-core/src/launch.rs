@@ -3,6 +3,8 @@ use crate::assets::{install_assets, AssetsLayout, RESOURCES_URL};
 use crate::download::{fill_missing_sha1, http_client, sha1_file, Download, Downloader};
 use crate::java::{component_for, ensure_runtime, RUNTIME_INDEX_URL};
 use crate::libraries;
+use crate::loaders::forge;
+use crate::loaders::forge::processors::{ProcessRunner, SystemRunner};
 use crate::loaders::merge::merge_version;
 use crate::loaders::{prepare_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader};
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
@@ -12,6 +14,7 @@ use crate::secret::REDACTED;
 use crate::version::fetch_version;
 use crate::{Error, Result};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 /// Remote endpoints; overridable for tests and mirrors.
 #[derive(Clone, Debug)]
@@ -84,8 +87,19 @@ impl std::fmt::Debug for Prepared {
     }
 }
 
-/// Downloads everything a version needs and builds the command line.
+/// Downloads everything a version needs and builds the command line. For Forge and NeoForge this
+/// also runs the installer's processors when the installation is not complete.
 pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Result<Prepared> {
+    prepare_with_runner(paths, opts, ep, Arc::new(SystemRunner)).await
+}
+
+/// `prepare` with the process runner the installer processors are started through.
+pub async fn prepare_with_runner(
+    paths: &Paths,
+    opts: &LaunchOptions,
+    ep: &Endpoints,
+    runner: Arc<dyn ProcessRunner>,
+) -> Result<Prepared> {
     let dl = Downloader::new(http_client()).with_sha1_cache(paths.sha1_cache());
     let env = Env::current();
 
@@ -158,8 +172,31 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
     // Maven libraries from loader profiles often carry no hash; nothing is fetched unverified.
     fill_missing_sha1(&dl, &mut downloads).await?;
     dl.fetch_all(downloads).await?;
-    if let Some(sha1) = client_sha1.filter(|_| merged_jar != vanilla_jar) {
-        link_client_jar(&vanilla_jar, &merged_jar, &sha1).await?;
+    if let Some(sha1) = client_sha1.as_ref().filter(|_| merged_jar != vanilla_jar) {
+        link_client_jar(&vanilla_jar, &merged_jar, sha1).await?;
+    }
+
+    let java = match &opts.java {
+        Some(j) => j.clone(),
+        None => ensure_runtime(&dl, paths, &env, &component_for(&v), &ep.runtime_index).await?,
+    };
+
+    if let Some(fi) = setup.as_ref().and_then(|s| s.forge.clone()) {
+        let sha1 = client_sha1.clone().ok_or_else(|| {
+            Error::Installer(format!("{} has no client jar to install onto", v.id))
+        })?;
+        let (merged, paths, java, jar) = (
+            merged.clone(),
+            paths.clone(),
+            java.clone(),
+            vanilla_jar.clone(),
+        );
+        let runner = runner.clone();
+        tokio::task::spawn_blocking(move || {
+            forge::finish_install(&fi, &merged, &paths, &java, &jar, &sha1, runner.as_ref())
+        })
+        .await
+        .expect("install task panicked")?;
     }
 
     let assets = match &merged.asset_index {
@@ -176,11 +213,6 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
         tokio::fs::remove_dir_all(&natives_dir).await?;
     }
     libraries::extract_natives(&libs.natives, &natives_dir)?;
-
-    let java = match &opts.java {
-        Some(j) => j.clone(),
-        None => ensure_runtime(&dl, paths, &env, &component_for(&v), &ep.runtime_index).await?,
-    };
 
     let ctx = LaunchContext {
         account: opts.account.clone(),

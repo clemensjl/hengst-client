@@ -4,14 +4,21 @@ pub mod installer;
 pub mod processors;
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use self::installer::{
+    check_game, extract_embedded, read_installer, InstallerContents, InstallerKind,
+};
+use self::processors::{
+    install_state_valid, plan, run_processors, write_marker, InstallEnv, ProcessRunner,
+};
 use super::{sort_newest_first, LoaderEndpoints, LoaderKind, LoaderVersion};
-use crate::download::{fill_missing_sha1, get_bytes, Download, Downloader};
+use crate::download::{fill_missing_sha1, get_bytes, sha1_file, Download, Downloader};
 use crate::libraries::maven_path;
 use crate::paths::{join_relative, validate_id, Paths};
+use crate::version::VersionJson;
 use crate::{Error, Result};
 
 /// Forge has installers from 1.7.10 upward. IDs that are not of the form `1.X[.Y]` (snapshots,
@@ -178,7 +185,8 @@ pub fn installer_url(
 }
 
 /// Downloads the installer into the shared libraries directory (at its Maven path), verified
-/// against the `.sha1` the Maven repository publishes next to it. Reuses a valid local copy.
+/// against the `.sha1` the Maven repository publishes next to it. A local copy is hashed again
+/// and reused only when it matches. Returns the file and the SHA-1 it was verified against.
 pub async fn fetch_installer(
     dl: &Downloader,
     paths: &Paths,
@@ -186,7 +194,7 @@ pub async fn fetch_installer(
     game: &str,
     maven: &str,
     ep: &LoaderEndpoints,
-) -> Result<PathBuf> {
+) -> Result<(PathBuf, String)> {
     validate_id(game)?;
     validate_id(maven)?;
     let rel = maven_path(&installer_coords(kind, game, maven)?).expect("installer coordinates");
@@ -197,9 +205,204 @@ pub async fn fetch_installer(
     }];
     let dl = dl.clone().with_sha1_cache(paths.sha1_cache());
     fill_missing_sha1(&dl, &mut item).await?;
-    dl.fetch_one(&item[0]).await?;
+    let (_, sha1) = dl.fetch_verified(&item[0]).await?;
     let [item] = item;
-    Ok(item.path)
+    let sha1 = sha1.expect("fill_missing_sha1 set a hash");
+    Ok((item.path, sha1))
+}
+
+/// A Forge or NeoForge build whose installer was fetched, verified and read.
+#[derive(Clone, Debug)]
+pub struct ForgeInstall {
+    pub kind: LoaderKind,
+    pub game: String,
+    /// Full Maven version of the requested build, from the validated version list; never a value
+    /// read from the installer.
+    pub maven: String,
+    pub installer: PathBuf,
+    /// SHA-1 the installer was verified against (the Maven repository's).
+    pub installer_sha1: String,
+    /// For a legacy installer, `version` already points at the extracted universal jar.
+    pub contents: InstallerContents,
+}
+
+/// The launcher root as an absolute path that is not verbatim (`std::fs::canonicalize` would add
+/// `\\?\`, which no processor argument could match), and the libraries directory exactly
+/// `<root>/libraries`, as NeoForge passes `{ROOT}/libraries/`.
+fn absolute_root(paths: &Paths) -> Result<(PathBuf, PathBuf)> {
+    let root = std::path::absolute(paths.root())?;
+    let libraries = root.join("libraries");
+    Ok((root, libraries))
+}
+
+/// Exclusive lock for installing one loader version, held until the file is dropped. A second
+/// launch preparing the same version waits here. The OS releases it if the process dies.
+fn install_lock(paths: &Paths, id: &str) -> Result<std::fs::File> {
+    validate_id(id)?;
+    let path = paths.tmp().join(format!("loader-{id}.lock"));
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)?;
+    file.lock().map_err(|e| {
+        Error::Installer(format!(
+            "could not lock {} for installing {id}: {e}",
+            path.display()
+        ))
+    })?;
+    Ok(file)
+}
+
+/// Reads a verified installer and checks it is for `game`. A legacy installer's universal jar is
+/// extracted right away (under the install lock), because the version info it rewrites decides
+/// which libraries are downloaded.
+pub fn open_installer(
+    paths: &Paths,
+    kind: LoaderKind,
+    game: &str,
+    maven: &str,
+    installer: PathBuf,
+    installer_sha1: String,
+) -> Result<ForgeInstall> {
+    validate_id(game)?;
+    validate_id(maven)?;
+    let mut contents = read_installer(&installer)?;
+    check_game(&contents, game)?;
+    if matches!(contents.kind, InstallerKind::Legacy { .. }) {
+        let (_, libraries) = absolute_root(paths)?;
+        let _lock = install_lock(paths, &contents.version.id)?;
+        extract_embedded(&installer, &mut contents, &libraries, kind, maven)?;
+    }
+    Ok(ForgeInstall {
+        kind,
+        game: game.to_string(),
+        maven: maven.to_string(),
+        installer,
+        installer_sha1,
+        contents,
+    })
+}
+
+/// Every installer-provided artifact (empty `url`) of the merged version must be present with the
+/// SHA-1 the installer declares; these never pass through the downloader.
+fn verify_provided(merged: &VersionJson, libraries: &Path) -> Result<()> {
+    let provided = merged
+        .libraries
+        .iter()
+        .filter_map(|l| l.downloads.as_ref()?.artifact.as_ref())
+        .filter(|a| a.url.is_empty());
+    for a in provided {
+        let file = join_relative(libraries, &a.path)?;
+        if !sha1_file(&file).is_ok_and(|h| h.eq_ignore_ascii_case(&a.sha1)) {
+            return Err(Error::Installer(format!(
+                "installer-provided {} is missing or does not match its declared SHA-1",
+                file.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Where a finished processor run is recorded.
+pub fn marker_path(paths: &Paths, kind: LoaderKind, id: &str) -> PathBuf {
+    paths
+        .loader_dir(kind.slug())
+        .join(format!("{id}.installed"))
+}
+
+/// Log of the processor run for a loader version.
+pub fn install_log(paths: &Paths, id: &str) -> PathBuf {
+    paths.logs().join(format!("loader-install-{id}.log"))
+}
+
+/// Brings the installation of `fi` (merged into `merged`) up to date on every launch, under an
+/// exclusive per-version lock: restores and verifies the installer-provided artifacts, verifies
+/// the vanilla jar the processors read, plans the processors and runs them unless the recorded
+/// install state is still valid, then records it. Blocking; call it off the async runtime.
+/// `java` is the runtime the game itself uses. Profiles without client processors (legacy,
+/// spec 0) have no processor stage and no marker: the provided-artifact check is all.
+pub fn finish_install(
+    fi: &ForgeInstall,
+    merged: &VersionJson,
+    paths: &Paths,
+    java: &Path,
+    vanilla_jar: &Path,
+    vanilla_sha1: &str,
+    runner: &dyn ProcessRunner,
+) -> Result<()> {
+    let (root, libraries) = absolute_root(paths)?;
+    let id = merged.id.as_str();
+    let _lock = install_lock(paths, id)?;
+
+    // A foreign file may have been put at a provided path since the last launch: restore it from
+    // the verified installer, then check what goes on the classpath.
+    let mut contents = fi.contents.clone();
+    extract_embedded(&fi.installer, &mut contents, &libraries, fi.kind, &fi.maven)?;
+    verify_provided(merged, &libraries)?;
+    let InstallerKind::Modern(profile) = &contents.kind else {
+        return Ok(());
+    };
+
+    // NeoForge declares no output hashes: a wrong input jar would be patched and recorded.
+    let actual = sha1_file(vanilla_jar)?;
+    if !actual.eq_ignore_ascii_case(vanilla_sha1) {
+        return Err(Error::Checksum {
+            path: vanilla_jar.to_path_buf(),
+            expected: vanilla_sha1.to_string(),
+            actual,
+        });
+    }
+
+    let work = std::path::absolute(paths.tmp())?.join(format!("loader-{id}"));
+    match std::fs::remove_dir_all(&work) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+        _ => {}
+    }
+    std::fs::create_dir_all(&work)?;
+    let env = InstallEnv {
+        root,
+        libraries: libraries.clone(),
+        minecraft_jar: std::path::absolute(vanilla_jar)?,
+        game: fi.game.clone(),
+        installer: std::path::absolute(&fi.installer)?,
+        work: work.clone(),
+    };
+    // A relative path to java would be resolved against the processors' working directory.
+    let java = if java.components().count() > 1 {
+        std::path::absolute(java)?
+    } else {
+        java.to_path_buf()
+    };
+    let result = (|| {
+        let plan = plan(profile, &env)?;
+        if plan.commands.is_empty() {
+            return Ok(());
+        }
+        let marker = marker_path(paths, fi.kind, id);
+        if install_state_valid(&plan, merged, &libraries, &marker, &fi.installer_sha1)? {
+            return Ok(());
+        }
+        match std::fs::remove_file(&marker) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
+            _ => {}
+        }
+        run_processors(
+            runner,
+            &java,
+            &plan.commands,
+            &work,
+            &install_log(paths, id),
+        )?;
+        write_marker(&plan, &marker, &fi.installer_sha1)
+    })();
+    if result.is_ok() {
+        let _ = std::fs::remove_dir_all(&work);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -546,22 +749,22 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path());
         let dl = Downloader::new(reqwest::Client::new());
-        let file = fetch_installer(
-            &dl,
-            &paths,
-            LoaderKind::NeoForge,
-            "1.21.1",
-            "21.1.172",
-            &ep(&server),
-        )
-        .await
-        .unwrap();
+        let ep = ep(&server);
+        let fetch =
+            || fetch_installer(&dl, &paths, LoaderKind::NeoForge, "1.21.1", "21.1.172", &ep);
+        let (file, sha1) = fetch().await.unwrap();
         assert_eq!(
             file,
             paths
                 .libraries()
                 .join("net/neoforged/neoforge/21.1.172/neoforge-21.1.172-installer.jar")
         );
+        assert_eq!(sha1, crate::download::sha1_hex(b"installer"));
+        assert_eq!(std::fs::read(&file).unwrap(), b"installer");
+        // A local copy is hashed again on every run and replaced when it no longer matches.
+        std::fs::write(&file, b"tampered").unwrap();
+        let (file, again) = fetch().await.unwrap();
+        assert_eq!(again, sha1);
         assert_eq!(std::fs::read(&file).unwrap(), b"installer");
     }
 
@@ -622,5 +825,284 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    // --- finish_install ----------------------------------------------------------------------
+
+    use crate::download::sha1_hex;
+    use processors::ProcessRunner;
+    use std::io::Write;
+    use std::process::Command;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    const MAVEN: &str = "1.20.1-1.0";
+    const ID: &str = "1.20.1-forge-1.0";
+    const PROVIDED: &str = "net/minecraftforge/forge/1.20.1-1.0/forge-1.20.1-1.0.jar";
+
+    fn zip_bytes(entries: &[(&str, &[u8])]) -> Vec<u8> {
+        let mut buf = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(&mut buf);
+        for (n, data) in entries {
+            zip.start_file(*n, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(data).unwrap();
+        }
+        zip.finish().unwrap();
+        buf.into_inner()
+    }
+
+    struct Setup {
+        _tmp: tempfile::TempDir,
+        paths: Paths,
+        fi: ForgeInstall,
+        vanilla: PathBuf,
+    }
+
+    impl Setup {
+        fn finish(&self, runner: &dyn ProcessRunner) -> Result<()> {
+            self.finish_with(runner, Path::new("java.exe"))
+        }
+        fn finish_with(&self, runner: &dyn ProcessRunner, java: &Path) -> Result<()> {
+            finish_install(
+                &self.fi,
+                &self.fi.contents.version,
+                &self.paths,
+                java,
+                &self.vanilla,
+                &sha1_hex(b"vanilla"),
+                runner,
+            )
+        }
+        fn marker(&self) -> PathBuf {
+            marker_path(&self.paths, LoaderKind::Forge, ID)
+        }
+        fn patched(&self) -> PathBuf {
+            self.paths
+                .libraries()
+                .join("net/minecraftforge/forge/1.20.1-1.0/forge-1.20.1-1.0-client.jar")
+        }
+        fn provided(&self) -> PathBuf {
+            self.paths.libraries().join(PROVIDED)
+        }
+    }
+
+    /// A modern installer with one client processor that writes PATCHED, an installer-provided
+    /// jar, the processor jar staged in the libraries and the vanilla jar in place.
+    fn setup() -> Setup {
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().join("home"));
+        let tool = zip_bytes(&[(
+            "META-INF/MANIFEST.MF",
+            b"Manifest-Version: 1.0\r\nMain-Class: test.Patcher\r\n\r\n",
+        )]);
+        let tool_rel = "net/minecraftforge/tool/1/tool-1.jar";
+        let tool_path = paths.libraries().join(tool_rel);
+        std::fs::create_dir_all(tool_path.parent().unwrap()).unwrap();
+        std::fs::write(&tool_path, &tool).unwrap();
+        let profile = serde_json::json!({
+            "spec": 1, "minecraft": "1.20.1", "json": "/version.json",
+            "data": {
+                "PATCHED": {"client": "[net.minecraftforge:forge:1.20.1-1.0:client]", "server": "'x'"},
+                "BINPATCH": {"client": "/data/client.lzma", "server": "'x'"}
+            },
+            "processors": [{"jar": "net.minecraftforge:tool:1",
+                "args": ["--input", "{MINECRAFT_JAR}", "--output", "{PATCHED}", "--apply", "{BINPATCH}"]}],
+            "libraries": [{"name": "net.minecraftforge:tool:1", "downloads": {"artifact": {
+                "path": tool_rel, "url": "https://example.invalid/tool-1.jar",
+                "sha1": sha1_hex(&tool), "size": tool.len()}}}]
+        });
+        let version = serde_json::json!({
+            "id": ID, "inheritsFrom": "1.20.1", "mainClass": "m",
+            "libraries": [{"name": "net.minecraftforge:forge:1.20.1-1.0", "downloads": {"artifact": {
+                "path": PROVIDED, "url": "", "sha1": sha1_hex(b"provided"), "size": 8}}}]
+        });
+        let installer = tmp.path().join("installer.jar");
+        std::fs::write(
+            &installer,
+            zip_bytes(&[
+                ("install_profile.json", profile.to_string().as_bytes()),
+                ("version.json", version.to_string().as_bytes()),
+                (&format!("maven/{PROVIDED}"), b"provided"),
+                ("data/client.lzma", b"lzma"),
+            ]),
+        )
+        .unwrap();
+        let vanilla = paths.client_jar("1.20.1");
+        std::fs::create_dir_all(vanilla.parent().unwrap()).unwrap();
+        std::fs::write(&vanilla, b"vanilla").unwrap();
+        let sha = sha1_hex(&std::fs::read(&installer).unwrap());
+        let fi =
+            open_installer(&paths, LoaderKind::Forge, "1.20.1", MAVEN, installer, sha).unwrap();
+        Setup {
+            _tmp: tmp,
+            paths,
+            fi,
+            vanilla,
+        }
+    }
+
+    /// Writes the value after `--output` like the real patcher would, counts runs and how many run
+    /// at once, and records the working directory.
+    #[derive(Default)]
+    struct Patcher {
+        runs: AtomicUsize,
+        active: AtomicUsize,
+        max_active: AtomicUsize,
+        delay_ms: u64,
+        cwd: std::sync::Mutex<Option<PathBuf>>,
+    }
+
+    impl ProcessRunner for Patcher {
+        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+            let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_active.fetch_max(now, Ordering::SeqCst);
+            self.runs.fetch_add(1, Ordering::SeqCst);
+            let cwd = cmd.get_current_dir().map(Path::to_path_buf).unwrap();
+            assert!(!cwd.join("stale.txt").exists(), "work was not emptied");
+            *self.cwd.lock().unwrap() = Some(cwd);
+            std::thread::sleep(std::time::Duration::from_millis(self.delay_ms));
+            let args: Vec<String> = cmd
+                .get_args()
+                .map(|a| a.to_string_lossy().into_owned())
+                .collect();
+            let out = &args[args.iter().position(|a| a == "--output").unwrap() + 1];
+            std::fs::create_dir_all(Path::new(out).parent().unwrap())?;
+            std::fs::write(out, b"patched")?;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Ok(0)
+        }
+    }
+
+    /// Fails the test if any process would be started.
+    struct NoStart;
+
+    impl ProcessRunner for NoStart {
+        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+            panic!("no process may start: {:?}", cmd.get_program());
+        }
+    }
+
+    #[test]
+    fn processor_error_message_names_step_code_and_log() {
+        let e = Error::Processor {
+            jar: "net.minecraftforge:binarypatcher:1.1.1".into(),
+            code: 1,
+            log: PathBuf::from("C:/h/logs/x.log"),
+        };
+        assert_eq!(
+            e.to_string(),
+            "loader installer step net.minecraftforge:binarypatcher:1.1.1 failed with exit code 1, see C:/h/logs/x.log"
+        );
+    }
+
+    #[test]
+    fn installs_once_then_valid_install_skips_processors() {
+        let s = setup();
+        let patcher = Patcher::default();
+        s.finish(&patcher).unwrap();
+        assert_eq!(patcher.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(s.patched()).unwrap(), b"patched");
+        assert!(s.marker().is_file());
+        // Valid state: no child process at all, not even with a java that does not exist.
+        s.finish(&NoStart).unwrap();
+        s.finish_with(
+            &processors::SystemRunner,
+            &s.paths.root().join("no-java.exe"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn failed_processor_leaves_no_marker() {
+        let s = setup();
+        // A real child process that exits non-zero (where.exe rejects `-cp`).
+        let helper = PathBuf::from(std::env::var_os("SystemRoot").unwrap())
+            .join("System32")
+            .join("where.exe");
+        let err = s
+            .finish_with(&processors::SystemRunner, &helper)
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::Processor { jar, code, log } if jar.starts_with("processor 0")
+                && *code != 0 && *log == install_log(&s.paths, ID)),
+            "{err}"
+        );
+        assert!(!s.marker().exists());
+        // After a good install, a later failed re-run removes the old marker too.
+        s.finish(&Patcher::default()).unwrap();
+        assert!(s.marker().is_file());
+        std::fs::write(s.patched(), b"tampered").unwrap();
+        assert!(s.finish_with(&processors::SystemRunner, &helper).is_err());
+        assert!(!s.marker().exists());
+    }
+
+    #[test]
+    fn tampered_patched_jar_reruns_the_processors() {
+        let s = setup();
+        let patcher = Patcher::default();
+        s.finish(&patcher).unwrap();
+        std::fs::write(s.patched(), b"tampered").unwrap();
+        s.finish(&patcher).unwrap();
+        assert_eq!(patcher.runs.load(Ordering::SeqCst), 2);
+        assert_eq!(std::fs::read(s.patched()).unwrap(), b"patched");
+    }
+
+    #[test]
+    fn work_directory_is_fresh_outside_libraries_and_meta_and_removed_after() {
+        let s = setup();
+        let root = std::path::absolute(s.paths.root()).unwrap();
+        let work = root.join("tmp").join(format!("loader-{ID}"));
+        std::fs::create_dir_all(&work).unwrap();
+        std::fs::write(work.join("stale.txt"), b"old run").unwrap();
+        let patcher = Patcher::default();
+        s.finish(&patcher).unwrap();
+        let cwd = patcher.cwd.lock().unwrap().clone().unwrap();
+        assert_eq!(cwd, work);
+        assert!(!cwd.starts_with(root.join("libraries")) && !cwd.starts_with(root.join("meta")));
+        assert!(!work.exists());
+        assert!(root.join("tmp").join(format!("loader-{ID}.lock")).is_file());
+    }
+
+    #[test]
+    fn provided_jar_is_restored_even_when_processors_are_skipped() {
+        let s = setup();
+        s.finish(&Patcher::default()).unwrap();
+        std::fs::write(s.provided(), b"foreign bytes at the shared path").unwrap();
+        s.finish(&NoStart).unwrap();
+        assert_eq!(std::fs::read(s.provided()).unwrap(), b"provided");
+        std::fs::remove_file(s.provided()).unwrap();
+        s.finish(&NoStart).unwrap();
+        assert_eq!(std::fs::read(s.provided()).unwrap(), b"provided");
+    }
+
+    #[test]
+    fn wrong_vanilla_jar_is_refused_before_any_processor() {
+        let s = setup();
+        std::fs::write(&s.vanilla, b"not the vanilla jar").unwrap();
+        let err = s.finish(&NoStart).unwrap_err();
+        assert!(matches!(err, Error::Checksum { .. }), "{err}");
+        assert!(!s.marker().exists());
+    }
+
+    #[test]
+    fn concurrent_installs_of_one_version_run_the_processors_once() {
+        let s = Arc::new(setup());
+        let patcher = Arc::new(Patcher {
+            delay_ms: 300,
+            ..Patcher::default()
+        });
+        let handles: Vec<_> = (0..2)
+            .map(|_| {
+                let (s, p) = (s.clone(), patcher.clone());
+                std::thread::spawn(move || s.finish(p.as_ref()))
+            })
+            .collect();
+        for h in handles {
+            h.join().unwrap().unwrap();
+        }
+        assert_eq!(patcher.max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(patcher.runs.load(Ordering::SeqCst), 1);
+        assert!(s.marker().is_file());
     }
 }

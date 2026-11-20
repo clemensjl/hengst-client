@@ -7,6 +7,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use crate::download::{Download, Downloader};
+use crate::libraries;
 use crate::paths::Paths;
 use crate::rules::Env;
 use crate::version::VersionJson;
@@ -107,8 +108,12 @@ pub struct LoaderSetup {
     pub resolved: ResolvedLoader,
     /// The loader's launcher profile, to be merged onto the vanilla version.
     pub child: VersionJson,
-    /// Files beyond the profile's libraries that must be fetched.
+    /// Files beyond the profile's libraries that must be fetched (for Forge and NeoForge the
+    /// installer's own libraries, processor jars included).
     pub extra_downloads: Vec<Download>,
+    /// Forge and NeoForge: the verified installer, finished by `forge::finish_install` once
+    /// every download is in place.
+    pub forge: Option<forge::ForgeInstall>,
 }
 
 /// Loader builds for a game version, newest first. Errors with `NoLoaderVersions` when there are
@@ -143,7 +148,7 @@ pub async fn prepare_loader(
     ep: &LoaderEndpoints,
     req: &LoaderRequest,
     game: &str,
-    _env: &Env,
+    env: &Env,
 ) -> Result<LoaderSetup> {
     match req.kind {
         LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
@@ -169,13 +174,41 @@ pub async fn prepare_loader(
                 },
                 child,
                 extra_downloads: Vec::new(),
+                forge: None,
             })
         }
-        LoaderKind::Forge | LoaderKind::NeoForge => Err(Error::LoaderUnsupported {
-            loader: req.kind.to_string(),
-            game: game.to_string(),
-            reason: "not implemented yet".into(),
-        }),
+        LoaderKind::Forge | LoaderKind::NeoForge => {
+            let list = list_versions(dl.client(), ep, req.kind, game).await?;
+            let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
+            let (installer, sha1) =
+                forge::fetch_installer(dl, paths, req.kind, game, &version.maven, ep).await?;
+            let (p, kind, g, maven) = (
+                paths.clone(),
+                req.kind,
+                game.to_string(),
+                version.maven.clone(),
+            );
+            let fi = tokio::task::spawn_blocking(move || {
+                forge::open_installer(&p, kind, &g, &maven, installer, sha1)
+            })
+            .await
+            .expect("installer task panicked")?;
+            let extra_downloads = match &fi.contents.kind {
+                forge::installer::InstallerKind::Modern(profile) => {
+                    libraries::resolve(&profile.libraries, env, paths)?.downloads
+                }
+                forge::installer::InstallerKind::Legacy { .. } => Vec::new(),
+            };
+            Ok(LoaderSetup {
+                resolved: ResolvedLoader {
+                    kind: req.kind,
+                    version,
+                },
+                child: fi.contents.version.clone(),
+                extra_downloads,
+                forge: Some(fi),
+            })
+        }
     }
 }
 
