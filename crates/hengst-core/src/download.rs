@@ -1,4 +1,4 @@
-use crate::paths::validate_sha1;
+use crate::paths::{unique_temp, validate_sha1};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
@@ -34,6 +34,7 @@ pub struct Downloader {
     client: reqwest::Client,
     concurrency: usize,
     retries: u32,
+    sha1_cache: Option<PathBuf>,
 }
 
 impl Downloader {
@@ -42,7 +43,15 @@ impl Downloader {
             client,
             concurrency: 16,
             retries: 3,
+            sha1_cache: None,
         }
+    }
+
+    /// Remembers hashes fetched from `<url>.sha1` in this directory (see `Paths::sha1_cache`),
+    /// keyed by the full artifact URL. Without it every `fill_missing_sha1` asks the server.
+    pub fn with_sha1_cache(mut self, dir: PathBuf) -> Self {
+        self.sha1_cache = Some(dir);
+        self
     }
 
     pub fn with_concurrency(mut self, n: usize) -> Self {
@@ -105,18 +114,20 @@ impl Downloader {
         if let Some(parent) = item.path.parent() {
             tokio::fs::create_dir_all(parent).await?;
         }
-        let mut tmp = item.path.clone().into_os_string();
-        tmp.push(".part");
-        let tmp = PathBuf::from(tmp);
+        let tmp = unique_temp(&item.path);
         tokio::fs::write(&tmp, &bytes).await?;
-        tokio::fs::rename(&tmp, &item.path).await?;
+        if let Err(e) = tokio::fs::rename(&tmp, &item.path).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
         Ok(())
     }
 }
 
-/// Fills in `sha1` for items without one, from `<path>.sha1` if present, otherwise from
-/// `GET <url>.sha1` (then stored as `<path>.sha1`). HTTP 404 is `Error::NoChecksum`; a body that
-/// is not a SHA-1 is rejected.
+/// Fills in `sha1` for items without one from `GET <url>.sha1`, remembered in the downloader's
+/// hash cache under the SHA-1 of the full URL (never next to the library, so a hash learned for
+/// one origin cannot vouch for a file from another). HTTP 404 is `Error::NoChecksum`; a body that
+/// is not a SHA-1 is rejected, and so is a corrupt cache entry (it is fetched again).
 pub async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Result<()> {
     let todo: Vec<(usize, Download)> = items
         .iter()
@@ -136,16 +147,21 @@ pub async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Resul
 }
 
 async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
-    let mut file = item.path.clone().into_os_string();
-    file.push(".sha1");
-    let file = PathBuf::from(file);
-    if let Ok(text) = tokio::fs::read_to_string(&file).await {
-        if let Some(hash) = text
-            .split_whitespace()
-            .next()
-            .filter(|h| validate_sha1(h).is_ok())
-        {
-            return Ok(hash.to_ascii_lowercase());
+    // An old `<path>.sha1` from earlier versions is never read; drop it when we stand on it.
+    let mut legacy = item.path.clone().into_os_string();
+    legacy.push(".sha1");
+    let _ = tokio::fs::remove_file(PathBuf::from(legacy)).await;
+
+    let cache_file = dl
+        .sha1_cache
+        .as_ref()
+        .map(|dir| dir.join(sha1_hex(item.url.as_bytes())));
+    if let Some(file) = &cache_file {
+        if let Ok(text) = tokio::fs::read_to_string(file).await {
+            let hash = text.trim();
+            if validate_sha1(hash).is_ok() {
+                return Ok(hash.to_ascii_lowercase());
+            }
         }
     }
     let url = format!("{}.sha1", item.url);
@@ -162,10 +178,17 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
     let hash = text.split_whitespace().next().unwrap_or("");
     validate_sha1(hash)?;
     let hash = hash.to_ascii_lowercase();
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
+    if let Some(file) = cache_file {
+        if let Some(parent) = file.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let tmp = unique_temp(&file);
+        tokio::fs::write(&tmp, &hash).await?;
+        if let Err(e) = tokio::fs::rename(&tmp, &file).await {
+            let _ = tokio::fs::remove_file(&tmp).await;
+            return Err(e.into());
+        }
     }
-    tokio::fs::write(&file, &hash).await?;
     Ok(hash)
 }
 
@@ -322,7 +345,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        let dl = Downloader::new(http_client());
+        let dl = Downloader::new(http_client()).with_sha1_cache(dir.path().join("cache"));
         let mut items = vec![item(&server, dir.path(), "lib.jar", None)];
         fill_missing_sha1(&dl, &mut items).await.unwrap();
         assert_eq!(items[0].sha1.as_deref(), Some(HELLO_SHA1));
@@ -354,7 +377,7 @@ mod tests {
             .mount(&server)
             .await;
         let dir = tempfile::tempdir().unwrap();
-        let dl = Downloader::new(http_client());
+        let dl = Downloader::new(http_client()).with_sha1_cache(dir.path().join("cache"));
         let mut items = vec![item(&server, dir.path(), "g.jar", None)];
         assert!(matches!(
             fill_missing_sha1(&dl, &mut items).await,
@@ -362,6 +385,79 @@ mod tests {
         ));
         assert!(items[0].sha1.is_none());
         assert!(!dir.path().join("sub").join("g.jar.sha1").exists());
+        assert!(!dir.path().join("cache").exists());
+    }
+
+    async fn hello_server(route: &str, sha1_body: &str) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(route.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"hello".to_vec()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("{route}.sha1")))
+            .respond_with(ResponseTemplate::new(200).set_body_string(sha1_body.to_string()))
+            .mount(&server)
+            .await;
+        server
+    }
+
+    #[tokio::test]
+    async fn planted_sidecar_next_to_a_library_is_not_used() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut it = item(&server, dir.path(), "lib.jar", None);
+        std::fs::create_dir_all(it.path.parent().unwrap()).unwrap();
+        std::fs::write(&it.path, b"evil").unwrap();
+        let planted = it.path.with_file_name("lib.jar.sha1");
+        std::fs::write(&planted, sha1_hex(b"evil")).unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(dir.path().join("cache"));
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut it))
+            .await
+            .unwrap();
+        assert_eq!(it.sha1.as_deref(), Some(HELLO_SHA1));
+        assert!(!planted.exists());
+        assert!(dl.fetch_one(&it).await.unwrap());
+        assert_eq!(std::fs::read(&it.path).unwrap(), b"hello");
+    }
+
+    #[tokio::test]
+    async fn hashes_are_cached_per_full_url_not_per_destination() {
+        let a = hello_server("/a/lib.jar", HELLO_SHA1).await;
+        let b = hello_server("/b/lib.jar", &sha1_hex(b"other")).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(dir.path().join("cache"));
+        let dest = dir.path().join("lib.jar");
+        let mk = |server: &MockServer, p: &str| Download {
+            url: format!("{}{p}", server.uri()),
+            path: dest.clone(),
+            sha1: None,
+        };
+        let mut first = [mk(&a, "/a/lib.jar")];
+        fill_missing_sha1(&dl, &mut first).await.unwrap();
+        let mut second = [mk(&b, "/b/lib.jar")];
+        fill_missing_sha1(&dl, &mut second).await.unwrap();
+        assert_eq!(first[0].sha1.as_deref(), Some(HELLO_SHA1));
+        assert_eq!(second[0].sha1.as_deref(), Some(sha1_hex(b"other").as_str()));
+        assert!(!dir.path().join("lib.jar.sha1").exists());
+    }
+
+    #[tokio::test]
+    async fn corrupt_cache_entry_is_fetched_again() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let mut it = item(&server, dir.path(), "lib.jar", None);
+        std::fs::create_dir_all(&cache).unwrap();
+        let entry = cache.join(sha1_hex(it.url.as_bytes()));
+        std::fs::write(&entry, "not a hash").unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache);
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut it))
+            .await
+            .unwrap();
+        assert_eq!(it.sha1.as_deref(), Some(HELLO_SHA1));
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), HELLO_SHA1);
     }
 
     #[tokio::test]

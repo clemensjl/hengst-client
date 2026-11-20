@@ -86,7 +86,7 @@ impl std::fmt::Debug for Prepared {
 
 /// Downloads everything a version needs and builds the command line.
 pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Result<Prepared> {
-    let dl = Downloader::new(http_client());
+    let dl = Downloader::new(http_client()).with_sha1_cache(paths.sha1_cache());
     let env = Env::current();
 
     let manifest = fetch_manifest(dl.client(), paths, &ep.manifest).await?;

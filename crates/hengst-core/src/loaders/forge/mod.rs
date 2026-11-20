@@ -195,7 +195,8 @@ pub async fn fetch_installer(
         path: join_relative(&paths.libraries(), &rel)?,
         sha1: None,
     }];
-    fill_missing_sha1(dl, &mut item).await?;
+    let dl = dl.clone().with_sha1_cache(paths.sha1_cache());
+    fill_missing_sha1(&dl, &mut item).await?;
     dl.fetch_one(&item[0]).await?;
     let [item] = item;
     Ok(item.path)

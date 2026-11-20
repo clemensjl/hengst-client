@@ -80,6 +80,12 @@ impl Paths {
         self.root.join("logs")
     }
 
+    /// Where SHA-1 values learned from `<url>.sha1` are remembered, keyed by the full artifact URL.
+    /// Deliberately outside `libraries/`: a file next to a library is never read as a hash.
+    pub fn sha1_cache(&self) -> PathBuf {
+        self.root.join("meta").join("sha1")
+    }
+
     pub fn tmp(&self) -> PathBuf {
         self.root.join("tmp")
     }
@@ -92,9 +98,14 @@ impl Paths {
 /// Joins a relative path taken from remote metadata onto `base`, refusing anything that could
 /// leave it: only plain components, no drive letters, roots, `..`, `:` or backslashes, and nothing
 /// Windows would reinterpret (components ending in `.` or a space, device names such as `CON`).
+/// Empty components (leading, doubled or trailing `/`) and `.` components are refused rather than
+/// silently dropped, so the result is exactly the path that was written.
 pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
     let unsafe_path = || Error::UnsafePath(rel.to_string());
     if rel.is_empty() || rel.contains([':', '\\']) {
+        return Err(unsafe_path());
+    }
+    if rel.split('/').any(|c| c.is_empty() || c == ".") {
         return Err(unsafe_path());
     }
     let mut out = base.to_path_buf();
@@ -112,6 +123,16 @@ pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// A temp file name next to `dest`, unique to this process and call, so it cannot collide with
+/// another download or extraction of the same destination.
+pub fn unique_temp(dest: &Path) -> PathBuf {
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut tmp = dest.as_os_str().to_owned();
+    tmp.push(format!(".{}.{n}.part", std::process::id()));
+    PathBuf::from(tmp)
+}
+
 /// Components Windows strips or maps to something else: trailing dots and spaces, and device
 /// names (with or without an extension, any case).
 fn is_windows_reserved(name: &str) -> bool {
@@ -119,10 +140,21 @@ fn is_windows_reserved(name: &str) -> bool {
         return true;
     }
     let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+    matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM\u{b9}"
+            | "COM\u{b2}"
+            | "COM\u{b3}"
+            | "LPT\u{b9}"
+            | "LPT\u{b2}"
+            | "LPT\u{b3}"
+    ) || (stem.len() == 4
+        && (stem.starts_with("COM") || stem.starts_with("LPT"))
+        && matches!(stem.as_bytes()[3], b'1'..=b'9'))
 }
 
 /// Version, asset index, runtime and instance ids end up in file names: ASCII alphanumerics and
@@ -195,6 +227,21 @@ mod tests {
             "prn",
             "a/a.jar:s",
             "//server/share/x",
+        ] {
+            assert!(
+                matches!(join_relative(base, bad), Err(Error::UnsafePath(_))),
+                "{bad:?} must be rejected"
+            );
+        }
+        for bad in [
+            "a//b",
+            "/a",
+            "a/",
+            "a/./b",
+            "./a",
+            "a/b/",
+            "COM\u{b9}",
+            "lpt\u{b3}.txt",
         ] {
             assert!(
                 matches!(join_relative(base, bad), Err(Error::UnsafePath(_))),
