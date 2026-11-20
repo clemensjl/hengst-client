@@ -37,7 +37,8 @@ impl Account {
         }
     }
 
-    /// Only the core builds Microsoft accounts, from a verified login.
+    /// Crate-private: Microsoft accounts are built only from a login session or
+    /// from the saved store, never by callers of the public API.
     pub(crate) fn microsoft(
         name: String,
         uuid: String,
@@ -297,7 +298,8 @@ mod tests {
         let v: VersionJson = serde_json::from_value(json!({
             "id": "1.21.11", "type": "release", "mainClass": "net.minecraft.client.main.Main",
             "arguments": {
-                "game": ["--userType", "${user_type}", "--xuid", "${auth_xuid}"],
+                "game": ["--userType", "${user_type}", "--xuid", "${auth_xuid}",
+                    "--accessToken", "${auth_access_token}", "--session", "${auth_session}"],
                 "jvm": ["-cp", "${classpath}"]
             }
         }))
@@ -314,7 +316,20 @@ mod tests {
             .iter()
             .position(|a| a == "net.minecraft.client.main.Main")
             .unwrap();
-        assert_eq!(&args[main + 1..], &["--userType", "msa", "--xuid", "123"]);
+        let session = format!("token:tok:{}", "a".repeat(32));
+        assert_eq!(
+            &args[main + 1..],
+            &[
+                "--userType",
+                "msa",
+                "--xuid",
+                "123",
+                "--accessToken",
+                "tok",
+                "--session",
+                session.as_str()
+            ]
+        );
     }
 
     #[test]

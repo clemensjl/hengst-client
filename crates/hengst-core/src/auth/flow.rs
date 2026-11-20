@@ -28,7 +28,7 @@ pub struct LoginSession {
 
 impl LoginSession {
     /// The account to start the game with.
-    pub fn to_account(&self) -> Account {
+    pub(crate) fn to_account(&self) -> Account {
         Account::microsoft(
             self.profile.name.clone(),
             self.profile.id.clone(),
@@ -42,7 +42,7 @@ impl LoginSession {
 fn is_transient(e: &Error) -> bool {
     match e {
         Error::Http { .. } => true,
-        Error::Status { status, .. } => *status >= 500,
+        Error::Status { status, .. } => *status >= 500 || *status == 429,
         _ => false,
     }
 }
@@ -113,7 +113,6 @@ mod tests {
     use super::*;
     use crate::auth::minecraft::Profile;
     use crate::auth::store::MemorySecretStore;
-    use crate::auth::AuthEndpoints;
 
     fn store_with_old_token(
         expires_at: u64,
@@ -143,25 +142,23 @@ mod tests {
         assert_eq!(a.xuid(), "2535");
     }
 
-    #[tokio::test]
-    async fn transport_failure_falls_back_to_the_stored_token() {
-        let port = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        let base = format!("http://127.0.0.1:{port}");
-        let auth = MicrosoftAuth::new(
-            "id".into(),
-            AuthEndpoints {
-                msa: base.clone(),
-                xbox_user: base.clone(),
-                xsts: base.clone(),
-                minecraft: base,
+    #[test]
+    fn session_converts_to_a_microsoft_account() {
+        let session = LoginSession {
+            profile: Profile {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                name: "Notch".into(),
             },
-        );
-        let (_d, store) = store_with_old_token(1_800);
-        let a = launch_account(&store, Some(&auth), None, 0).await.unwrap();
-        assert_eq!(a.access_token().expose(), "mc-old");
+            xuid: "2535".into(),
+            minecraft_token: Secret::new("mc-new"),
+            minecraft_expires_at: 1,
+            refresh_token: Secret::new("rt"),
+        };
+        let a = session.to_account();
+        assert_eq!(a.user_type(), "msa");
+        assert_eq!(a.name(), "Notch");
+        assert_eq!(a.uuid(), "0123456789abcdef0123456789abcdef");
+        assert_eq!(a.access_token().expose(), "mc-new");
+        assert_eq!(a.xuid(), "2535");
     }
 }

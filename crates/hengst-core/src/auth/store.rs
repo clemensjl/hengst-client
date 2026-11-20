@@ -128,6 +128,28 @@ pub struct AccountsFile {
     pub accounts: Vec<StoredAccount>,
 }
 
+/// Reads the account metadata file without touching any secret store, e.g.
+/// for listing. A missing file is an empty list; an unreadable, malformed or
+/// foreign (other version) file is an error.
+pub fn load_accounts_file(path: &std::path::Path) -> Result<AccountsFile> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(AccountsFile {
+                version: FILE_VERSION,
+                ..AccountsFile::default()
+            })
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let file: AccountsFile = serde_json::from_str(&raw)?;
+    if file.version != FILE_VERSION {
+        let msg = format!("unsupported accounts file version {}", file.version);
+        return Err(<serde_json::Error as serde::de::Error>::custom(msg).into());
+    }
+    Ok(file)
+}
+
 pub struct AccountStore<S: SecretStore> {
     file: PathBuf,
     secrets: S,
@@ -141,22 +163,7 @@ impl<S: SecretStore> AccountStore<S> {
     /// A missing file is an empty list; an unreadable, malformed or foreign
     /// (other version) file is an error and is left untouched.
     pub fn load(&self) -> Result<AccountsFile> {
-        let raw = match std::fs::read_to_string(&self.file) {
-            Ok(raw) => raw,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(AccountsFile {
-                    version: FILE_VERSION,
-                    ..AccountsFile::default()
-                })
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let file: AccountsFile = serde_json::from_str(&raw)?;
-        if file.version != FILE_VERSION {
-            let msg = format!("unsupported accounts file version {}", file.version);
-            return Err(<serde_json::Error as serde::de::Error>::custom(msg).into());
-        }
-        Ok(file)
+        load_accounts_file(&self.file)
     }
 
     /// Temp file next to the target, then rename over it.
@@ -286,6 +293,20 @@ mod tests {
             minecraft_expires_at: 1_000,
             refresh_token: Secret::new(rt),
         }
+    }
+
+    #[test]
+    fn accounts_can_be_listed_without_a_secret_store() {
+        let (_d, file, store) = fresh();
+        store
+            .save_session(&session("Steve", UUID_A, "mc-a", "rt-a"))
+            .unwrap();
+        let listed = load_accounts_file(&file).unwrap();
+        assert_eq!(listed.accounts.len(), 1);
+        assert_eq!(listed.accounts[0].name, "Steve");
+        assert_eq!(listed.default.as_deref(), Some(UUID_A));
+        let missing = load_accounts_file(&file.with_file_name("none.json")).unwrap();
+        assert!(missing.accounts.is_empty());
     }
 
     fn fresh() -> (

@@ -2,7 +2,7 @@
 /// Microsoft's free-text error descriptions.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
-    #[error("no Microsoft client id configured; set HENGST_MS_CLIENT_ID (the official id is not published yet)")]
+    #[error("no Microsoft client id configured; set HENGST_MS_CLIENT_ID")]
     MissingClientId,
     #[error("the sign-in code expired before it was used; run \"hengst login\" again")]
     DeviceCodeExpired,

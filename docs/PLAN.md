@@ -198,7 +198,7 @@ Priorität: **M** = MVP (v0.1), **1** = v1.0, **S** = später.
 
 ## 11. Fahrplan
 
-Stand 20.11.2026: Phase 0 und 1 erledigt (PR #1), Phase 2 (Login) umgesetzt (Microsoft-Login per Device Code, Mehrfachkonten, Refresh, Offline-Sperre im Kern) und gegen aufgezeichnete Antworten getestet. Echte Anmeldung offen, bis Mojang die Azure-App freigibt; bis dahin antworten die Minecraft-Dienste mit 403, Client-ID alternativ per HENGST_MS_CLIENT_ID.
+Stand 20.11.2026: Phase 0 und 1 erledigt (PR #1), Phase 2 (Login) umgesetzt (Microsoft-Login per Device Code, Mehrfachkonten, Refresh, Offline-Sperre im Kern) und gegen gemockte Dienstantworten getestet; eine echte Anmeldung wurde noch nicht geprüft. Sie bleibt offen, bis Mojang die Azure-App freigibt; bis dahin antworten die Minecraft-Dienste mit 403, Client-ID alternativ per HENGST_MS_CLIENT_ID.
 
 | Phase | Inhalt | Ergebnis |
 |---|---|---|

@@ -40,13 +40,14 @@ pub(crate) fn next_interval(current: Duration, error: &str) -> Duration {
     }
 }
 
-/// Read the `error` code of a failed token response. The free-text
+/// Read the `error` code of a failed token response (HTTP 400, or 401 as Entra
+/// answers `invalid_client`). The free-text
 /// `error_description` is deliberately ignored.
 async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
     let status = resp.status().as_u16();
     let body = resp.bytes().await.map_err(http_error(url))?;
     match serde_json::from_slice::<ErrorResponse>(&body) {
-        Ok(e) if status == 400 => Ok(e.error),
+        Ok(e) if status == 400 || status == 401 => Ok(e.error),
         _ => Err(Error::Status {
             url: url.to_string(),
             status,
@@ -94,7 +95,7 @@ impl MicrosoftAuth {
             if Instant::now() >= deadline {
                 return Err(AuthError::DeviceCodeExpired.into());
             }
-            let resp = self
+            let resp = match self
                 .post_form(
                     &url,
                     &[
@@ -103,11 +104,20 @@ impl MicrosoftAuth {
                         ("device_code", code.device_code.expose()),
                     ],
                 )
-                .await?;
+                .await
+            {
+                Ok(resp) => resp,
+                // A dropped connection must not end the login; keep polling.
+                Err(Error::Http { .. }) => continue,
+                Err(e) => return Err(e),
+            };
             if resp.status().is_success() {
                 return parse_tokens(resp, &url).await;
             }
             let status = resp.status().as_u16();
+            if status >= 500 || status == 429 {
+                continue;
+            }
             let err = error_code(resp, &url).await?;
             match err.as_str() {
                 "authorization_pending" => {}
@@ -273,6 +283,78 @@ mod tests {
         let err = auth(&server).poll_device_login(&dc).await.unwrap_err();
         assert!(matches!(err, Error::Auth(AuthError::DeviceCodeExpired)));
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn polling_survives_a_server_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(token_ok())
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        let tokens = auth(&server).poll_device_login(&code()).await.unwrap();
+        assert_eq!(tokens.access_token.expose(), "at-1");
+        assert_eq!(server.received_requests().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn polling_survives_rate_limiting() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(429))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(token_ok())
+            .with_priority(2)
+            .mount(&server)
+            .await;
+        assert!(auth(&server).poll_device_login(&code()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn polling_through_endless_server_errors_ends_with_expiry() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let mut dc = code();
+        dc.expires_in = 1;
+        let err = auth(&server).poll_device_login(&dc).await.unwrap_err();
+        assert!(matches!(err, Error::Auth(AuthError::DeviceCodeExpired)));
+        assert!(!server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn invalid_client_with_401_maps_to_app_misconfigured() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(401)
+                    .set_body_json(json!({"error": "invalid_client", "error_description": "x"})),
+            )
+            .mount(&server)
+            .await;
+        match auth(&server).poll_device_login(&code()).await.unwrap_err() {
+            Error::Auth(AuthError::AppMisconfigured { code }) => assert_eq!(code, "invalid_client"),
+            other => panic!("unexpected: {other}"),
+        }
     }
 
     #[test]

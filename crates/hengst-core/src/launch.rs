@@ -164,7 +164,6 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
     })
 }
 
-/// Starts the game and waits for it to exit. Output goes to the current console.
 /// True in builds with the `dev-offline` cargo feature.
 pub const DEV_OFFLINE: bool = cfg!(feature = "dev-offline");
 
@@ -176,6 +175,7 @@ pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()>
     Ok(())
 }
 
+/// Starts the game and waits for it to exit. Output goes to the current console.
 pub async fn run(p: &Prepared) -> Result<i32> {
     ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
     let status = tokio::process::Command::new(&p.java)

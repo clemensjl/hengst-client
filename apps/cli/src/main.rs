@@ -1,11 +1,11 @@
 use clap::{Parser, Subcommand, ValueEnum};
 use hengst_core::args::Account;
 use hengst_core::auth::flow::launch_account;
-use hengst_core::auth::store::AccountStore;
 #[cfg(windows)]
 use hengst_core::auth::store::KeyringSecretStore;
 #[cfg(not(windows))]
 use hengst_core::auth::store::MemorySecretStore;
+use hengst_core::auth::store::{load_accounts_file, AccountStore};
 use hengst_core::auth::{client_id, unix_now, AuthEndpoints, MicrosoftAuth};
 use hengst_core::download::http_client;
 use hengst_core::launch::{
@@ -188,7 +188,7 @@ async fn main() -> anyhow::Result<()> {
             println!("Signed in as {}{suffix}", saved.name);
         }
         Cmd::Accounts { action: None } => {
-            let file = open_store(&paths)?.load()?;
+            let file = load_accounts_file(&paths.accounts_file())?;
             if file.accounts.is_empty() {
                 println!("No accounts. Run \"hengst login\" to add one.");
             }

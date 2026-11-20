@@ -141,10 +141,6 @@ async fn device_login_runs_the_whole_chain() {
     assert_eq!(s.xuid, "2535400000000001");
     assert_eq!(s.minecraft_expires_at, 1_000 + 86_400);
     assert_eq!(s.refresh_token.expose(), "rt-1");
-    let a = s.to_account();
-    assert_eq!(a.user_type(), "msa");
-    assert_eq!(a.name(), "Notch");
-    assert_eq!(a.uuid(), UUID.to_lowercase());
     let dbg = format!("{s:?}");
     assert!(!dbg.contains("mc-token"));
     assert!(!dbg.contains("rt-1"));
@@ -344,6 +340,21 @@ async fn server_error_near_expiry_uses_still_valid_token() {
     Mock::given(method("POST"))
         .and(path("/msa/token"))
         .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let (_d, store) = seeded("Steve", NOW + 1_800);
+    let a = launch_account(&store, Some(&auth(&server)), None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(a.name(), "Steve");
+}
+
+#[tokio::test]
+async fn rate_limited_refresh_near_expiry_uses_still_valid_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .respond_with(ResponseTemplate::new(429))
         .mount(&server)
         .await;
     let (_d, store) = seeded("Steve", NOW + 1_800);
