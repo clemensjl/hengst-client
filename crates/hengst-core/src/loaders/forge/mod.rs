@@ -1,12 +1,16 @@
-//! Version lists for Forge and NeoForge.
+//! Version lists and installers for Forge and NeoForge.
+
+pub mod installer;
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use super::{sort_newest_first, LoaderEndpoints, LoaderVersion};
-use crate::download::get_bytes;
-use crate::paths::validate_id;
+use super::{sort_newest_first, LoaderEndpoints, LoaderKind, LoaderVersion};
+use crate::download::{fill_missing_sha1, get_bytes, Download, Downloader};
+use crate::libraries::maven_path;
+use crate::paths::{join_relative, validate_id, Paths};
 use crate::{Error, Result};
 
 /// Forge has installers from 1.7.10 upward. IDs that are not of the form `1.X[.Y]` (snapshots,
@@ -139,6 +143,53 @@ pub async fn list_neoforge(
         .collect();
     sort_newest_first(&mut versions);
     Ok(versions)
+}
+
+/// Maven coordinate of the installer jar. Only Forge and NeoForge have installers.
+fn installer_coords(kind: LoaderKind, game: &str, maven: &str) -> String {
+    match kind {
+        LoaderKind::Forge => format!("net.minecraftforge:forge:{maven}:installer"),
+        LoaderKind::NeoForge if game == "1.20.1" => {
+            format!("net.neoforged:forge:{maven}:installer")
+        }
+        LoaderKind::NeoForge => format!("net.neoforged:neoforge:{maven}:installer"),
+        other => unreachable!("{other} has no installer"),
+    }
+}
+
+/// Download URL of the installer for a Forge or NeoForge build (`maven` is the full Maven version).
+///
+/// Panics for any other loader kind.
+pub fn installer_url(kind: LoaderKind, game: &str, maven: &str, ep: &LoaderEndpoints) -> String {
+    let rel = maven_path(&installer_coords(kind, game, maven)).expect("installer coordinates");
+    match kind {
+        LoaderKind::Forge => format!("{}/{rel}", ep.forge_maven),
+        _ => format!("{}/releases/{rel}", ep.neoforge_maven),
+    }
+}
+
+/// Downloads the installer into the shared libraries directory (at its Maven path), verified
+/// against the `.sha1` the Maven repository publishes next to it. Reuses a valid local copy.
+pub async fn fetch_installer(
+    dl: &Downloader,
+    paths: &Paths,
+    kind: LoaderKind,
+    game: &str,
+    maven: &str,
+    ep: &LoaderEndpoints,
+) -> Result<PathBuf> {
+    validate_id(game)?;
+    validate_id(maven)?;
+    let rel = maven_path(&installer_coords(kind, game, maven)).expect("installer coordinates");
+    let mut item = [Download {
+        url: installer_url(kind, game, maven, ep),
+        path: join_relative(&paths.libraries(), &rel)?,
+        sha1: None,
+    }];
+    fill_missing_sha1(dl, &mut item).await?;
+    dl.fetch_one(&item[0]).await?;
+    let [item] = item;
+    Ok(item.path)
 }
 
 #[cfg(test)]
@@ -431,5 +482,126 @@ mod tests {
             list_neoforge(&client, &ep, "1.21.1").await,
             Err(Error::Http { .. })
         ));
+    }
+
+    #[test]
+    fn installer_urls() {
+        let ep = LoaderEndpoints::default();
+        assert_eq!(
+            installer_url(LoaderKind::Forge, "1.7.10", "1.7.10-10.13.4.1614-1.7.10", &ep),
+            "https://maven.minecraftforge.net/net/minecraftforge/forge/1.7.10-10.13.4.1614-1.7.10/forge-1.7.10-10.13.4.1614-1.7.10-installer.jar"
+        );
+        assert_eq!(
+            installer_url(LoaderKind::NeoForge, "1.20.1", "1.20.1-47.1.106", &ep),
+            "https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.106/forge-1.20.1-47.1.106-installer.jar"
+        );
+        assert_eq!(
+            installer_url(LoaderKind::NeoForge, "26.3", "26.3.0.115", &ep),
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/26.3.0.115/neoforge-26.3.0.115-installer.jar"
+        );
+    }
+
+    const NEO_INSTALLER: &str =
+        "/neo/releases/net/neoforged/neoforge/21.1.172/neoforge-21.1.172-installer.jar";
+
+    async fn installer_server(sidecar: Option<String>) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(NEO_INSTALLER))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"installer".to_vec()))
+            .mount(&server)
+            .await;
+        if let Some(body) = sidecar {
+            Mock::given(method("GET"))
+                .and(path(format!("{NEO_INSTALLER}.sha1")))
+                .respond_with(ResponseTemplate::new(200).set_body_string(body))
+                .mount(&server)
+                .await;
+        }
+        server
+    }
+
+    #[tokio::test]
+    async fn fetches_installer_verified_by_sidecar() {
+        let server = installer_server(Some(crate::download::sha1_hex(b"installer"))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let file = fetch_installer(
+            &dl,
+            &paths,
+            LoaderKind::NeoForge,
+            "1.21.1",
+            "21.1.172",
+            &ep(&server),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            file,
+            paths
+                .libraries()
+                .join("net/neoforged/neoforge/21.1.172/neoforge-21.1.172-installer.jar")
+        );
+        assert_eq!(std::fs::read(&file).unwrap(), b"installer");
+    }
+
+    #[tokio::test]
+    async fn installer_with_wrong_sidecar_is_refused() {
+        let server = installer_server(Some(crate::download::sha1_hex(b"something else"))).await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let err = fetch_installer(
+            &dl,
+            &paths,
+            LoaderKind::NeoForge,
+            "1.21.1",
+            "21.1.172",
+            &ep(&server),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::Checksum { .. }), "{err}");
+        assert!(!paths
+            .libraries()
+            .join("net/neoforged/neoforge/21.1.172/neoforge-21.1.172-installer.jar")
+            .exists());
+    }
+
+    #[tokio::test]
+    async fn installer_without_sidecar_is_refused() {
+        let server = installer_server(None).await;
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let err = fetch_installer(
+            &dl,
+            &paths,
+            LoaderKind::NeoForge,
+            "1.21.1",
+            "21.1.172",
+            &ep(&server),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::NoChecksum { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn installer_version_must_be_a_plain_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let ep = LoaderEndpoints::default();
+        for bad in ["../x", "1.0/../../x", "a:b", r"a\b"] {
+            assert!(
+                matches!(
+                    fetch_installer(&dl, &paths, LoaderKind::Forge, "1.12.2", bad, &ep).await,
+                    Err(Error::UnsafePath(_))
+                ),
+                "{bad}"
+            );
+        }
     }
 }
