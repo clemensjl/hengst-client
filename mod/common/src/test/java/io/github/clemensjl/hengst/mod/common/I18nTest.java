@@ -35,6 +35,12 @@ class I18nTest {
     }
 
     @Test
+    void get_with_arg_but_no_placeholder_returns_text_unchanged() {
+        I18n en = I18n.load("en_us");
+        assertEquals(en.get("hengst.title"), en.get("hengst.title", "x"));
+    }
+
+    @Test
     void both_language_files_have_the_same_keys() throws Exception {
         Set<String> en = langKeys("en_us");
         Set<String> de = langKeys("de_de");

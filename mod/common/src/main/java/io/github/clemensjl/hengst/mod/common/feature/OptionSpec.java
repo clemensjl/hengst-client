@@ -22,19 +22,53 @@ public final class OptionSpec {
     }
 
     public static OptionSpec toggle(String key, boolean def) {
+        requireKey(key);
         return new OptionSpec(key, Kind.TOGGLE, def, 0f, 0f, 0f, new String[0]);
     }
 
     public static OptionSpec intRange(String key, int def, int min, int max) {
+        requireKey(key);
+        requireRange(key, def, min, max);
         return new OptionSpec(key, Kind.INT_RANGE, def, min, max, 1f, new String[0]);
     }
 
     public static OptionSpec floatRange(String key, float def, float min, float max, float step) {
+        requireKey(key);
+        requireRange(key, def, min, max);
+        if (!(step > 0f)) {
+            throw new IllegalArgumentException("option " + key + ": step must be greater than 0, got " + step);
+        }
         return new OptionSpec(key, Kind.FLOAT_RANGE, def, min, max, step, new String[0]);
     }
 
     public static OptionSpec choice(String key, String def, String... values) {
+        requireKey(key);
+        if (values == null || values.length == 0) {
+            throw new IllegalArgumentException("option " + key + ": choice needs at least one value");
+        }
+        boolean found = false;
+        for (String v : values) {
+            found |= v != null && v.equals(def);
+        }
+        if (!found) {
+            throw new IllegalArgumentException("option " + key + ": default '" + def + "' is not one of the values");
+        }
         return new OptionSpec(key, Kind.CHOICE, def, 0f, 0f, 0f, values.clone());
+    }
+
+    private static void requireKey(String key) {
+        if (key == null || key.isEmpty()) {
+            throw new IllegalArgumentException("option key must not be null or empty");
+        }
+    }
+
+    private static void requireRange(String key, double def, double min, double max) {
+        if (min > max) {
+            throw new IllegalArgumentException("option " + key + ": min " + min + " is greater than max " + max);
+        }
+        if (!(def >= min && def <= max)) {
+            throw new IllegalArgumentException("option " + key + ": default " + def + " is outside [" + min + ", " + max + "]");
+        }
     }
 
     public String key() {
@@ -74,7 +108,11 @@ public final class OptionSpec {
                 if (!(raw instanceof Number)) {
                     return def;
                 }
-                long v = Math.round(((Number) raw).doubleValue());
+                double n = ((Number) raw).doubleValue();
+                if (Double.isNaN(n)) {
+                    return def;
+                }
+                long v = Math.round(n);
                 return (int) Math.max((long) min, Math.min((long) max, v));
             }
             case FLOAT_RANGE: {
