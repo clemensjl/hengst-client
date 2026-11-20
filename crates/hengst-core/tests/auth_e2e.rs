@@ -1,6 +1,10 @@
+use hengst_core::auth::flow::{launch_account, needs_refresh, LoginSession};
+use hengst_core::auth::minecraft::Profile;
 use hengst_core::auth::msa::MsaTokens;
-use hengst_core::auth::{AuthEndpoints, MicrosoftAuth};
+use hengst_core::auth::store::{AccountStore, MemorySecretStore, SecretKind};
+use hengst_core::auth::{AuthEndpoints, AuthError, MicrosoftAuth};
 use hengst_core::secret::Secret;
+use hengst_core::Error;
 use serde_json::json;
 use wiremock::matchers::{body_string_contains, header, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -183,4 +187,204 @@ async fn refresh_session_returns_rotated_refresh_token() {
         .unwrap();
     assert_eq!(s.refresh_token.expose(), "rt-2");
     assert_eq!(s.minecraft_expires_at, 7 + 86_400);
+}
+
+const NOW: u64 = 1_000_000;
+
+/// A store holding one saved login (`Steve`, or `Notch` to match the mock chain).
+fn seeded(name: &str, expires_at: u64) -> (tempfile::TempDir, AccountStore<MemorySecretStore>) {
+    let dir = tempfile::tempdir().unwrap();
+    let store = AccountStore::new(
+        dir.path().join("accounts.json"),
+        MemorySecretStore::default(),
+    );
+    store
+        .save_session(&LoginSession {
+            profile: Profile {
+                id: UUID.to_lowercase(),
+                name: name.into(),
+            },
+            xuid: "2535".into(),
+            minecraft_token: Secret::new("mc-old"),
+            minecraft_expires_at: expires_at,
+            refresh_token: Secret::new("rt-1"),
+        })
+        .unwrap();
+    (dir, store)
+}
+
+/// Endpoints on a port nobody listens on.
+fn closed_port_auth() -> MicrosoftAuth {
+    let port = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let base = format!("http://127.0.0.1:{port}");
+    MicrosoftAuth::new(
+        "test-id".into(),
+        AuthEndpoints {
+            msa: format!("{base}/msa"),
+            xbox_user: format!("{base}/xuser"),
+            xsts: format!("{base}/xsts"),
+            minecraft: format!("{base}/mc"),
+        },
+    )
+}
+
+#[test]
+fn refresh_is_due_inside_the_one_hour_margin() {
+    let (_d, store) = seeded("Steve", NOW + 3_600);
+    let acc = store.find(None).unwrap();
+    assert!(needs_refresh(&acc, NOW));
+    assert!(!needs_refresh(&acc, NOW - 1));
+}
+
+#[tokio::test]
+async fn fresh_token_launches_without_network() {
+    let (_d, store) = seeded("Steve", NOW + 7_200);
+    let a = launch_account(&store, None, None, NOW).await.unwrap();
+    assert_eq!(a.user_type(), "msa");
+    assert_eq!(a.name(), "Steve");
+    assert_eq!(a.uuid(), UUID.to_lowercase());
+}
+
+#[tokio::test]
+async fn near_expiry_without_client_id_is_reported() {
+    let (_d, store) = seeded("Steve", NOW + 600);
+    let e = launch_account(&store, None, None, NOW).await.unwrap_err();
+    assert!(matches!(e, Error::Auth(AuthError::MissingClientId)));
+}
+
+#[tokio::test]
+async fn near_expiry_refreshes_and_stores_rotated_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .and(body_string_contains("refresh_token=rt-1"))
+        .respond_with(token_ok("rt-2"))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_chain(&server, json!({"items": []}), None).await;
+    let (_d, store) = seeded("Notch", NOW + 600);
+
+    let a = launch_account(&store, Some(&auth(&server)), None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(a.name(), "Notch");
+    let acc = store.find(None).unwrap();
+    assert_eq!(acc.minecraft_expires_at, NOW + 86_400);
+    assert_eq!(
+        store.secret(&acc, SecretKind::Refresh).unwrap().expose(),
+        "rt-2"
+    );
+    assert_eq!(
+        store.secret(&acc, SecretKind::Minecraft).unwrap().expose(),
+        "mc-token"
+    );
+
+    // The rotated token is the one the next refresh uses.
+    let second = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .and(body_string_contains("refresh_token=rt-2"))
+        .respond_with(token_ok("rt-3"))
+        .expect(1)
+        .mount(&second)
+        .await;
+    mount_chain(&second, json!({"items": []}), None).await;
+    launch_account(&store, Some(&auth(&second)), None, NOW + 86_400 - 600)
+        .await
+        .unwrap();
+    let acc = store.find(None).unwrap();
+    assert_eq!(
+        store.secret(&acc, SecretKind::Refresh).unwrap().expose(),
+        "rt-3"
+    );
+}
+
+#[tokio::test]
+async fn rejected_refresh_asks_for_login_again() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(json!({"error": "invalid_grant", "error_description": "x"})),
+        )
+        .mount(&server)
+        .await;
+    let (_d, store) = seeded("Steve", NOW + 600);
+    let e = launch_account(&store, Some(&auth(&server)), None, NOW)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Auth(AuthError::LoginExpired { ref name }) if name == "Steve"));
+    assert_eq!(store.load().unwrap().accounts.len(), 1);
+}
+
+#[tokio::test]
+async fn offline_network_near_expiry_uses_still_valid_token() {
+    let (_d, store) = seeded("Steve", NOW + 1_800);
+    let a = launch_account(&store, Some(&closed_port_auth()), None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(a.name(), "Steve");
+
+    let (_d, store) = seeded("Steve", NOW - 1);
+    let e = launch_account(&store, Some(&closed_port_auth()), None, NOW)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Http { .. }));
+}
+
+#[tokio::test]
+async fn server_error_near_expiry_uses_still_valid_token() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    let (_d, store) = seeded("Steve", NOW + 1_800);
+    let a = launch_account(&store, Some(&auth(&server)), None, NOW)
+        .await
+        .unwrap();
+    assert_eq!(a.name(), "Steve");
+}
+
+#[tokio::test]
+async fn auth_error_near_expiry_blocks_the_launch() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/msa/token"))
+        .respond_with(token_ok("rt-2"))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/xuser/user/authenticate"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Token": "xbl-token",
+            "DisplayClaims": {"xui": [{"uhs": "uhs1"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/xsts/xsts/authorize"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "Token": "xsts-token",
+            "DisplayClaims": {"xui": [{"uhs": "uhs1"}]}
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/mc/authentication/login_with_xbox"))
+        .respond_with(ResponseTemplate::new(403))
+        .mount(&server)
+        .await;
+    let (_d, store) = seeded("Steve", NOW + 1_800);
+    let e = launch_account(&store, Some(&auth(&server)), None, NOW)
+        .await
+        .unwrap_err();
+    assert!(matches!(e, Error::Auth(AuthError::AppNotApproved)));
 }
