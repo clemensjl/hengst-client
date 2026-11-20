@@ -35,6 +35,8 @@ public final class KeystrokesModule extends HudModule {
     private static final int RMB = 5;
 
     private final String[] labels = {"", "", "", "", "LMB", "RMB"};
+    // What is drawn: the label, or its longest prefix that fits the cell; and that text's width. Refitted when a label changes.
+    private final String[] shown = {"", "", "", "", "LMB", "RMB"};
     private final int[] labelWidths = {-1, -1, -1, -1, -1, -1};
     private int refreshIn;
 
@@ -104,12 +106,25 @@ public final class KeystrokesModule extends HudModule {
     private void cell(Canvas c, ModuleConfig cfg, InputView input, GameKey key, int slot, int x, int y, int w, int h) {
         boolean down = input.isDown(key);
         c.fill(x, y, x + w, y + h, down ? PRESSED_FILL : IDLE_FILL);
-        int tw = labelWidths[slot];
-        if (tw < 0) {
-            tw = c.textWidth(labels[slot]);
-            labelWidths[slot] = tw;
+        if (labelWidths[slot] < 0) {
+            fit(c, slot, w);
         }
-        c.text(labels[slot], x + (w - tw) / 2, y + (h - c.fontHeight()) / 2,
-                down ? PRESSED_TEXT : cfg.textColor(), cfg.shadow() && !down);
+        String text = shown[slot];
+        if (!text.isEmpty()) {
+            c.text(text, x + (w - labelWidths[slot]) / 2, y + (h - c.fontHeight()) / 2,
+                    down ? PRESSED_TEXT : cfg.textColor(), cfg.shadow() && !down);
+        }
+    }
+
+    /** Runs once per label change (needs the canvas for measuring); allocates only when it has to cut. */
+    private void fit(Canvas c, int slot, int cellWidth) {
+        String text = labels[slot];
+        int tw = c.textWidth(text);
+        while (tw > cellWidth && !text.isEmpty()) {
+            text = text.substring(0, text.length() - 1);
+            tw = c.textWidth(text);
+        }
+        shown[slot] = text;
+        labelWidths[slot] = tw;
     }
 }

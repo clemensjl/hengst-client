@@ -66,6 +66,43 @@ class CountersTest {
     }
 
     @Test
+    void fps_is_zero_after_a_gap_and_the_next_window_starts_fresh() {
+        FakeTime t = new FakeTime();
+        FrameCounter f = new FrameCounter(t);
+        for (int i = 0; i < 100; i++) {
+            f.onFrame();
+        }
+        t.advanceMillis(1000);
+        f.onFrame();
+        assertEquals(100, f.fps());
+        t.advanceMillis(2000);
+        assertEquals(100, f.fps());
+        t.advanceMillis(1);
+        assertEquals(0, f.fps());
+        f.onFrame();
+        assertEquals(0, f.fps());
+        for (int i = 0; i < 49; i++) {
+            f.onFrame();
+        }
+        t.advanceMillis(1000);
+        f.onFrame();
+        assertEquals(50, f.fps());
+    }
+
+    @Test
+    void fps_at_a_very_low_frame_rate_is_not_absurd() {
+        FakeTime t = new FakeTime();
+        FrameCounter f = new FrameCounter(t);
+        f.onFrame();
+        t.advanceMillis(1500);
+        f.onFrame();
+        assertEquals(1, f.fps());
+        t.advanceMillis(5000);
+        f.onFrame();
+        assertEquals(0, f.fps());
+    }
+
+    @Test
     void cps_counts_presses_in_window() {
         FakeTime t = new FakeTime();
         CpsCounter c = new CpsCounter(t);

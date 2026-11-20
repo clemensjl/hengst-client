@@ -83,7 +83,7 @@ public final class HudRenderer {
             try {
                 m[i].tick(ctx, c[i]);
             } catch (RuntimeException e) {
-                fail(i, e, ctx);
+                fail(bad, i, m[i], e, ctx);
             }
         }
     }
@@ -122,14 +122,14 @@ public final class HudRenderer {
                     canvas.popTransform();
                 }
             } catch (RuntimeException e) {
-                fail(i, e, ctx);
+                fail(bad, i, module, e, ctx);
             }
         }
     }
 
     /** Cold path: marks the module failed and logs once; the message is built only here. */
-    private void fail(int index, RuntimeException e, HudContext ctx) {
-        failed[index] = true;
-        ctx.platform().logWarning("HUD module " + modules[index].id() + " failed and is disabled until the next reload: " + e);
+    private void fail(boolean[] bad, int index, HudModule module, RuntimeException e, HudContext ctx) {
+        bad[index] = true;
+        ctx.platform().logWarning("HUD module " + module.id() + " failed and is disabled until the next reload: " + e);
     }
 }

@@ -172,7 +172,7 @@ class ModulesTest {
     }
 
     @Test
-    void coordinates_with_two_decimals_truncate() {
+    void coordinates_with_two_decimals_round() {
         platform.inWorld = true;
         platform.playerX = 1.239;
         platform.playerY = 64.0;
@@ -180,7 +180,7 @@ class ModulesTest {
         cfg.setOption("decimals", 2);
         CoordinatesModule coords = new CoordinatesModule();
         coords.tick(ctx, cfg);
-        assertEquals("X 1.23  Y 64.00  Z -0.50", coords.text());
+        assertEquals("X 1.24  Y 64.00  Z -0.50", coords.text());
     }
 
     @Test
@@ -197,11 +197,46 @@ class ModulesTest {
 
     @Test
     void coordinates_near_zero() {
-        assertEquals("X 0.00  Y 0.01  Z 0.50", coords(0.004, 0.019, 0.5, 2));
+        assertEquals("X 0.00  Y 0.02  Z 0.50", coords(0.004, 0.019, 0.5, 2));
         assertEquals("X 0  Y 0  Z 0", coords(0.999, 0.1, 0.0001, 0));
-        // floor, like the block position: a hair below zero belongs to the next lower step
+        // without decimals: floor, like the block position; with decimals: rounded, and no sign on a rounded zero
         assertEquals("X -1  Y 0  Z 0", coords(-0.001, 0.0, 0.0, 0));
-        assertEquals("X -0.01  Y 0.00  Z 0.00", coords(-0.001, 0.0, 0.0, 2));
+        assertEquals("X 0.00  Y 0.00  Z 0.00", coords(-0.001, 0.0, 0.0, 2));
+    }
+
+    @Test
+    void coordinates_round_with_decimals_and_floor_without() {
+        assertEquals("X 0.29  Y 0.29  Z 0.29", coords(0.29, 0.29, 0.29, 2));
+        assertEquals("X 124.00  Y 124.00  Z 124.00", coords(123.999, 123.999, 123.999, 2));
+        assertEquals("X 0.0  Y 0.0  Z 0.0", coords(-0.04, -0.04, -0.04, 1));
+        assertEquals("X -1  Y -1  Z -1", coords(-0.5, -0.5, -0.5, 0));
+        assertEquals("X -0.5  Y -0.5  Z -0.5", coords(-0.5, -0.5, -0.5, 1));
+        assertEquals("X 0.01  Y 0.01  Z 0.01", coords(0.005, 0.005, 0.005, 2));
+        assertEquals("X -0.01  Y -0.01  Z -0.01", coords(-0.005, -0.005, -0.005, 2));
+        assertEquals("X 30000000.00  Y 30000000.00  Z 30000000.00", coords(29999999.999, 29999999.999, 29999999.999, 2));
+    }
+
+    @Test
+    void coordinates_show_a_placeholder_for_axes_that_are_not_sane_numbers() {
+        assertEquals("X ?  Y 64  Z ?", coords(1e20, 64.0, Double.NaN, 0));
+        assertEquals("X ?  Y ?  Z ?", coords(Double.POSITIVE_INFINITY, Double.NEGATIVE_INFINITY, -1e16, 2));
+        assertEquals("X ?  Y 1.00  Z ?", coords(Double.NaN, 1.0, 1e20, 2));
+        assertEquals("X 1000000000000000  Y -1000000000000000  Z 0", coords(1e15, -1e15, 0.0, 0));
+    }
+
+    @Test
+    void coordinates_recover_after_a_placeholder() {
+        platform.inWorld = true;
+        platform.playerX = Double.NaN;
+        CoordinatesModule m = new CoordinatesModule();
+        m.tick(ctx, cfg);
+        assertEquals("X ?  Y 0  Z 0", m.text());
+        String first = m.text();
+        m.tick(ctx, cfg);
+        assertSame(first, m.text());
+        platform.playerX = 5;
+        m.tick(ctx, cfg);
+        assertEquals("X 5  Y 0  Z 0", m.text());
     }
 
     @Test
@@ -392,6 +427,69 @@ class ModulesTest {
         c.calls.clear();
         k.render(c, cfg, ctx);
         assertEquals("text Up 23 4 ffffffff true", c.calls.get(1));
+    }
+
+    @Test
+    void keystrokes_long_label_is_cut_to_the_longest_prefix_that_fits_the_cell() {
+        labels();
+        platform.labels.put(GameKey.FORWARD, "Button 4");
+        KeystrokesModule k = new KeystrokesModule();
+        FakeCanvas c = new FakeCanvas();
+        k.tick(ctx, cfg);
+        k.render(c, cfg, ctx);
+        // 18 px cell, 6 px per char: "But" is the longest prefix that fits, centred at 20 + (18 - 18) / 2
+        assertEquals("text But 20 4 ffffffff true", c.calls.get(1));
+        c.calls.clear();
+        k.render(c, cfg, ctx);
+        assertEquals("text But 20 4 ffffffff true", c.calls.get(1));
+    }
+
+    @Test
+    void keystrokes_label_that_fits_exactly_is_not_cut() {
+        labels();
+        platform.labels.put(GameKey.FORWARD, "Up");
+        platform.labels.put(GameKey.LEFT, "Tab");
+        KeystrokesModule k = new KeystrokesModule();
+        FakeCanvas c = new FakeCanvas();
+        k.tick(ctx, cfg);
+        k.render(c, cfg, ctx);
+        assertEquals("text Up 23 4 ffffffff true", c.calls.get(1));
+        assertEquals("text Tab 0 24 ffffffff true", c.calls.get(3));
+    }
+
+    @Test
+    void keystrokes_null_and_empty_labels_draw_no_text() {
+        labels();
+        platform.labels.put(GameKey.FORWARD, null);
+        platform.labels.put(GameKey.LEFT, "");
+        KeystrokesModule k = new KeystrokesModule();
+        FakeCanvas c = new FakeCanvas();
+        k.tick(ctx, cfg);
+        k.render(c, cfg, ctx);
+        int texts = 0;
+        for (String call : c.calls) {
+            if (call.startsWith("text ")) {
+                texts++;
+            }
+        }
+        assertEquals(4, texts);   // S, D, LMB, RMB
+        assertEquals("fill 20 0 38 18 6f000000", c.calls.get(0));
+        assertEquals("fill 0 20 18 38 6f000000", c.calls.get(1));
+    }
+
+    @Test
+    void keystrokes_label_that_changes_is_fitted_again() {
+        labels();
+        platform.labels.put(GameKey.FORWARD, "Button 4");
+        KeystrokesModule k = new KeystrokesModule();
+        FakeCanvas c = new FakeCanvas();
+        k.tick(ctx, cfg);
+        platform.labels.put(GameKey.FORWARD, "W");
+        for (int i = 0; i < 20; i++) {
+            k.tick(ctx, cfg);
+        }
+        k.render(c, cfg, ctx);
+        assertEquals("text W 26 4 ffffffff true", c.calls.get(1));
     }
 
     @Test

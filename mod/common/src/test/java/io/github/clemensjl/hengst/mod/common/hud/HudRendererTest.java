@@ -206,6 +206,59 @@ class HudRendererTest {
         assertEquals(2, platform.warnings.size());
     }
 
+    /** Rebuilds the renderer to fewer modules from inside its callback and then throws. */
+    static final class RebuildThenThrow extends HudModule {
+        HudRenderer renderer;
+        Profile profile;
+
+        RebuildThenThrow() {
+            super("bad", 2, EnumSet.allOf(GameVersion.class));
+        }
+
+        @Override
+        public void tick(HudContext ctx, ModuleConfig cfg) {
+            profile.module("a").setEnabled(false);
+            profile.module("c").setEnabled(false);
+            renderer.rebuild(profile);
+            throw new IllegalStateException("tick boom");
+        }
+
+        @Override
+        public int width(Canvas c, ModuleConfig cfg) {
+            return 10;
+        }
+
+        @Override
+        public int height(Canvas c, ModuleConfig cfg) {
+            return 10;
+        }
+
+        @Override
+        public void render(Canvas c, ModuleConfig cfg, HudContext ctx) {}
+    }
+
+    @Test
+    void module_that_rebuilds_and_then_throws_is_reported_once_without_escaping() {
+        RebuildThenThrow bad = new RebuildThenThrow();
+        Profile[] p = new Profile[1];
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new FixedSizeModule("a", 1, 10, 10));
+        reg.register(bad);
+        reg.register(new FixedSizeModule("c", 3, 10, 10));
+        p[0] = new Profile();
+        p[0].module("a").setEnabled(true);
+        p[0].module("bad").setEnabled(true);
+        p[0].module("c").setEnabled(true);
+        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        r.rebuild(p[0]);
+        bad.renderer = r;
+        bad.profile = p[0];
+        r.tick(ctx);
+        assertEquals(1, r.activeCount());
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("bad"));
+    }
+
     @Test
     void empty_text_module_has_no_size_and_draws_nothing() {
         Fixed m = new Fixed("a", 1);
