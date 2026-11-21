@@ -332,12 +332,23 @@ fn main_artifacts(kind: LoaderKind) -> &'static [&'static str] {
     }
 }
 
+/// The coordinate of the patched client jar (the client value of `PATCHED`, a whole
+/// `[coordinate]`), which the processors produce.
+pub fn patched_coordinate(profile: &ModernProfile) -> Option<&str> {
+    profile
+        .data
+        .get("PATCHED")?
+        .client
+        .strip_prefix('[')?
+        .strip_suffix(']')
+}
+
 /// The artifacts a modern profile marks as installer-provided (empty `url`), as relative path and
 /// declared SHA-1. Each must be a plain `jar` of the installer's own `group`, its path must be
 /// exactly what the coordinate maps to, and the same file (compared case-insensitively) must not
 /// be declared twice with different content. A provided artifact of the loader's own main
 /// artifact must carry exactly the requested build `maven`. A missing or malformed hash is
-/// refused.
+/// refused. The patched client jar is validated the same way but not returned: it is not provided.
 fn provided_artifacts(
     profile: &ModernProfile,
     version: &VersionJson,
@@ -390,6 +401,11 @@ fn provided_artifacts(
                 a.path
             ))
         })?;
+        // The patched client jar (Forge 26.x lists it with an empty url) is written by the
+        // processors, not taken from the installer; it is checked after the processor stage.
+        if Some(name.as_str()) == patched_coordinate(profile) {
+            continue;
+        }
         let entry = (a.path.clone(), a.sha1.to_ascii_lowercase());
         if out
             .insert(a.path.to_ascii_lowercase(), entry.clone())

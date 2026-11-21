@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use self::installer::{
-    check_game, extract_embedded, read_installer, InstallerContents, InstallerKind,
+    check_game, extract_embedded, patched_coordinate, read_installer, InstallerContents,
+    InstallerKind,
 };
 use self::processors::{
     install_state_valid, plan, run_processors, write_marker, InstallEnv, ProcessRunner,
@@ -454,19 +455,20 @@ pub fn open_installer(
     })
 }
 
-/// Every installer-provided artifact (empty `url`) of the merged version must be present with the
-/// SHA-1 the installer declares; these never pass through the downloader.
-fn verify_provided(merged: &VersionJson, libraries: &Path) -> Result<()> {
+/// Every artifact of the merged version without a download (empty `url`) must be present with the
+/// SHA-1 the installer declares; these never pass through the downloader. `skip` is the library
+/// path of the patched client jar while the processors have not run yet.
+fn verify_provided(merged: &VersionJson, libraries: &Path, skip: Option<&str>) -> Result<()> {
     let provided = merged
         .libraries
         .iter()
         .filter_map(|l| l.downloads.as_ref()?.artifact.as_ref())
-        .filter(|a| a.url.is_empty());
+        .filter(|a| a.url.is_empty() && Some(a.path.as_str()) != skip);
     for a in provided {
         let file = join_relative(libraries, &a.path)?;
         if !sha1_file(&file).is_ok_and(|h| h.eq_ignore_ascii_case(&a.sha1)) {
             return Err(Error::Installer(format!(
-                "installer-provided {} is missing or does not match its declared SHA-1",
+                "{} is missing or does not match the SHA-1 the installer declares",
                 file.display()
             )));
         }
@@ -518,7 +520,11 @@ pub fn finish_install(
     // the verified installer, then check what goes on the classpath.
     let mut contents = fi.contents.clone();
     extract_embedded(&fi.installer, &mut contents, &libraries, fi.kind, &fi.maven)?;
-    verify_provided(merged, &libraries)?;
+    let patched = match &contents.kind {
+        InstallerKind::Modern(profile) => patched_coordinate(profile).and_then(maven_path),
+        InstallerKind::Legacy { .. } => None,
+    };
+    verify_provided(merged, &libraries, patched.as_deref())?;
     let InstallerKind::Modern(profile) = &contents.kind else {
         return Ok(());
     };
@@ -573,6 +579,8 @@ pub fn finish_install(
             &work,
             &install_log(paths, id),
         )?;
+        // Now the patched client jar exists and must match version.json too.
+        verify_provided(merged, &libraries, None)?;
         write_marker(&plan, &marker, &fi.installer_sha1)
     })();
     if result.is_ok() {
@@ -1152,6 +1160,19 @@ mod tests {
     /// A modern installer with one client processor that writes PATCHED, an installer-provided
     /// jar, the processor jar staged in the libraries and the vanilla jar in place.
     fn setup() -> Setup {
+        setup_with(&[])
+    }
+
+    /// The patched client jar as Forge 26.x lists it in version.json: empty url (not downloaded),
+    /// not inside the installer, produced by the processors.
+    fn patched_library(sha1: &str) -> serde_json::Value {
+        serde_json::json!({"name": "net.minecraftforge:forge:1.20.1-1.0:client", "downloads": {"artifact": {
+            "path": "net/minecraftforge/forge/1.20.1-1.0/forge-1.20.1-1.0-client.jar",
+            "url": "", "sha1": sha1, "size": 7}}})
+    }
+
+    /// `setup` with more libraries in version.json.
+    fn setup_with(extra_libraries: &[serde_json::Value]) -> Setup {
         let tmp = tempfile::tempdir().unwrap();
         let paths = Paths::new(tmp.path().join("home"));
         let tool = zip_bytes(&[(
@@ -1174,10 +1195,13 @@ mod tests {
                 "path": tool_rel, "url": "https://example.invalid/tool-1.jar",
                 "sha1": sha1_hex(&tool), "size": tool.len()}}}]
         });
+        let mut libraries = vec![
+            serde_json::json!({"name": "net.minecraftforge:forge:1.20.1-1.0", "downloads": {"artifact": {
+                "path": PROVIDED, "url": "", "sha1": sha1_hex(b"provided"), "size": 8}}}),
+        ];
+        libraries.extend_from_slice(extra_libraries);
         let version = serde_json::json!({
-            "id": ID, "inheritsFrom": "1.20.1", "mainClass": "m",
-            "libraries": [{"name": "net.minecraftforge:forge:1.20.1-1.0", "downloads": {"artifact": {
-                "path": PROVIDED, "url": "", "sha1": sha1_hex(b"provided"), "size": 8}}}]
+            "id": ID, "inheritsFrom": "1.20.1", "mainClass": "m", "libraries": libraries
         });
         let installer = tmp.path().join("installer.jar");
         std::fs::write(
@@ -1296,6 +1320,25 @@ mod tests {
         assert!(s.marker().is_file());
         std::fs::write(s.patched(), b"tampered").unwrap();
         assert!(s.finish_with(&processors::SystemRunner, &helper).is_err());
+        assert!(!s.marker().exists());
+    }
+
+    #[test]
+    fn patched_jar_listed_without_url_is_produced_by_the_processors_not_the_installer() {
+        let s = setup_with(&[patched_library(&sha1_hex(b"patched"))]);
+        let patcher = Patcher::default();
+        s.finish(&patcher).unwrap();
+        assert_eq!(patcher.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(s.patched()).unwrap(), b"patched");
+        s.finish(&NoStart).unwrap();
+
+        // The processors must produce exactly what version.json declares.
+        let s = setup_with(&[patched_library(&sha1_hex(b"something else"))]);
+        let err = s.finish(&Patcher::default()).unwrap_err();
+        assert!(
+            matches!(&err, Error::Installer(m) if m.contains("forge-1.20.1-1.0-client.jar")),
+            "{err}"
+        );
         assert!(!s.marker().exists());
     }
 
