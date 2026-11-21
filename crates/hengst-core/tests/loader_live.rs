@@ -444,11 +444,13 @@ async fn legacy_fabric_1_12_2() {
 // Loader evidence lines, taken from the first real run of each family:
 // - Forge 1.13 and later: FML's "Forge mod loading, version <build>, for MC <game>" (after
 //   ModLauncher has started the `forgeclient` target).
+// - NeoForge: "NeoForge mod loading, version <build>, for MC <game>".
 // - Forge before 1.13 (LaunchWrapper with FMLTweaker): "Forge Mod Loader version <build> for
 //   Minecraft <game> loading".
 
 const MODERN_FORGE: &str = "Forge mod loading, version ";
 const LEGACY_FORGE: &str = "Forge Mod Loader version ";
+const NEOFORGE: &str = "NeoForge mod loading, version ";
 
 #[tokio::test]
 #[ignore]
@@ -559,7 +561,7 @@ async fn neoforge_1_20_1() {
         None,
         Install::Processors,
         3072,
-        None,
+        Some(NEOFORGE),
     )
     .await
 }
@@ -573,7 +575,7 @@ async fn neoforge_1_21_1() {
         None,
         Install::Processors,
         3072,
-        None,
+        Some(NEOFORGE),
     )
     .await
 }
@@ -587,7 +589,7 @@ async fn neoforge_latest() {
         None,
         Install::Processors,
         3072,
-        None,
+        Some(NEOFORGE),
     )
     .await
 }
