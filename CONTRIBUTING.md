@@ -5,7 +5,7 @@ Bug reports, ideas and pull requests are welcome. The project is pre-alpha, so c
 ## Setup
 
 1. Fork the repository and clone your fork.
-2. Install Rust 1.85 or newer (rustup, with the `rustfmt` and `clippy` components).
+2. Install Rust 1.88 or newer (rustup, with the `rustfmt` and `clippy` components).
 3. Build and run the CLI:
 
        cargo build

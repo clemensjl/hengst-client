@@ -1,4 +1,4 @@
-use crate::args::{build_args, Account, LaunchContext};
+use crate::args::{build_args, Account, AccountKind, LaunchContext};
 use crate::assets::{install_assets, AssetsLayout, RESOURCES_URL};
 use crate::download::{http_client, Download, Downloader};
 use crate::java::{component_for, ensure_runtime, RUNTIME_INDEX_URL};
@@ -6,6 +6,7 @@ use crate::libraries;
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
 use crate::paths::{validate_id, Paths};
 use crate::rules::Env;
+use crate::secret::REDACTED;
 use crate::version::fetch_version;
 use crate::{Error, Result};
 use std::path::PathBuf;
@@ -39,12 +40,41 @@ pub struct LaunchOptions {
     pub memory_mb: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct Prepared {
     pub java: PathBuf,
     pub args: Vec<String>,
     pub game_dir: PathBuf,
     pub version_id: String,
+    account: Account,
+}
+
+impl Prepared {
+    /// Arguments safe to print: a Microsoft access token is replaced everywhere.
+    pub fn redacted_args(&self) -> Vec<String> {
+        match self.account.kind() {
+            AccountKind::Microsoft => {
+                let token = self.account.access_token().expose();
+                self.args
+                    .iter()
+                    .map(|a| a.replace(token, REDACTED))
+                    .collect()
+            }
+            AccountKind::Offline => self.args.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for Prepared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Prepared")
+            .field("java", &self.java)
+            .field("args", &self.redacted_args())
+            .field("game_dir", &self.game_dir)
+            .field("version_id", &self.version_id)
+            .field("account", &self.account)
+            .finish()
+    }
 }
 
 /// Downloads everything a version needs and builds the command line.
@@ -130,15 +160,101 @@ pub async fn prepare(paths: &Paths, opts: &LaunchOptions, ep: &Endpoints) -> Res
         args: build_args(&v, &ctx),
         game_dir,
         version_id: v.id.clone(),
+        account: opts.account.clone(),
     })
+}
+
+/// True in builds with the `dev-offline` cargo feature.
+pub const DEV_OFFLINE: bool = cfg!(feature = "dev-offline");
+
+/// Offline accounts may only start the game when `dev_offline` is set.
+pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()> {
+    if kind == AccountKind::Offline && !dev_offline {
+        return Err(Error::OfflineLaunchDisabled);
+    }
+    Ok(())
 }
 
 /// Starts the game and waits for it to exit. Output goes to the current console.
 pub async fn run(p: &Prepared) -> Result<i32> {
+    ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
     let status = tokio::process::Command::new(&p.java)
         .args(&p.args)
         .current_dir(&p.game_dir)
         .status()
         .await?;
     Ok(status.code().unwrap_or(-1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::secret::Secret;
+
+    fn prepared(args: &[&str], account: Account) -> Prepared {
+        Prepared {
+            java: PathBuf::from("java"),
+            args: args.iter().map(|s| s.to_string()).collect(),
+            game_dir: PathBuf::from("game"),
+            version_id: "1.21".into(),
+            account,
+        }
+    }
+
+    #[test]
+    fn redacts_microsoft_token_everywhere() {
+        let account = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok-123"),
+            "1".into(),
+        );
+        let p = prepared(
+            &[
+                "-Xmx2048M",
+                "--accessToken",
+                "tok-123",
+                "token:tok-123:uuid",
+            ],
+            account,
+        );
+        assert_eq!(
+            p.redacted_args(),
+            [
+                "-Xmx2048M",
+                "--accessToken",
+                "<redacted>",
+                "token:<redacted>:uuid"
+            ]
+        );
+        assert!(!format!("{p:?}").contains("tok-123"));
+    }
+
+    #[test]
+    fn offline_args_stay_untouched() {
+        let p = prepared(
+            &["-Xmx2048M", "-Xms512M", "--accessToken", "0"],
+            Account::offline("Dev"),
+        );
+        assert_eq!(p.redacted_args(), p.args);
+    }
+
+    #[test]
+    fn offline_needs_dev_offline() {
+        assert!(matches!(
+            ensure_launch_allowed(AccountKind::Offline, false),
+            Err(Error::OfflineLaunchDisabled)
+        ));
+        ensure_launch_allowed(AccountKind::Offline, true).unwrap();
+        ensure_launch_allowed(AccountKind::Microsoft, false).unwrap();
+    }
+
+    #[cfg(not(feature = "dev-offline"))]
+    #[tokio::test]
+    async fn run_refuses_offline_account_in_release_builds() {
+        let mut p = prepared(&[], Account::offline("Dev"));
+        p.java = PathBuf::from("C:/does-not-exist/java.exe");
+        // Not Io: the lock applies before any process is spawned.
+        assert!(matches!(run(&p).await, Err(Error::OfflineLaunchDisabled)));
+    }
 }

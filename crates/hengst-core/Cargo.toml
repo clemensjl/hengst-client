@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 
+[features]
+dev-offline = []
+
 [dependencies]
 dirs.workspace = true
 futures.workspace = true
@@ -18,6 +21,10 @@ sha1.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 zip.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+keyring-core.workspace = true
+windows-native-keyring-store.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

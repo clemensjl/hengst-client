@@ -22,6 +22,12 @@ pub enum Error {
     UnknownVersion(String),
     #[error("no Java runtime '{component}' available for {platform}")]
     NoRuntime { component: String, platform: String },
+    #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
+    OfflineLaunchDisabled,
+    #[error("Windows Credential Manager error: {0}")]
+    CredentialStore(String),
+    #[error(transparent)]
+    Auth(#[from] crate::auth::AuthError),
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

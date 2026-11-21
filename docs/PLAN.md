@@ -198,7 +198,7 @@ Priorität: **M** = MVP (v0.1), **1** = v1.0, **S** = später.
 
 ## 11. Fahrplan
 
-Stand 31.10.2026: Phase 0 (ohne Azure-/CurseForge-Antrag, die liegen bei Clemens) und Phase 1 erledigt, PR #1. Echt gestartet: 26.3, 1.21.11, 1.20.4, 1.16.5, 1.12.2, 1.8.9, 1.7.10, 1.5.2, b1.7.3, a1.2.6, rd-132211. Offene Punkte je Phase stehen im Abschlussbericht des Final-Reviews (Phase 2 beginnt mit: Offline-Sperre in den Kern verlagern, Token im Debug/Dry-Run schwärzen, `user_type` "msa").
+Stand 20.11.2026: Phase 0 und 1 erledigt (PR #1), Phase 2 (Login) umgesetzt (Microsoft-Login per Device Code, Mehrfachkonten, Refresh, Offline-Sperre im Kern) und gegen gemockte Dienstantworten getestet; eine echte Anmeldung wurde noch nicht geprüft. Sie bleibt offen, bis Mojang die Azure-App freigibt; bis dahin antworten die Minecraft-Dienste mit 403, Client-ID alternativ per HENGST_MS_CLIENT_ID.
 
 | Phase | Inhalt | Ergebnis |
 |---|---|---|
