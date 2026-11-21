@@ -1,17 +1,25 @@
 use crate::assets::AssetsLayout;
 use crate::rules::{rules_allow, Env};
+use crate::secret::Secret;
 use crate::version::{ArgValue, Argument, VersionJson};
+use crate::{Error, Result};
 use md5::{Digest, Md5};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountKind {
+    Microsoft,
+    Offline,
+}
+
 #[derive(Clone, Debug)]
 pub struct Account {
-    pub name: String,
-    pub uuid: String,
-    pub access_token: String,
-    pub user_type: String,
-    pub xuid: String,
+    name: String,
+    uuid: String,
+    access_token: Secret,
+    kind: AccountKind,
+    xuid: String,
 }
 
 impl Account {
@@ -24,9 +32,53 @@ impl Account {
         Self {
             name: name.to_string(),
             uuid: hex::encode(d),
-            access_token: "0".into(),
-            user_type: "legacy".into(),
+            access_token: Secret::new("0"),
+            kind: AccountKind::Offline,
             xuid: "0".into(),
+        }
+    }
+
+    /// Crate-private: Microsoft accounts are built only from a login session or
+    /// from the saved store, never by callers of the public API.
+    pub(crate) fn microsoft(
+        name: String,
+        uuid: String,
+        access_token: Secret,
+        xuid: String,
+    ) -> Self {
+        Self {
+            name,
+            uuid,
+            access_token,
+            kind: AccountKind::Microsoft,
+            xuid,
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn uuid(&self) -> &str {
+        &self.uuid
+    }
+
+    pub(crate) fn access_token(&self) -> &Secret {
+        &self.access_token
+    }
+
+    pub fn kind(&self) -> AccountKind {
+        self.kind
+    }
+
+    pub fn xuid(&self) -> &str {
+        &self.xuid
+    }
+
+    pub fn user_type(&self) -> &'static str {
+        match self.kind {
+            AccountKind::Microsoft => "msa",
+            AccountKind::Offline => "legacy",
         }
     }
 }
@@ -47,14 +99,15 @@ pub struct LaunchContext {
 
 const WINDOWS_HEAPDUMP: &str =
     "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump";
-const LEGACY_JVM: &[&str] = &[
+pub const LEGACY_JVM: &[&str] = &[
     "-Djava.library.path=${natives_directory}",
     "-cp",
     "${classpath}",
 ];
 
-/// Everything after the java executable: JVM args, main class, game args.
-pub fn build_args(v: &VersionJson, ctx: &LaunchContext) -> Vec<String> {
+/// Everything after the java executable: JVM args, main class, game args. A `${key}` placeholder
+/// the launcher does not know, in an argument that applies, is `Error::UnknownPlaceholder`.
+pub fn build_args(v: &VersionJson, ctx: &LaunchContext) -> Result<Vec<String>> {
     let vars = variables(v, ctx);
     let mut out = vec![
         format!("-Xmx{}M", ctx.memory_mb),
@@ -83,7 +136,14 @@ pub fn build_args(v: &VersionJson, ctx: &LaunchContext) -> Vec<String> {
         (_, Some(legacy)) => out.extend(legacy.split_whitespace().map(String::from)),
         _ => {}
     }
-    out.into_iter().map(|s| substitute(&s, &vars)).collect()
+    out.into_iter()
+        .map(|s| {
+            substitute(&s, &vars).map_err(|key| Error::UnknownPlaceholder {
+                version: v.id.clone(),
+                key,
+            })
+        })
+        .collect()
 }
 
 fn expand(args: &[Argument], env: &Env) -> Vec<String> {
@@ -114,14 +174,14 @@ fn variables(v: &VersionJson, ctx: &LaunchContext) -> HashMap<&'static str, Stri
     HashMap::from([
         ("auth_player_name", a.name.clone()),
         ("auth_uuid", a.uuid.clone()),
-        ("auth_access_token", a.access_token.clone()),
+        ("auth_access_token", a.access_token().expose().to_string()),
         (
             "auth_session",
-            format!("token:{}:{}", a.access_token, a.uuid),
+            format!("token:{}:{}", a.access_token().expose(), a.uuid),
         ),
         ("auth_xuid", a.xuid.clone()),
         ("clientid", "0".to_string()),
-        ("user_type", a.user_type.clone()),
+        ("user_type", a.user_type().to_string()),
         ("user_properties", "{}".to_string()),
         ("version_name", v.id.clone()),
         (
@@ -143,8 +203,10 @@ fn variables(v: &VersionJson, ctx: &LaunchContext) -> HashMap<&'static str, Stri
     ])
 }
 
-/// Replaces `${key}` with known values; unknown placeholders stay untouched.
-pub fn substitute(s: &str, vars: &HashMap<&str, String>) -> String {
+/// Replaces every `${key}` with its value in one pass (values are not expanded again). An unknown
+/// key is returned as the error, shortened to a printable excerpt; a `${` without a closing brace
+/// stays as it is.
+pub fn substitute(s: &str, vars: &HashMap<&str, String>) -> std::result::Result<String, String> {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("${") {
@@ -156,9 +218,15 @@ pub fn substitute(s: &str, vars: &HashMap<&str, String>) -> String {
                 match vars.get(key) {
                     Some(value) => out.push_str(value),
                     None => {
-                        out.push_str("${");
-                        out.push_str(key);
-                        out.push('}');
+                        let mut shown: String = key
+                            .chars()
+                            .take(40)
+                            .map(|c| if c.is_control() { '?' } else { c })
+                            .collect();
+                        if key.chars().count() > 40 {
+                            shown.push_str("...");
+                        }
+                        return Err(shown);
                     }
                 }
                 rest = &after[end + 1..];
@@ -170,13 +238,24 @@ pub fn substitute(s: &str, vars: &HashMap<&str, String>) -> String {
         }
     }
     out.push_str(rest);
-    out
+    Ok(out)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn account_debug_hides_token() {
+        let a = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok-123"),
+            "1".into(),
+        );
+        assert!(!format!("{a:?}").contains("tok-123"));
+    }
 
     fn ctx() -> LaunchContext {
         LaunchContext {
@@ -199,17 +278,131 @@ mod tests {
     #[test]
     fn offline_uuid_is_version_3_and_stable() {
         let a = Account::offline("Dev");
-        assert_eq!(a.uuid.len(), 32);
-        assert_eq!(&a.uuid[12..13], "3");
-        assert!(matches!(&a.uuid[16..17], "8" | "9" | "a" | "b"));
-        assert_eq!(a.uuid, Account::offline("Dev").uuid);
-        assert_ne!(a.uuid, Account::offline("Other").uuid);
+        assert_eq!(a.uuid().len(), 32);
+        assert_eq!(&a.uuid()[12..13], "3");
+        assert!(matches!(&a.uuid()[16..17], "8" | "9" | "a" | "b"));
+        assert_eq!(a.uuid(), Account::offline("Dev").uuid());
+        assert_ne!(a.uuid(), Account::offline("Other").uuid());
     }
 
     #[test]
-    fn substitute_keeps_unknown_placeholders() {
-        let vars = HashMap::from([("a", "1".to_string())]);
-        assert_eq!(substitute("x${a}y${b}z${", &vars), "x1y${b}z${");
+    fn offline_uuid_matches_java_name_uuid_vector() {
+        assert_eq!(
+            Account::offline("Notch").uuid(),
+            "b50ad385829d3141a2167e7d7539ba7f"
+        );
+        assert_eq!(
+            Account::offline("Dev").uuid(),
+            "380df991f603344ca090369bad2a924a"
+        );
+    }
+
+    #[test]
+    fn user_type_follows_account_kind() {
+        let ms = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok"),
+            "123".into(),
+        );
+        assert_eq!(ms.kind(), AccountKind::Microsoft);
+        assert_eq!(ms.user_type(), "msa");
+        assert_eq!(Account::offline("Dev").user_type(), "legacy");
+    }
+
+    #[test]
+    fn microsoft_account_fills_user_type_and_xuid_args() {
+        let v: VersionJson = serde_json::from_value(json!({
+            "id": "1.21.11", "type": "release", "mainClass": "net.minecraft.client.main.Main",
+            "arguments": {
+                "game": ["--userType", "${user_type}", "--xuid", "${auth_xuid}",
+                    "--accessToken", "${auth_access_token}", "--session", "${auth_session}"],
+                "jvm": ["-cp", "${classpath}"]
+            }
+        }))
+        .unwrap();
+        let mut c = ctx();
+        c.account = Account::microsoft(
+            "Steve".into(),
+            "a".repeat(32),
+            Secret::new("tok"),
+            "123".into(),
+        );
+        let args = build_args(&v, &c).unwrap();
+        let main = args
+            .iter()
+            .position(|a| a == "net.minecraft.client.main.Main")
+            .unwrap();
+        let session = format!("token:tok:{}", "a".repeat(32));
+        assert_eq!(
+            &args[main + 1..],
+            &[
+                "--userType",
+                "msa",
+                "--xuid",
+                "123",
+                "--accessToken",
+                "tok",
+                "--session",
+                session.as_str()
+            ]
+        );
+    }
+
+    #[test]
+    fn substitute_refuses_unknown_placeholders() {
+        let vars = HashMap::from([("a", "1".to_string()), ("b", "${a}".to_string())]);
+        assert_eq!(substitute("x${a}y${b}z${", &vars).unwrap(), "x1y${a}z${");
+        assert_eq!(substitute("x${a}y${c}", &vars).unwrap_err(), "c");
+    }
+
+    #[test]
+    fn unknown_placeholder_in_an_applying_argument_is_an_error() {
+        let v: VersionJson = serde_json::from_value(json!({
+            "id": "1.20.1-forge-47.4.28", "mainClass": "m",
+            "arguments": {
+                "game": [{"rules": [{"action": "allow", "features": {"is_demo_user": true}}], "value": "${not_applying}"}],
+                "jvm": ["-DlibraryDirectory=${library_directory}", "-Dx=${launcher_secret}"]
+            }
+        }))
+        .unwrap();
+        let err = build_args(&v, &ctx()).unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "1.20.1-forge-47.4.28 uses the launch argument placeholder ${launcher_secret}, which the launcher does not know"
+        );
+    }
+
+    /// The JVM arguments of the real Forge 1.20.1 (47.4.28) version.json.
+    #[test]
+    fn forge_jvm_placeholders_are_substituted() {
+        let v: VersionJson = serde_json::from_value(json!({
+            "id": "1.20.1-forge-47.4.28", "mainClass": "cpw.mods.bootstraplauncher.BootstrapLauncher",
+            "arguments": {
+                "game": ["--launchTarget", "forgeclient"],
+                "jvm": [
+                    "-Djava.net.preferIPv6Addresses=system",
+                    "-DignoreList=bootstraplauncher,securejarhandler,asm-commons,asm-util,asm-analysis,asm-tree,asm,JarJarFileSystems,client-extra,fmlcore,javafmllanguage,lowcodelanguage,mclanguage,forge-,${version_name}.jar",
+                    "-DmergeModules=jna-5.10.0.jar,jna-platform-5.10.0.jar",
+                    "-DlibraryDirectory=${library_directory}",
+                    "-p", "${library_directory}/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar${classpath_separator}${library_directory}/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar",
+                    "--add-modules", "ALL-MODULE-PATH",
+                    "--add-opens", "java.base/java.util.jar=cpw.mods.securejarhandler"
+                ]
+            }
+        }))
+        .unwrap();
+        let args = build_args(&v, &ctx()).unwrap();
+        assert!(args.contains(&"-DlibraryDirectory=C:/h/libraries".to_string()));
+        assert!(args
+            .iter()
+            .any(|a| a.ends_with(",forge-,1.20.1-forge-47.4.28.jar")));
+        let p = args.iter().position(|a| a == "-p").unwrap();
+        assert_eq!(
+            args[p + 1],
+            "C:/h/libraries/cpw/mods/bootstraplauncher/1.1.2/bootstraplauncher-1.1.2.jar;C:/h/libraries/cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar"
+        );
+        assert!(!args.iter().any(|a| a.contains("${")));
     }
 
     #[test]
@@ -226,7 +419,7 @@ mod tests {
             },
             "logging": {"client": {"argument": "-Dlog4j.configurationFile=${path}", "file": {"id": "client.xml", "sha1": "s", "size": 1, "url": "u"}}}
         })).unwrap();
-        let args = build_args(&v, &ctx());
+        let args = build_args(&v, &ctx()).unwrap();
         let cp = args.iter().position(|a| a == "-cp").unwrap();
         assert_eq!(args[cp + 1], "C:/a.jar;C:/client.jar");
         assert!(args.contains(&"-Xmx2048M".to_string()));
@@ -252,7 +445,7 @@ mod tests {
             "id": "b1.7.3", "type": "old_beta", "mainClass": "net.minecraft.launchwrapper.Launch",
             "minecraftArguments": "${auth_player_name} ${auth_session} --gameDir ${game_directory} --assetsDir ${game_assets}"
         })).unwrap();
-        let args = build_args(&v, &ctx());
+        let args = build_args(&v, &ctx()).unwrap();
         let a = Account::offline("Dev");
         assert!(args.contains(&"-Djava.library.path=C:/g/.natives/v".to_string()));
         assert!(args
@@ -266,7 +459,7 @@ mod tests {
             &args[main + 1..],
             &[
                 "Dev".to_string(),
-                format!("token:0:{}", a.uuid),
+                format!("token:0:{}", a.uuid()),
                 "--gameDir".into(),
                 "C:/g".into(),
                 "--assetsDir".into(),

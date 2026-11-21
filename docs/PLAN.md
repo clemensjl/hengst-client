@@ -82,6 +82,8 @@ docs/
 | 1.7.10 | 8 | Forge | Angelica (Sodium-Port mit Shadern), Hodgepodge, ArchaicFix |
 | Classic bis 1.6 | 8 | keiner | nur JVM-Tuning; Fixes für tote Skin-/Sound-Server (lokaler Proxy wie bei Betacraft) |
 
+Stand Phase 3: Der Launcher setzt heute Fabric, Quilt, Legacy Fabric, Forge und NeoForge um; Ornithe und Cleanroom fehlen noch.
+
 Konkrete Mod-Versionen werden nicht hart codiert, sondern beim Anlegen über die Modrinth-/CurseForge-API zur Version aufgelöst. Die Profile in `data/` beschreiben nur "welche Projekte für welchen Bereich", plus bekannte Unverträglichkeiten.
 
 ## 5. FPS-Strategie
@@ -195,7 +197,9 @@ Priorität: **M** = MVP (v0.1), **1** = v1.0, **S** = später.
 
 ## 11. Fahrplan
 
-Stand 31.10.2026: Phase 0 (ohne Azure-/CurseForge-Antrag, die liegen bei Clemens) und Phase 1 erledigt, PR #1. Echt gestartet: 26.3, 1.21.11, 1.20.4, 1.16.5, 1.12.2, 1.8.9, 1.7.10, 1.5.2, b1.7.3, a1.2.6, rd-132211. Offene Punkte je Phase stehen im Abschlussbericht des Final-Reviews (Phase 2 beginnt mit: Offline-Sperre in den Kern verlagern, Token im Debug/Dry-Run schwärzen, `user_type` "msa").
+Stand 20.11.2026: Phase 0 und 1 erledigt (PR #1), Phase 2 (Login) umgesetzt (Microsoft-Login per Device Code, Mehrfachkonten, Refresh, Offline-Sperre im Kern) und gegen gemockte Dienstantworten getestet; eine echte Anmeldung wurde noch nicht geprüft. Sie bleibt offen, bis Mojang die Azure-App freigibt; bis dahin antworten die Minecraft-Dienste mit 403, Client-ID alternativ per HENGST_MS_CLIENT_ID.
+
+Stand 21.11.2026: Phase 3 (Loader) umgesetzt: `hengst launch --loader` und `hengst loaders` für Fabric, Quilt, Legacy Fabric, Forge (ab 1.7.10, beide Installer-Formate) und NeoForge (ab 1.20.1). Echt gestartet auf Windows 11 (Loader meldet sich im Log, Texturen geladen, 15 s am Leben, kein Crash-Report; Offline-Entwicklungskonto, Ton aus): Fabric 1.21.11 und 26.3, Quilt 1.21.11, Legacy Fabric 1.8.9 und 1.12.2, Forge 1.7.10, 1.8.9, 1.12.2 (zwei Installer-Formate), 1.16.5, 1.20.1 und 26.3, NeoForge 1.20.1, 1.21.1 und 26.3. Nicht geprüft: Spielen, Mods, Serverbeitritt, alle übrigen Spielversionen. Forge vor 1.7.10 wird bewusst abgelehnt.
 
 | Phase | Inhalt | Ergebnis |
 |---|---|---|

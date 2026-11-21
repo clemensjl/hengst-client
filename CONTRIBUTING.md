@@ -5,7 +5,7 @@ Bug reports, ideas and pull requests are welcome. The project is pre-alpha, so c
 ## Setup
 
 1. Fork the repository and clone your fork.
-2. Install Rust 1.85 or newer (rustup, with the `rustfmt` and `clippy` components).
+2. Install Rust 1.89 or newer (rustup, with the `rustfmt` and `clippy` components).
 3. Build and run the CLI:
 
        cargo build
@@ -20,6 +20,12 @@ Run the same checks as CI:
     cargo fmt --all --check
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo test --workspace --all-features
+
+### Live launch tests
+
+`crates/hengst-core/tests/loader_live.rs` contains ignored tests that really start the game with every supported loader. They are not part of the checks above and not meant for casual use: they download several gigabytes into `%TEMP%\hengst-live`, open game windows (one at a time) and take about 13 minutes.
+
+    cargo test -p hengst-core --features dev-offline --test loader_live -- --ignored --test-threads=1
 
 ## Rules
 
