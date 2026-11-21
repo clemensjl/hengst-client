@@ -1,5 +1,7 @@
 {
   "key.hengst.settings": "Hengst settings",
   "key.hengst.hud_editor": "Hengst HUD editor",
+  "key.hengst.stopwatch.toggle": "Stopwatch start/stop",
+  "key.hengst.stopwatch.reset": "Stopwatch reset",
   "key.category.hengst.main": "Hengst"
 }

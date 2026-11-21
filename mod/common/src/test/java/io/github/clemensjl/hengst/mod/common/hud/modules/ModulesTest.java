@@ -61,6 +61,7 @@ class ModulesTest {
         assertIdentity(new ClockModule(), "clock", 9);
         assertIdentity(new ServerAddressModule(), "server_address", 10);
         assertIdentity(new MemoryModule(), "memory", 11);
+        assertIdentity(new StopwatchModule(), "stopwatch", 21);
     }
 
     private static void assertIdentity(io.github.clemensjl.hengst.mod.common.feature.Feature f, String id, int nr) {
@@ -602,7 +603,7 @@ class ModulesTest {
     }
 
     @Test
-    void default_places_of_the_ten_modules_do_not_overlap_at_320_by_240() {
+    void default_places_of_the_eleven_modules_do_not_overlap_at_320_by_240() {
         assertDefaultPlacesApart("en_us");
         assertDefaultPlacesApart("de_de");
     }
@@ -627,7 +628,7 @@ class ModulesTest {
         wallCtx.setI18n(io.github.clemensjl.hengst.mod.common.I18n.load(language));
         io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
             new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),
-            new ClockModule(), new MemoryModule(), new PingModule(), new ServerAddressModule()};
+            new ClockModule(), new MemoryModule(), new PingModule(), new ServerAddressModule(), new StopwatchModule()};
         FakeCanvas canvas = new FakeCanvas();
         io.github.clemensjl.hengst.mod.common.layout.MutableRect[] rects =
                 new io.github.clemensjl.hengst.mod.common.layout.MutableRect[all.length];
@@ -640,7 +641,14 @@ class ModulesTest {
             c.setOption("seconds", true);
             c.setOption("format", "12h");
             c.setOption("show_port", true);
+            if (all[i] instanceof StopwatchModule) { // the longest text a stopwatch shows in practice: 123 hours
+                ((StopwatchModule) all[i]).onKey(0, true, time.now);
+                time.advanceMillis(123 * 3_600_000L + 45 * 60_000L + 6_700L);
+            }
             all[i].tick(wallCtx, c);
+            if (all[i] instanceof StopwatchModule) {
+                assertEquals("123:45:06.7", ((StopwatchModule) all[i]).text());
+            }
             if (all[i] instanceof SpeedModule) {
                 platform.playerX += 5; // the largest counted step: 100 m/s
                 all[i].tick(wallCtx, c);

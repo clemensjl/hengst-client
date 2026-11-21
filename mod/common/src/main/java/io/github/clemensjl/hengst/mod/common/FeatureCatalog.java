@@ -13,6 +13,7 @@ import io.github.clemensjl.hengst.mod.common.hud.modules.MemoryModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.PingModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.ServerAddressModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.SpeedModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -35,6 +36,7 @@ public final class FeatureCatalog {
         all.add(new ServerAddressModule());
         all.add(new MemoryModule());
         all.add(new SpeedModule());
+        all.add(new StopwatchModule());
         return all;
     }
 

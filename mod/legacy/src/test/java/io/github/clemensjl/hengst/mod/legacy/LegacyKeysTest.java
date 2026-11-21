@@ -27,6 +27,15 @@ class LegacyKeysTest {
         assertEquals(Keyboard.KEY_NONE, LegacyKeys.code(DefaultKey.NONE));
     }
 
+    /** Registration computes the code of every default key first and fails (the mod stays inert) on an unmapped one. */
+    @Test
+    void every_default_key_of_the_real_catalog_has_a_code() {
+        for (KeySpec k : FeatureCatalog.keys(GameVersion.V1_8_9)) {
+            LegacyKeys.code(k.defaultKey());
+        }
+        assertTrue(FeatureCatalog.keys(GameVersion.V1_8_9).size() >= 4); // the two core keys and the stopwatch keys
+    }
+
     @Test
     void every_key_is_named_in_both_language_files() throws Exception {
         Set<String> en = langKeys("en_US");

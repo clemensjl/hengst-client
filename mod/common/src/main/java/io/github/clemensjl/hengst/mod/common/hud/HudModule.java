@@ -11,7 +11,12 @@ import java.util.EnumSet;
 /** A feature drawn on the HUD. {@link #render} draws from (0, 0); the renderer positions and scales it. */
 public abstract class HudModule extends Feature {
     protected HudModule(String id, int number, EnumSet<GameVersion> versions) {
-        super(id, number, FeatureGroup.HUD, versions);
+        this(id, number, FeatureGroup.HUD, versions);
+    }
+
+    /** For a HUD module that the settings list under another group than HUD. */
+    protected HudModule(String id, int number, FeatureGroup group, EnumSet<GameVersion> versions) {
+        super(id, number, group, versions);
     }
 
     /** Where the module sits when a profile has no entry for it. */

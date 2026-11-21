@@ -6,6 +6,7 @@ import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
+import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
@@ -186,8 +187,8 @@ public final class SettingsScreen implements UiScreen {
         final Feature f = model.selected();
         if (f != null) {
             final String id = f.id();
-            // Background, shadow and colour style the HUD text; a feature that is not on the HUD has no use for them.
-            if (f.group() == FeatureGroup.HUD) {
+            // Background, shadow and colour style the HUD text; a feature that is not a HUD module has no use for them.
+            if (f.group() == FeatureGroup.HUD || f instanceof HudModule) {
                 out.add(new ToggleWidget(i18n.get("hengst.option.background"), new BooleanSupplier() {
                     @Override
                     public boolean getAsBoolean() {

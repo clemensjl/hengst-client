@@ -338,4 +338,80 @@ class HengstCoreKeysTest {
             last = feature.number();
         }
     }
+
+    // ---- the stopwatch, the first catalog feature with keys ----
+
+    private int keyIndex(String id) {
+        return ids(core.keySpecs()).indexOf(id);
+    }
+
+    private io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule stopwatch() {
+        return (io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule) core.registry().byId("stopwatch");
+    }
+
+    @Test void the_stopwatch_keys_have_the_persisted_names_right_after_the_core_keys() {
+        core = start();
+        assertEquals(2, keyIndex("stopwatch.toggle"));
+        assertEquals(3, keyIndex("stopwatch.reset"));
+        assertEquals("key.hengst.stopwatch.toggle", core.keySpecs().get(2).translationKey());
+        assertEquals("key.hengst.stopwatch.reset", core.keySpecs().get(3).translationKey());
+        assertEquals(DefaultKey.NONE, core.keySpecs().get(2).defaultKey());
+        assertEquals(DefaultKey.NONE, core.keySpecs().get(3).defaultKey());
+        assertEquals(4, core.keySpecs().size());
+    }
+
+    @Test void one_press_through_the_core_toggles_once() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        int toggle = keyIndex("stopwatch.toggle");
+        core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        time.advanceMillis(1_500); core.onClientTick();
+        assertEquals("0:01.5", stopwatch().text());
+    }
+
+    @Test void the_reset_key_through_the_core_zeroes_a_running_stopwatch() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        int toggle = keyIndex("stopwatch.toggle"); int reset = keyIndex("stopwatch.reset");
+        core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        time.advanceMillis(2_000); core.onClientTick();
+        assertEquals("0:02.0", stopwatch().text());
+        core.onFeatureKey(reset, true); core.onFeatureKey(reset, false);
+        time.advanceMillis(2_000); core.onClientTick();
+        assertEquals("0:00.0", stopwatch().text());
+    }
+
+    @Test void the_stopwatch_key_with_a_screen_open_does_nothing() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        int toggle = keyIndex("stopwatch.toggle");
+        platform.screenOpen = true; core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        platform.screenOpen = false; time.advanceMillis(1_500); core.onClientTick();
+        assertEquals("0:00.0", stopwatch().text());
+    }
+
+    @Test void the_stopwatch_key_while_the_feature_is_off_does_nothing() {
+        core = start(); platform.inWorld = true;
+        int toggle = keyIndex("stopwatch.toggle");
+        core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        time.advanceMillis(1_500); core.onClientTick();
+        assertEquals("0:00.0", stopwatch().text());
+    }
+
+    @Test void the_stopwatch_keeps_running_across_a_config_apply_and_stops_when_switched_off() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        int toggle = keyIndex("stopwatch.toggle");
+        core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        time.advanceMillis(2_000); core.onClientTick();
+        core.applyConfigForTest();
+        time.advanceMillis(1_000); core.onClientTick();
+        assertEquals("0:03.0", stopwatch().text());
+        core.activeProfile().module("stopwatch").setEnabled(false); core.applyConfigForTest();
+        time.advanceMillis(60_000); core.onClientTick();
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        time.advanceMillis(60_000); core.onClientTick();
+        assertEquals("0:03.0", stopwatch().text());
+    }
 }

@@ -23,6 +23,7 @@ import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.KeystrokesModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.testutil.CountingCanvas;
@@ -127,7 +128,7 @@ class SettingsScreenTest {
     @Test void notice_is_drawn_wrapped_unscaled_and_fits_the_width() {
         screen.render(canvas, 0, 0, 0f);
         String notice = I18n.load("en_us").get("hengst.notice");
-        List<Drawn> lines = textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.x == 8).collect(java.util.stream.Collectors.toList());   // the group headers (x 12) share the colour
+        List<Drawn> lines = textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.y >= screen.featureList().bottom()).collect(java.util.stream.Collectors.toList());   // below the feature list: the group headers share the colour
         assertTrue(lines.size() >= 2);
         assertEquals(notice, String.join(" ", lines.stream().map(d -> d.text).toArray(String[]::new)));
         for (Drawn d : lines) assertTrue(d.x >= 0 && d.x + 6 * d.text.length() <= 320, d.text);
@@ -409,7 +410,7 @@ class SettingsScreenTest {
             assertFalse(texts.isEmpty());
             checkFits(texts);
             // hint-like free texts: notice and warning are wrapped, not cut
-            assertEquals(I18n.load("de_de").get("hengst.notice"), joined(textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.x == 8).collect(java.util.stream.Collectors.toList())));
+            assertEquals(I18n.load("de_de").get("hengst.notice"), joined(textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.y >= screen.featureList().bottom()).collect(java.util.stream.Collectors.toList())));
             assertEquals(I18n.load("de_de").get(SettingsModel.KEY_PROFILE_LOAD_FAILED), joined(textCalls(canvas, "ffff5555")));
         }
         // buttons are shown in full, also in the confirm state
@@ -658,6 +659,16 @@ class SettingsScreenTest {
         assertEquals(1, screen.optionList().widgets().size());       // only its own option
     }
 
+    @Test void a_hud_module_in_another_group_gets_the_hud_style_rows() {
+        FeatureRegistry r = new FeatureRegistry();
+        r.register(new StopwatchModule());                       // group COMFORT: header row 0, stopwatch row 1
+        open(r, "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(60, 36 + 20 + 5, 0);
+        assertEquals("stopwatch", model.selected().id());
+        assertEquals(4, screen.optionList().widgets().size());   // background, shadow, colour, tenths
+    }
+
     private Feature featureWithOptions() {
         return new Feature("zoom", 30, FeatureGroup.VISUAL, EnumSet.allOf(GameVersion.class)) {
             @Override public List<OptionSpec> options() {
@@ -753,6 +764,12 @@ class SettingsScreenTest {
         screen.mouseScrolled(40, 100, -10);
         assertTrue(drawn().contains("fill 134 99 136 186 c0ffffff"));   // maxOffset 100, ty = 36 + 63
     }
+    @Test void the_thumb_of_a_very_long_list_keeps_its_minimum_size_and_reaches_both_ends() {
+        open(registryWith(200), "en_us");   // 201 rows: 150 * 7 / 201 = 5 px would be too small to see
+        assertTrue(drawn().contains("fill 134 36 136 44 c0ffffff"));    // th = MIN_THUMB 8, at the top
+        screen.mouseScrolled(40, 100, -100000);
+        assertTrue(drawn().contains("fill 134 178 136 186 c0ffffff"));  // 8 px at the bottom of the track
+    }
     @Test void the_indicator_is_hidden_for_a_list_that_just_fits_and_shown_for_one_row_more() {
         open(registryWith(6), "en_us");    // 7 rows = 140 px in a 150 px list
         screen.render(canvas, 0, 0, 0f);
@@ -789,7 +806,7 @@ class SettingsScreenTest {
         assertEquals(0, screen.featureList().offset());
         assertFalse(drawn().stream().anyMatch(c -> c.startsWith("fill 134 ") && c.endsWith("ffffff")));
     }
-    @Test void keyboard_does_not_scroll_and_the_wheel_still_does_with_headers() {
+    @Test void the_down_key_does_not_scroll_the_list_and_two_wheel_notches_scroll_two_rows() {
         open(registryWith(11), "en_us");
         screen.render(canvas, 0, 0, 0f);
         assertFalse(screen.keyPressed(UiKey.DOWN, false, false));

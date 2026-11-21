@@ -34,6 +34,17 @@ class ModernKeysTest {
         assertEquals("key.keyboard.unknown", keyboard.getOrCreate(ModernKeys.code(DefaultKey.NONE)).getName());
     }
 
+    /** Registration computes the code of every default key first and fails (the mod stays inert) on an unmapped one. */
+    @Test
+    void every_default_key_of_the_real_catalog_has_a_code_on_every_version() {
+        for (GameVersion v : new GameVersion[] {GameVersion.V1_21_11, GameVersion.V26_3}) {
+            for (KeySpec k : FeatureCatalog.keys(v)) {
+                ModernKeys.code(k.defaultKey());
+            }
+            assertTrue(FeatureCatalog.keys(v).size() >= 4, v.toString()); // the two core keys and the stopwatch keys
+        }
+    }
+
     @Test
     void every_key_of_every_version_is_named_in_both_language_files() throws Exception {
         Set<String> en = langKeys("en_us");

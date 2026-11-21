@@ -47,6 +47,11 @@ public final class ScrollList {
         clamp();
     }
 
+    /** The y of the bottom edge; the notice text starts at or below it. */
+    int bottom() {
+        return y + h;
+    }
+
     public int offset() {
         return offset;
     }

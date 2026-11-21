@@ -1,6 +1,7 @@
 package io.github.clemensjl.hengst.mod.common.hud;
 
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.EnumSet;
@@ -15,6 +16,10 @@ public abstract class TextHudModule extends HudModule {
 
     protected TextHudModule(String id, int number, EnumSet<GameVersion> versions) {
         super(id, number, versions);
+    }
+
+    protected TextHudModule(String id, int number, FeatureGroup group, EnumSet<GameVersion> versions) {
+        super(id, number, group, versions);
     }
 
     /** Keeps the current reference when the text is equal, otherwise stores it and drops the cached width. */

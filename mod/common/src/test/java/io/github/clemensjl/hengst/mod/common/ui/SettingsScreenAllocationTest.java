@@ -41,7 +41,13 @@ class SettingsScreenAllocationTest {
         Profile[] active = { new Profile() };
         SettingsModel model = new SettingsModel(reg, GameVersion.V1_8_9, store, settings, () -> active[0],
                 name -> {}, () -> {}, () -> {}, () -> {}, s -> {});
-        SettingsScreen screen = new SettingsScreen(model, I18n.load("en_us"), () -> {});
+        // Group names far too long for their 128 px row: the cut text is cached, not rebuilt every frame (the notice and
+        // the feature names fall back to their keys, which also need a cut in part).
+        java.util.Map<String, Object> texts = new java.util.HashMap<>();
+        texts.put("hengst.group.hud", "A very long group name that cannot fit into its row at all");
+        texts.put("hengst.group.visual", "Another very long group name that cannot fit into its row");
+        texts.put("hengst.group.comfort", "A third very long group name that cannot fit either");
+        SettingsScreen screen = new SettingsScreen(model, I18n.of(texts, new java.util.HashMap<String, Object>()), () -> {});
         CountingCanvas canvas = new CountingCanvas();
         screen.render(canvas, 50, 80, 0f);                 // first frame: layout and text fitting
         assertTrue(screen.featureList().overflows());

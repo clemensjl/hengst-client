@@ -480,4 +480,109 @@ class InfoModulesAllocationTest {
         assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
         assertTrue(maxChange <= ADDRESS_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (ADDRESS_STRING + SLACK));
     }
+
+    // Stopwatch, through the real renderer.
+
+    /**
+     * One shown-value change builds one String and nothing else. The longest text of the test, "123:45:06.7", has 11
+     * Latin-1 chars: a 24-byte String object (compressed oops: header 12, hash 4, coder 1, hashIsZero 1, value
+     * reference 4, padded) plus a byte[11] of 16 + 11 rounded up to 8 = 32 bytes: 56 bytes. The bound is that size
+     * plus 16 bytes of slack, which is less than a second String (at least 48 bytes), so a second String fails it.
+     */
+    private static final long STOPWATCH_STRING = 24 + ((16 + 11 + 7) & ~7);
+
+    private StopwatchModule stopwatch;
+    private HudRenderer stopwatchRenderer;
+
+    private void startStopwatch(boolean tenths) {
+        stopwatch = new StopwatchModule();
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(stopwatch);
+        Profile p = new Profile();
+        ModuleConfig c = p.module("stopwatch");
+        c.setEnabled(true);
+        c.setAnchor(Anchor.TOP_LEFT);
+        c.setOption("tenths", tenths);
+        stopwatchRenderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        stopwatchRenderer.rebuild(p);
+        for (int i = 0; i < 3000; i++) {
+            ctx.frames().onFrame();
+            stopwatchRenderer.tick(ctx);
+            stopwatchRenderer.render(canvas, ctx);
+        }
+    }
+
+    @Test
+    void a_stopped_stopwatch_allocates_nothing_in_frames_and_ticks_at_zero_and_with_a_value() {
+        startStopwatch(true);
+        assertEquals("0:00.0", stopwatch.text());
+        for (int round = 0; round < 2; round++) {
+            int n = 20000;
+            long frameBytes = 0;
+            long tickBytes = 0;
+            for (int i = 0; i < n; i++) {
+                time.advanceMillis(50);
+                long before = allocated();
+                stopwatchRenderer.tick(ctx);
+                tickBytes += allocated() - before;
+                before = allocated();
+                ctx.frames().onFrame();
+                stopwatchRenderer.render(canvas, ctx);
+                frameBytes += allocated() - before;
+            }
+            assertEquals(0, frameBytes, "allocated " + frameBytes + " bytes in " + n + " frames, round " + round);
+            assertEquals(0, tickBytes, "allocated " + tickBytes + " bytes in " + n + " ticks, round " + round);
+            if (round == 0) { // now with a stopped, non-zero value
+                stopwatch.onKey(0, true, time.now);
+                time.advanceMillis(123 * 3_600_000L + 45 * 60_000L + 6_700L);
+                stopwatchRenderer.tick(ctx);
+                stopwatch.onKey(0, true, time.now);
+                stopwatchRenderer.tick(ctx);
+                assertEquals("123:45:06.7", stopwatch.text());
+            }
+        }
+        assertTrue(canvas.texts > 0);
+    }
+
+    @Test
+    void a_running_stopwatch_allocates_one_string_per_shown_change_and_nothing_else() {
+        startStopwatch(true);
+        stopwatch.onKey(0, true, time.now);
+        time.advanceMillis(123 * 3_600_000L + 45 * 60_000L + 6_000L);
+        stopwatchRenderer.tick(ctx);
+        long maxChange = 0;
+        long quiet = 0;
+        int changes = 0;
+        String last = stopwatch.text();
+        for (int i = 0; i < 20000; i++) {
+            time.advanceMillis(50); // 20 ticks per second: a new tenth every second tick
+            long before = allocated();
+            stopwatchRenderer.tick(ctx);
+            long used = allocated() - before;
+            if (stopwatch.text() != last) { // reference compare, no allocation
+                last = stopwatch.text();
+                changes++;
+                maxChange = Math.max(maxChange, used);
+            } else {
+                quiet += used;
+            }
+        }
+        System.out.println("ALLOC stopwatch bytes per change: max " + maxChange + " (one String of 11 chars = " + STOPWATCH_STRING + ")");
+        assertEquals(10000, changes, "one change per tenth of a second, 10 000 in 1000 seconds");
+        assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
+        assertTrue(maxChange <= STOPWATCH_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (STOPWATCH_STRING + SLACK));
+    }
+
+    @Test
+    void the_stopwatch_key_paths_allocate_nothing() {
+        startStopwatch(true);
+        long before = allocated();
+        for (int i = 0; i < 20000; i++) {
+            stopwatch.onKey(0, true, time.now);
+            stopwatch.onKey(1, true, time.now);
+            stopwatch.onKey(0, false, time.now);
+            stopwatch.onKey(7, true, time.now);
+        }
+        assertEquals(0, allocated() - before);
+    }
 }
