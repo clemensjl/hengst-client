@@ -3,13 +3,18 @@ package io.github.clemensjl.hengst.mod.common.config;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.*;
 
+import io.github.clemensjl.hengst.mod.common.json.Json;
+import io.github.clemensjl.hengst.mod.common.json.JsonObjects;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -55,5 +60,16 @@ class SettingsStoreTest {
 
     @Test void invalid_name_is_rejected_by_the_setter() {
         assertThrows(IllegalArgumentException.class, () -> new Settings().setActiveProfile("../x"));
+    }
+
+    @Test void unknown_settings_keys_survive_a_save() throws Exception {
+        Path file = dir.resolve("settings.json");
+        Files.write(file, "{\"schema\":1,\"activeProfile\":\"Profil 2\",\"servers\":{\"mc.x.net\":{\"off\":[\"minimap\"]}}}".getBytes(UTF_8));
+        Settings s = store().load();
+        s.setActiveProfile("default");
+        store().save(s);
+        Map<String, Object> back = JsonObjects.object(Json.parse(new String(Files.readAllBytes(file), UTF_8)));
+        assertEquals("default", back.get("activeProfile"));
+        assertEquals(Collections.singletonMap("mc.x.net", Collections.singletonMap("off", Arrays.asList("minimap"))), back.get("servers"));
     }
 }

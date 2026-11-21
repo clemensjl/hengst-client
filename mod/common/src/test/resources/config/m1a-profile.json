@@ -1,0 +1,9 @@
+{
+  "schema": 1,
+  "modules": {
+    "fps": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 2, "scale": 1.0, "background": true, "shadow": true, "textColor": 4294967295, "options": {}},
+    "direction": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 44, "scale": 1.0, "background": true, "shadow": true, "textColor": 4294967295, "options": {"style": "degrees"}},
+    "clock": {"enabled": false, "anchor": "TOP_RIGHT", "x": -2, "y": 66, "scale": 1.5, "background": false, "shadow": true, "textColor": 4294967040, "options": {"format": "12h", "seconds": true}},
+    "stopwatch": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 72, "scale": 1.0, "background": true, "shadow": false, "textColor": 4294967295, "options": {"tenths": false}}
+  }
+}

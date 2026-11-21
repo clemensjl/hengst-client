@@ -14,6 +14,8 @@ import java.util.Set;
 public final class Profile {
     // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
     private final Map<String, Object> entries = new LinkedHashMap<String, Object>();
+    // root keys other than "schema" and "modules", kept so that a newer version's data is written back
+    private final Map<String, Object> extras = new LinkedHashMap<String, Object>();
 
     /** The module's config; creates the defaults if there is none (or the stored entry is not an object). */
     public ModuleConfig module(String id) {
@@ -36,14 +38,22 @@ public final class Profile {
             Object v = e.getValue();
             p.entries.put(e.getKey(), v instanceof ModuleConfig ? ((ModuleConfig) v).copy() : ModuleConfig.deepCopy(v));
         }
+        for (Map.Entry<String, Object> e : extras.entrySet()) {
+            p.extras.put(e.getKey(), ModuleConfig.deepCopy(e.getValue()));
+        }
         return p;
     }
 
-    /** Never throws for wrong shapes; unreadable parts fall back to defaults. Top-level keys other than "modules" are dropped. */
+    /** Never throws for wrong shapes; unreadable parts fall back to defaults. Top-level keys other than "schema" and "modules" are kept as read. */
     public static Profile fromJson(Map<String, Object> json) {
         Profile p = new Profile();
         for (Map.Entry<String, Object> e : JsonObjects.object(json.get("modules")).entrySet()) {
             p.entries.put(e.getKey(), ModuleConfig.deepCopy(e.getValue()));
+        }
+        for (Map.Entry<String, Object> e : json.entrySet()) {
+            if (!"schema".equals(e.getKey()) && !"modules".equals(e.getKey())) {
+                p.extras.put(e.getKey(), ModuleConfig.deepCopy(e.getValue()));
+            }
         }
         return p;
     }
@@ -57,6 +67,7 @@ public final class Profile {
         Map<String, Object> root = new LinkedHashMap<String, Object>();
         root.put("schema", AtomicFiles.SCHEMA);
         root.put("modules", modules);
+        root.putAll(extras);
         return root;
     }
 }

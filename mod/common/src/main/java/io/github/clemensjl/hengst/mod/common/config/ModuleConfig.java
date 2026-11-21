@@ -4,14 +4,19 @@ import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.json.JsonObjects;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /** Stored settings of one module: switch, HUD placement, style and option values. Not thread-safe: client thread only. */
 public final class ModuleConfig {
     private static final float MIN_SCALE = 0.5f;
     private static final float MAX_SCALE = 3.0f;
+    private static final Set<String> KNOWN_KEYS = new HashSet<String>(Arrays.asList(
+            "enabled", "anchor", "x", "y", "scale", "background", "shadow", "textColor", "options"));
 
     private boolean enabled;
     private Anchor anchor = Anchor.TOP_LEFT;
@@ -23,6 +28,8 @@ public final class ModuleConfig {
     private int textColor = 0xFFFFFFFF;
     // Raw values as read from the file or set by the UI; the option spec coerces them on every read.
     private final Map<String, Object> options = new LinkedHashMap<String, Object>();
+    // entry keys this version does not know, kept so that a newer version's data is written back
+    private final Map<String, Object> extras = new LinkedHashMap<String, Object>();
 
     private ModuleConfig() {}
 
@@ -140,6 +147,9 @@ public final class ModuleConfig {
         for (Map.Entry<String, Object> e : options.entrySet()) {
             c.options.put(e.getKey(), deepCopy(e.getValue()));
         }
+        for (Map.Entry<String, Object> e : extras.entrySet()) {
+            c.extras.put(e.getKey(), deepCopy(e.getValue()));
+        }
         return c;
     }
 
@@ -156,6 +166,11 @@ public final class ModuleConfig {
         for (Map.Entry<String, Object> e : JsonObjects.object(json.get("options")).entrySet()) {
             if (e.getValue() != null) {
                 c.options.put(e.getKey(), deepCopy(e.getValue()));
+            }
+        }
+        for (Map.Entry<String, Object> e : json.entrySet()) {
+            if (!KNOWN_KEYS.contains(e.getKey())) {
+                c.extras.put(e.getKey(), deepCopy(e.getValue()));
             }
         }
         return c;
@@ -184,6 +199,7 @@ public final class ModuleConfig {
             }
         }
         m.put("options", opts);
+        m.putAll(extras);
         return m;
     }
 

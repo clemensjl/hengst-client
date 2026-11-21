@@ -4,6 +4,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.*;
 
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
+import io.github.clemensjl.hengst.mod.common.json.Json;
+import io.github.clemensjl.hengst.mod.common.json.JsonObjects;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,7 +14,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -245,5 +251,54 @@ class ProfileStoreTest {
         assertFalse(ProfileStore.isValidName(" a")); assertFalse(ProfileStore.isValidName("a ")); assertTrue(ProfileStore.isValidName("a b"));
         assertFalse(ProfileStore.isValidName(null));
         for (String bad : new String[] {"a/b", "a\\b", "..", ".a", "a.", "a\tb", "a\nb", "a\u0000b", "a:b", "ä", "a*b", "a\u007fb"}) assertFalse(ProfileStore.isValidName(bad), bad);
+    }
+
+    @Test void unknown_keys_survive_at_all_three_levels() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"layoutVersion\":3,\"modules\":{\"fps\":{\"enabled\":true,"
+                + "\"zIndex\":7,\"options\":{\"future_opt\":[1,2]}}},\"servers\":{\"a.net\":{\"deny\":[\"x\"]}}}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps").setOffsetX(5);
+        store().save("default", p);
+        Map<String, Object> back = JsonObjects.object(Json.parse(read("default.json")));
+        assertEquals(Arrays.asList("schema", "modules", "layoutVersion", "servers"), new ArrayList<>(back.keySet()));
+        assertEquals(3L, back.get("layoutVersion"));
+        assertEquals(Collections.singletonMap("a.net", Collections.singletonMap("deny", Arrays.asList("x"))), back.get("servers"));
+        Map<String, Object> fps = JsonObjects.object(JsonObjects.object(back.get("modules")).get("fps"));
+        assertEquals(7L, fps.get("zIndex"));
+        assertEquals(5L, fps.get("x"));
+        assertEquals(Arrays.asList(1L, 2L), JsonObjects.object(fps.get("options")).get("future_opt"));
+    }
+
+    @Test void a_profile_copy_keeps_unknown_keys() throws Exception {
+        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"extra\":true,\"modules\":{\"fps\":{\"zIndex\":7}}}".getBytes(UTF_8));
+        String name = store().createCopy("default");
+        String json = read(name + ".json");
+        assertTrue(json.contains("\"extra\": true"));
+        assertTrue(json.contains("\"zIndex\": 7"));
+    }
+
+    @Test void an_in_memory_copy_is_deep_for_unknown_keys() throws Exception {
+        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"extra\":{\"a\":[1]},\"modules\":{\"fps\":{\"zIndex\":{\"k\":1}}}}".getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps");
+        Profile c = p.copy();
+        store().save("a", c);
+        store().save("b", p);
+        assertEquals(read("a.json"), read("b.json"));
+        assertTrue(read("a.json").contains("\"zIndex\""));
+        assertTrue(read("a.json").contains("\"extra\""));
+    }
+
+    @Test void m1a_profile_uses_only_keys_an_m0_build_preserves() throws Exception {
+        Profile p = new Profile();
+        p.module("stopwatch").setEnabled(true);
+        p.module("fps").setOption("new_option", true);
+        store().save("default", p);
+        Map<String, Object> root = JsonObjects.object(Json.parse(read("default.json")));
+        assertEquals(new HashSet<>(Arrays.asList("schema", "modules")), root.keySet());
+        Set<String> m0Keys = new HashSet<>(Arrays.asList("enabled", "anchor", "x", "y", "scale", "background", "shadow", "textColor", "options"));
+        for (Object entry : JsonObjects.object(root.get("modules")).values()) {
+            assertTrue(m0Keys.containsAll(JsonObjects.object(entry).keySet()), "module keys " + entry);
+        }
     }
 }
