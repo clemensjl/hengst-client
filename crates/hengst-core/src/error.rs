@@ -64,6 +64,8 @@ pub enum Error {
     UnknownPlaceholder { version: String, key: String },
     #[error("invalid loader installer: {0}")]
     Installer(String),
+    #[error("cannot replace {dir}: this game version appears to be running already, close it and try again")]
+    NativesInUse { dir: PathBuf },
     #[error("loader install failed: {0}")]
     InstallFailed(String),
     #[error("loader installer step {jar} failed with exit code {code}, see {log}")]

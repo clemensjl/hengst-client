@@ -13,7 +13,7 @@ use crate::rules::Env;
 use crate::secret::REDACTED;
 use crate::version::fetch_version;
 use crate::{Error, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// Remote endpoints; overridable for tests and mirrors.
@@ -214,9 +214,7 @@ pub async fn prepare_with_runner(
     };
 
     let natives_dir = game_dir.join(".natives").join(&merged.id);
-    if natives_dir.exists() {
-        tokio::fs::remove_dir_all(&natives_dir).await?;
-    }
+    remove_natives(&natives_dir).await?;
     libraries::extract_natives(&libs.natives, &natives_dir)?;
 
     let ctx = LaunchContext {
@@ -278,6 +276,26 @@ pub async fn run(p: &Prepared) -> Result<i32> {
         .status()
         .await?;
     Ok(status.code().unwrap_or(-1))
+}
+
+/// Clears the natives directory of a version. A running game keeps its libraries loaded, which
+/// shows up as a denied or sharing-violation error: that is reported as "already running".
+async fn remove_natives(dir: &Path) -> Result<()> {
+    if !dir.exists() {
+        return Ok(());
+    }
+    tokio::fs::remove_dir_all(dir).await.map_err(|e| {
+        // 5 = access denied, 32 = sharing violation.
+        if e.kind() == std::io::ErrorKind::PermissionDenied
+            || matches!(e.raw_os_error(), Some(5 | 32))
+        {
+            Error::NativesInUse {
+                dir: dir.to_path_buf(),
+            }
+        } else {
+            e.into()
+        }
+    })
 }
 
 #[cfg(test)]
@@ -343,6 +361,32 @@ mod tests {
         ));
         ensure_launch_allowed(AccountKind::Offline, true).unwrap();
         ensure_launch_allowed(AccountKind::Microsoft, false).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn natives_in_use_by_a_running_game_are_reported_as_such() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let natives = dir.path().join(".natives").join("1.8.9");
+        std::fs::create_dir_all(&natives).unwrap();
+        let dll = natives.join("lwjgl.dll");
+        std::fs::write(&dll, b"x").unwrap();
+        // Open without sharing, like a loaded library that cannot be deleted.
+        let held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(0)
+            .open(&dll)
+            .unwrap();
+        let err = remove_natives(&natives).await.unwrap_err();
+        let m = err.to_string();
+        assert!(matches!(&err, Error::NativesInUse { .. }), "{m}");
+        assert!(m.contains("running already") && m.contains("1.8.9"), "{m}");
+        drop(held);
+        remove_natives(&natives).await.unwrap();
+        assert!(!natives.exists());
+        // Nothing to remove is fine.
+        remove_natives(&natives).await.unwrap();
     }
 
     #[cfg(not(feature = "dev-offline"))]

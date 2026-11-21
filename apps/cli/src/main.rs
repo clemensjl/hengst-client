@@ -65,7 +65,8 @@ enum Cmd {
         /// Loader version (default: the newest stable one)
         #[arg(long, requires = "loader")]
         loader_version: Option<String>,
-        /// Download everything and print the command line instead of starting
+        /// Download everything and print the command line instead of starting (Forge and
+        /// NeoForge also run the installer's processors)
         #[arg(long)]
         dry_run: bool,
     },
