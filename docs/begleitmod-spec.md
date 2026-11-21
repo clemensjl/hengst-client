@@ -39,7 +39,7 @@ Aktuelle Gradle-Version ist 9.9.2 [16]; wir pinnen 9.8.2, weil die Fabric-Beispi
 **Was "unverschleiert" für uns heißt** [10][15]:
 - 26.3 baut mit dem Plugin `net.fabricmc.fabric-loom`; `mappings` entfällt, `modImplementation` wird `implementation`, `remapJar` wird `jar`.
 - Mixin-Ziele sind die echten Mojang-Namen. Es gibt keine Refmap für 26.3 und keine Übersetzung zur Laufzeit.
-- 1.21.11 baut mit Mojang-Mappings und wird beim Packen nach Intermediary remappt (mit Refmap). Weil beide Versionen im Quelltext Mojang-Namen nutzen, ist geteilter Quelltext möglich; die Unterschiede sind echte Umbenennungen von Mojang (Beispiele unten).
+- 1.21.11 baut mit Mojang-Mappings und wird beim Packen nach Intermediary remappt. Loom 1.19 schreibt dabei die Mixin-Ziele direkt in die Annotationen um, eine Refmap gibt es nicht und braucht es nicht (geprüft 2026-11-21: die Jar läuft über den Launcher im Intermediary-Spiel). Weil beide Versionen im Quelltext Mojang-Namen nutzen, ist geteilter Quelltext möglich; die Unterschiede sind echte Umbenennungen von Mojang (Beispiele unten).
 - Keine Mod für 1.21.11 oder älter läuft ohne Neukompilierung auf 26.x [15].
 
 **Belegte Umbenennungen 1.21.11 → 26.3** (aus dem Quelltext der Fabric API, Zweige `1.21.11` und `26.3`) [17]:
@@ -233,12 +233,15 @@ Eine neue 26.x-Version wird ein weiterer Stonecutter-Knoten in `modern`. Fällt 
 Legende: **ja** / **nein** / **teils** (mit Grund). Hook-Angaben: **[B]** belegt aus dem Fabric-API-Quelltext des jeweiligen Zweigs [17] bzw. Legacy Yarn build.604 [7] oder Legacy-Fabric-API-Quelltext [18]; **[K]** Kandidat, vor dem Plan des Meilensteins per `genSources` am echten Spiel prüfen. "common" heißt: reine Logik ohne eigenen Hook, Daten über `GameView`/`InputView`, Anzeige über den gemeinsamen HUD-Hook.
 
 Gemeinsame Hooks:
-- **HUD:** 1.8.9 `HudRenderCallback.EVENT` (Legacy Fabric API, `onHudRender(client, tickDelta)`) [B]; 1.21.11 `HudElementRegistry.addLast(id, HudElement)` mit `render(GuiGraphics, DeltaTracker)` [B]; 26.3 dasselbe mit `extractRenderState(GuiGraphicsExtractor, DeltaTracker)` [B]. Ein einziges registriertes Element ruft `HengstCore.onHudRender`. Der Kern zeichnet nichts, wenn das HUD ausgeblendet ist (F1), der Spieler nicht in einer Welt ist, das Debug-Overlay (F3) offen ist oder einer der eigenen Bildschirme offen ist.
+- **HUD:** 1.8.9 Mixin in `InGameHud.render(F)V` am ersten `GlStateManager.enableBlend()` zwischen `ClientWorld.getScoreboard()` und `ChatHud.render(I)V`, also nach Scoreboard-Seitenleiste und vor Chat und Spielerliste; gezeichnet wird mit abgeschaltetem Tiefentest, sonst verdecken Gegenstände in der Hotbar die Module [B, im Spiel geprüft 2026-11-21]. `HudRenderCallback` der Legacy Fabric API 1.13.5 wird nicht genutzt: es läuft erst nach Chat und Spielerliste und würde über beide zeichnen. 1.21.11 `HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT, id, HudElement)` mit `render(GuiGraphics, DeltaTracker)` [B]; 26.3 dasselbe mit `extractRenderState(GuiGraphicsExtractor, DeltaTracker)` [B]. Ein einziges registriertes Element ruft `HengstCore.onHudRender`. Der Kern zeichnet nichts, wenn das HUD ausgeblendet ist (F1), der Spieler nicht in einer Welt ist, das Debug-Overlay (F3) offen ist oder einer der eigenen Bildschirme offen ist.
 - **Tick:** `ClientTickEvents.END_CLIENT_TICK` in allen drei APIs [B].
 - **Tasten:** 1.8.9 `KeyBindingHelper.registerKeyBinding(KeyBinding)` [B]; 1.21.11 `KeyBindingHelper.registerKeyBinding(KeyMapping)` [B]; 26.3 `KeyMappingHelper.registerKeyMapping(KeyMapping)` [B].
-- **Frames:** `HengstCore.onFrame()` kommt aus einem Hook, der in jedem gerenderten Frame läuft, auch unter F1 und bei offenen Bildschirmen. Die HUD-Hooks der Versionen laufen unter F1 nicht, deshalb zählt `onHudRender` keine Frames.
-- **Klicks:** 1.8.9 Mixin `KeyBinding.setKeyBindState(IZ)V` (statisch, Drücken und Loslassen; Maustasten kommen als `button - 100` an: `-100` links = 0, `-99` rechts = 1, Tastaturcodes werden verworfen). `KeyBinding.onKeyPressed(I)V` taugt nicht, es feuert nur beim Drücken und der Kantenfilter würde nach dem ersten Klick nichts mehr zählen [B Name, K Semantik]; modern Mixin `MouseHandler.onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V` HEAD [B].
+- **Frames:** `HengstCore.onFrame()` kommt aus einem Hook, der in jedem gerenderten Frame läuft, auch unter F1 und bei offenen Bildschirmen: 1.8.9 Mixin `MinecraftClient.runGameLoop()V` HEAD; 1.21.11 Mixin `GameRenderer.render(DeltaTracker, boolean)` HEAD; 26.3 Mixin `GameRenderer.render()` HEAD [B, im Spiel geprüft 2026-11-21]. Die HUD-Hooks der Versionen laufen unter F1 nicht, deshalb zählt `onHudRender` keine Frames.
+- **Klicks:** 1.8.9 zwei Mixins, weil das Spiel die Mausereignisse in zwei Schleifen abholt: ohne offenen Bildschirm `KeyBinding.setKeyPressed(IZ)V` HEAD (statisch, Legacy-Yarn-Name; `setKeyBindState` ist der MCP-Name; Drücken und Loslassen, Maustasten kommen als `button - 100` an, Tastaturcodes werden verworfen), bei offenem Bildschirm `Screen.handleInput()V` am Aufruf von `handleMouse()`, denn diese Schleife leert die LWJGL-Warteschlange selbst. `KeyBinding.onKeyPressed(I)V` taugt nicht, es feuert nur beim Drücken [B, Semantik im Spiel geprüft 2026-11-21]. Modern Mixin `MouseHandler.onButton(JLnet/minecraft/client/input/MouseButtonInfo;I)V` HEAD; 26.3 liefert SDL-Tastennummern (1 links, 2 Mitte, 3 rechts), 1.21.11 GLFW-Nummern (0, 1, 2), beide über `InputConstants` abgebildet [B, im Spiel geprüft 2026-11-21].
 - **Bildschirm öffnen:** 1.8.9 `MinecraftClient.setScreen(Screen)` [B]; 1.21.11 `Minecraft.setScreen(Screen)` [B]; 26.3 `Gui.setScreen(Screen)` [B].
+- **Bildschirm zeichnen:** 1.8.9 `Screen.render(IIF)V`; 1.21.11 `Screen.render(GuiGraphics, int, int, float)` und `renderBackground(...)`; 26.3 `Screen.extractRenderState(GuiGraphicsExtractor, int, int, float)` und `extractBackground(...)` [B, geprüft 2026-11-21].
+- **Text mit Schatten:** 1.8.9 `TextRenderer.draw(String, float, float, int, boolean)`; 1.21.11 `GuiGraphics.drawString(Font, String, int, int, int, boolean)`; 26.3 `GuiGraphicsExtractor.text(Font, String, int, int, int, boolean)` [B, geprüft 2026-11-21].
+- **Tastenkategorie:** 1.21.11 und 26.3 `KeyMapping.Category.register(Identifier)` mit Beschriftung `key.category.hengst.main`; 1.8.9 Kategorie-Schlüssel `key.categories.hengst` im Konstruktor `KeyBinding(String, int, String)` [B, geprüft 2026-11-21].
 - **Welt-Rendern:** 1.8.9 Mixin `GameRenderer.renderWorld(IFJ)V` [B]; 1.21.11 `WorldRenderEvents` [B]; 26.3 `LevelRenderEvents` [B].
 - **Chat empfangen:** modern `ClientReceiveMessageEvents` [B]; 1.8.9 Mixin `ChatHud.addMessage(Text, int)` [B Name].
 
@@ -246,10 +249,10 @@ Gemeinsame Hooks:
 |---|---|---|---|---|---|
 | 1 | FPS | ja | ja | ja | common: Frame-Zähler über `onFrame()`, Text einmal pro Sekunde |
 | 2 | CPS | ja | ja | ja | Klick-Hook (oben); links/rechts getrennt |
-| 3 | Keystrokes (WASD, Maus, Leertaste) | ja | ja | ja | `InputView.isDown` pro Frame: 1.8.9 `GameOptions.forwardKey ... attackKey/useKey/jumpKey` + `KeyBinding.isPressed()` [B]; modern `KeyMapping.isDown()` [K] |
+| 3 | Keystrokes (WASD, Maus, Leertaste) | ja | ja | ja | `InputView.isDown` pro Frame: 1.8.9 `GameOptions.forwardKey ... attackKey/useKey/jumpKey` + `KeyBinding.isPressed()` [B]; modern `KeyMapping.isDown()` [B, geprüft 2026-11-21] |
 | 4 | Rüstung mit Haltbarkeit | ja | ja | ja | Tick liest Rüstungsplätze: 1.8.9 `PlayerInventory.armor` [K]; modern `getItemBySlot(EquipmentSlot)` [K]; Item-Icon: 1.21.11 `GuiGraphics.renderItem` [K], 26.3 [K] |
 | 5 | Trankeffekte | ja | ja | ja | 1.8.9 `getStatusEffectInstances()` [K]; modern `getActiveEffects()` [K]; Vanilla-Anzeige ausblenden: `VanillaHudElements.STATUS_EFFECTS` (1.21.11) / `MOB_EFFECTS` (26.3) [B]; 1.8.9 hat keine Vanilla-HUD-Anzeige |
-| 6 | Koordinaten | ja | ja | ja | 1.8.9 Felder `Entity.x/y/z` [B]; modern `getX()/getY()/getZ()` [K]; Text im Tick |
+| 6 | Koordinaten | ja | ja | ja | 1.8.9 Felder `Entity.x/y/z` [B]; modern `getX()/getY()/getZ()` [B, geprüft 2026-11-21]; Text im Tick |
 | 7 | Richtung/Kompass | ja | ja | ja | 1.8.9 `Entity.yaw` [B]; modern `getYRot()` [K] |
 | 8 | Ping | ja | ja | ja | vom Server gemeldete Latenz: 1.8.9 `PlayerListEntry.getLatency()` [K]; modern `PlayerInfo.getLatency()` [K] |
 | 9 | Uhr | ja | ja | ja | common |
@@ -356,7 +359,7 @@ Jeder Meilenstein ist einzeln planbar und auslieferbar (alle drei Jars bauen, al
 
 | Id | Titel | Features |
 |---|---|---|
-| M0 | Fundament | Build für 1.8.9, 1.21.11, 26.3; common-Kern, Konfiguration, Profile, HUD-Editor, Einstellungsbildschirm; 1 FPS, 2 CPS, 3 Keystrokes, 6 Koordinaten, 50 HUD-Editor |
+| M0 | Fundament | Build für 1.8.9, 1.21.11, 26.3; common-Kern, Konfiguration, Profile, HUD-Editor, Einstellungsbildschirm; 1 FPS, 2 CPS, 3 Keystrokes, 6 Koordinaten, 50 HUD-Editor. **Erledigt 2026-11-21**, über den Hengst-Launcher geprüft; offen: Kostenregel 8.8 (mit allen vier Modulen gemessen etwa 4 % auf 26.3 und 7 % auf 1.8.9 bei 1500 bis 2300 FPS, auf 1.21.11 im Messrauschen) |
 | M1 | Info-HUD | 4, 5, 7, 8, 9, 10, 11, 15, 16, 21 |
 | M2 | Vanilla-HUD anpassen | 17, 18, 19, 20, 26, 38 |
 | M3 | Kampf und Bewegung | 12, 14, 22, 27, 30, 41 |
