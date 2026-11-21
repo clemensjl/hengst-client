@@ -12,7 +12,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { api, IpcError } from "@/ipc/client";
 import type { ErrorAction } from "@/ipc/bindings/ErrorAction";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
-import { describeError } from "./errorCopy";
+import { describeError, type ErrorContext } from "./errorCopy";
 
 /** DESIGN.md 10.0: after a click that starts something, a second activation is ignored until it ends. */
 const GUARD_MS = 600;
@@ -43,26 +43,41 @@ function useClickGuard(): (run: () => unknown) => void {
   }, []);
 }
 
-/** The text copied from the details gets "Copied" for two seconds. */
+/**
+ * Copies the details. "Copied" shows on the button for two seconds and is announced politely; a
+ * refused clipboard write says so inline.
+ */
 function CopyButton({ text }: { text: string }) {
   const { t } = useTranslation();
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   useEffect(() => () => clearTimeout(timer.current), []);
   const copy = async () => {
+    clearTimeout(timer.current);
     try {
       await navigator.clipboard.writeText(text);
     } catch {
+      setState("failed");
       return;
     }
-    setCopied(true);
-    clearTimeout(timer.current);
-    timer.current = setTimeout(() => setCopied(false), 2000);
+    setState("copied");
+    timer.current = setTimeout(() => setState("idle"), 2000);
   };
   return (
-    <Button variant="ghost" onClick={() => void copy()}>
-      {copied ? t("errors.copied") : t("errors.copy")}
-    </Button>
+    <>
+      <Button variant="ghost" onClick={() => void copy()}>
+        {state === "copied" ? t("errors.copied") : t("errors.copy")}
+      </Button>
+      <span role="status" aria-live="polite" className="sr-only">
+        {state === "copied" ? t("errors.copied") : ""}
+      </span>
+      {state === "failed" && (
+        <p className="flex items-center gap-2 text-small text-danger">
+          <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
+          {t("errors.copyFailed")}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -78,7 +93,13 @@ export interface ErrorPanelProps {
   onAction?: (action: ErrorAction) => void;
   /** An action that does not come from the error, for example "Open folder". */
   extraAction?: { label: string; onClick: () => void };
-  /** The panel takes focus on its title when it appears (DESIGN.md 11.2); off for a page of samples. */
+  /** Which wording applies where the codes differ by place (see `ErrorContext`). */
+  context?: ErrorContext;
+  /**
+   * Moves focus to the title when the panel appears and whenever it receives a different error
+   * (DESIGN.md 11.2). Off by default: only an action the user just took may move focus, never a
+   * panel that appears on its own (a background refresh failing).
+   */
   autoFocus?: boolean;
 }
 
@@ -88,22 +109,36 @@ export function ErrorPanel({
   onRetry,
   onAction,
   extraAction,
-  autoFocus = true,
+  context,
+  autoFocus = false,
 }: ErrorPanelProps) {
   const { t } = useTranslation();
   const guard = useClickGuard();
   const titleRef = useRef<HTMLParagraphElement>(null);
   const [open, setOpen] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
-  const { title, body, actionLabel } = describeError(error, t);
+  const { title, body, actionLabel } = describeError(error, t, context);
   const action = error.action;
 
+  // A new error is a different panel to the user, so focus follows it; an equal one in a new
+  // object (a parent re-rendering) does not count.
+  const errorKey = JSON.stringify([error.code, error.detail, error.params]);
   useEffect(() => {
     if (!autoFocus) return;
     // Focus scrolls the title into view, which matters in a dialog body at the minimum window height.
     titleRef.current?.focus();
     titleRef.current?.scrollIntoView?.({ block: "nearest" });
-  }, [autoFocus]);
+  }, [autoFocus, errorKey]);
+
+  // An action that needs a handler the caller did not give would vanish without a trace.
+  const needsHandler = action?.kind === "signIn" || action?.kind === "openSettings";
+  useEffect(() => {
+    if (import.meta.env.DEV && needsHandler && !onAction) {
+      console.warn(
+        `ErrorPanel: the error "${error.code}" has the action "${action?.kind}" but no onAction handler was given, so the action is not shown`,
+      );
+    }
+  }, [needsHandler, onAction, error.code, action?.kind]);
 
   const runAction = (a: ErrorAction) => {
     if (a.kind === "openUrl") {
@@ -168,6 +203,7 @@ export function ErrorPanel({
         <CollapsibleContent className="flex flex-col items-start gap-2">
           <div
             role="region"
+            lang="en"
             aria-label={t("errors.details")}
             tabIndex={0}
             className="max-h-40 w-full overflow-auto rounded-md bg-background p-3 font-mono text-mono whitespace-pre-wrap text-muted-foreground [font-variant-ligatures:none] [overflow-wrap:anywhere]"

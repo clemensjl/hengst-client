@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
+import type { ErrorContext } from "@/features/errors/errorCopy";
 import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import { initI18n, setLanguage, type Lang } from "@/i18n";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
@@ -39,6 +40,12 @@ const SAMPLES: ErrorDto[] = [
       "no legacy-fabric versions available for Minecraft 1.21.11 (Legacy Fabric serves 1.13.2 and older; try --loader fabric)",
   },
   {
+    code: "offline",
+    params: {},
+    action: { kind: "retry" },
+    detail: "offline: files are missing and cannot be downloaded",
+  },
+  {
     code: "credentialStore",
     params: {},
     action: { kind: "retry" },
@@ -51,6 +58,12 @@ const SAMPLES: ErrorDto[] = [
     detail: "gallery-sample-detail:" + "0123456789abcdef".repeat(18).slice(0, 278),
   },
 ];
+
+/** The places where the wording differs (a sample without one shows the generic copy). */
+const CONTEXTS: Partial<Record<ErrorDto["code"], ErrorContext>> = {
+  offline: "launch",
+  credentialStore: "signIn",
+};
 
 /** Opens the details of the panel it wraps once, so the expanded state shows without a click. */
 function Expanded({ children }: { children: React.ReactNode }) {
@@ -98,7 +111,7 @@ export function ErrorGallery() {
               const panel = (
                 <ErrorPanel
                   error={error}
-                  autoFocus={false}
+                  context={CONTEXTS[error.code]}
                   onRetry={error.action?.kind === "retry" ? () => {} : undefined}
                 />
               );

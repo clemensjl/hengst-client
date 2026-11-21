@@ -24,20 +24,123 @@ afterEach(() => {
 
 describe("ErrorPanel", () => {
   it("is an alert with the title and the body", () => {
-    render(<ErrorPanel error={base} />);
+    render(<ErrorPanel error={base} context="signIn" />);
     const alert = screen.getByRole("alert");
     expect(within(alert).getByText("Cannot reach Microsoft")).toBeTruthy();
     expect(within(alert).getByText("Check your internet connection and try again.")).toBeTruthy();
   });
 
-  it("moves focus to the title when it appears", () => {
-    render(<ErrorPanel error={base} />);
-    expect(document.activeElement).toBe(screen.getByText("Cannot reach Microsoft"));
+  it("does not take focus by default: a panel that appears on its own must not pull focus out of a field", () => {
+    const { rerender } = render(
+      <>
+        <input aria-label="field" />
+        {null}
+      </>,
+    );
+    screen.getByLabelText("field").focus();
+    rerender(
+      <>
+        <input aria-label="field" />
+        <ErrorPanel error={base} />
+      </>,
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText("field"));
   });
 
-  it("does not take focus when asked not to", () => {
+  it("moves focus to the title when it appears and the caller opted in", () => {
+    render(<ErrorPanel error={base} autoFocus />);
+    expect(document.activeElement).toBe(screen.getByText("No connection"));
+  });
+
+  it("moves focus to the title again when the same panel receives a new error", () => {
+    const { rerender } = render(
+      <>
+        <input aria-label="field" />
+        <ErrorPanel error={base} autoFocus />
+      </>,
+    );
+    screen.getByLabelText("field").focus();
+    const next: ErrorDto = { ...base, code: "serverError", detail: "HTTP 503" };
+    rerender(
+      <>
+        <input aria-label="field" />
+        <ErrorPanel error={next} autoFocus />
+      </>,
+    );
+    expect(document.activeElement).toBe(screen.getByText("The server did not respond as expected"));
+  });
+
+  it("does not steal focus again when the parent re-renders with an equal error", () => {
+    const { rerender } = render(
+      <>
+        <input aria-label="field" />
+        <ErrorPanel error={base} autoFocus />
+      </>,
+    );
+    screen.getByLabelText("field").focus();
+    rerender(
+      <>
+        <input aria-label="field" />
+        <ErrorPanel error={{ ...base, params: { ...base.params } }} autoFocus />
+      </>,
+    );
+    expect(document.activeElement).toBe(screen.getByLabelText("field"));
+  });
+
+  it("takes no focus when asked not to", () => {
     render(<ErrorPanel error={base} autoFocus={false} />);
     expect(document.activeElement).toBe(document.body);
+  });
+
+  it("uses the copy of its context", () => {
+    render(<ErrorPanel error={{ ...base, code: "offline" }} context="launch" />);
+    expect(screen.getByText("No connection")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Files for this version are missing. Check your internet connection and try again.",
+      ),
+    ).toBeTruthy();
+  });
+
+  it("without a context a network error does not name a service", () => {
+    render(<ErrorPanel error={base} />);
+    expect(screen.getByText("No connection")).toBeTruthy();
+    expect(screen.queryByText(/Microsoft/)).toBeNull();
+  });
+
+  it("warns in development when the error's action needs a handler that is missing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const error: ErrorDto = { ...base, action: { kind: "signIn" } };
+    render(<ErrorPanel error={error} />);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0][0])).toContain("onAction");
+    warn.mockClear();
+    render(<ErrorPanel error={error} onAction={() => {}} />);
+    render(<ErrorPanel error={{ ...base, action: { kind: "retry" } }} />);
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("marks the detail as English text inside any UI language", () => {
+    initI18n("de", "de-AT");
+    render(<ErrorPanel error={base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText(base.detail).getAttribute("lang")).toBe("en");
+  });
+
+  it("says so when copying fails and announces a successful copy politely", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("denied"));
+    Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+    render(<ErrorPanel error={base} />);
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy" })));
+    expect(screen.getByText("Copying failed: select the text and press Ctrl+C.")).toBeTruthy();
+    writeText.mockResolvedValue(undefined);
+    await act(async () => fireEvent.click(screen.getByRole("button", { name: "Copy" })));
+    const status = screen.getByRole("status");
+    expect(status.textContent).toBe("Copied");
+    expect(status.getAttribute("aria-live")).toBe("polite");
+    expect(screen.queryByText(/Copying failed/)).toBeNull();
   });
 
   it("shows retry only when onRetry is given and calls it once on double click", () => {
@@ -79,7 +182,7 @@ describe("ErrorPanel", () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
     render(<ErrorPanel error={{ ...base, detail: "the operation was cancelled" }} />);
-    expect(screen.getByText("Keine Verbindung zu Microsoft")).toBeTruthy();
+    expect(screen.getByText("Keine Verbindung")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Details" }));
     expect(screen.getByText("the operation was cancelled")).toBeTruthy();
     await act(async () => fireEvent.click(screen.getByRole("button", { name: "Kopieren" })));

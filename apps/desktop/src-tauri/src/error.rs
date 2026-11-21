@@ -14,10 +14,7 @@ pub fn error_dto(e: &Error) -> ErrorDto {
         params.insert(key.to_string(), value);
     };
     let (code, action) = match e {
-        Error::Http { url, .. } => {
-            put("url", strip_query(url));
-            (ErrorCode::Network, Some(Retry))
-        }
+        Error::Http { .. } => (ErrorCode::Network, Some(Retry)),
         Error::Status { status, .. } => {
             put("status", status.to_string());
             (ErrorCode::ServerError, Some(Retry))
@@ -119,8 +116,28 @@ pub fn error_dto(e: &Error) -> ErrorDto {
         code,
         params,
         action,
-        detail: redact(&e.to_string()),
+        detail: match e {
+            Error::Json(json) => json_detail(json),
+            _ => redact(&e.to_string()),
+        },
     }
+}
+
+/// serde quotes the offending value in its messages (a token in a response, a line of the accounts
+/// file), so a JSON error is reduced to its category and position.
+fn json_detail(e: &serde_json::Error) -> String {
+    use serde_json::error::Category;
+    let category = match e.classify() {
+        Category::Io => "read error",
+        Category::Syntax => "syntax error",
+        Category::Data => "unexpected data",
+        Category::Eof => "unexpected end",
+    };
+    format!(
+        "invalid JSON data ({category}) at line {} column {}",
+        e.line(),
+        e.column()
+    )
 }
 
 /// `loader` is the core's slug; the web view gets the display name (the slug itself when it is
@@ -308,7 +325,7 @@ mod mapping_tests {
                 http("https://api.example/v1?access_token=SECRET"),
                 ErrorCode::Network,
                 Some(Retry),
-                &[("url", "https://api.example/v1")],
+                &[],
             ),
             row(
                 Error::Status {
@@ -709,6 +726,174 @@ mod mapping_tests {
         let e = Error::InstallFailed("sent Authorization: Bearer SECRET-TOKEN".into());
         let json = serde_json::to_string(&error_dto(&e)).unwrap();
         assert!(!json.contains("SECRET-TOKEN"), "{json}");
+    }
+
+    #[test]
+    fn json_errors_carry_category_and_position_only() {
+        // serde quotes the offending value in its message; the detail must not.
+        let quoted = serde_json::from_str::<u8>("\"SECRET-TOKEN-abc123\"").unwrap_err();
+        assert!(
+            quoted.to_string().contains("SECRET-TOKEN-abc123"),
+            "the premise"
+        );
+        for input in [
+            "\"SECRET-TOKEN-abc123\"",
+            "{\"access_token\": \"SECRET-TOKEN-abc123\" ",
+            "[1, 2, \"SECRET-TOKEN-abc123\"]",
+            "{\"a\": SECRET-TOKEN-abc123}",
+        ] {
+            let source = serde_json::from_str::<u8>(input).unwrap_err();
+            let dto = error_dto(&Error::Json(source));
+            assert_eq!(dto.code, ErrorCode::Internal);
+            let json = serde_json::to_string(&dto).unwrap();
+            assert!(!json.contains("SECRET-TOKEN"), "{json}");
+            assert!(!json.contains("abc123"), "{json}");
+            assert!(dto.detail.contains("line 1 column"), "{}", dto.detail);
+        }
+        let dto = error_dto(&Error::Json(quoted));
+        assert_eq!(
+            dto.detail,
+            "invalid JSON data (unexpected data) at line 1 column 21"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_real_transport_error_with_a_query_url_reaches_the_web_view_clean() {
+        // A closed local port: no network, a real reqwest error whose text names the URL.
+        let url = "http://127.0.0.1:9/path?access_token=SECRET-TOKEN-xyz&state=Q";
+        let fail = || async {
+            hengst_core::download::http_client()
+                .get(url)
+                .send()
+                .await
+                .unwrap_err()
+        };
+        let source = fail().await;
+        assert!(
+            source.to_string().contains("SECRET-TOKEN-xyz"),
+            "the premise: {source}"
+        );
+        let http = Error::Http {
+            url: url.into(),
+            source,
+        };
+        let offline = Error::Offline {
+            path: PathBuf::from("C:/h/x"),
+            url: url.into(),
+            source: fail().await,
+        };
+        for error in [http, offline] {
+            let json = serde_json::to_string(&error_dto(&error)).unwrap();
+            assert!(!json.contains("SECRET-TOKEN-xyz"), "{json}");
+            assert!(!json.contains("state=Q"), "{json}");
+        }
+    }
+
+    /// The wire name of every code, written out once: renaming or dropping a code changes what the
+    /// web view sees, so it must be a deliberate edit of this list. The match is exhaustive, so a
+    /// new variant breaks the build until it is listed here.
+    fn wire(code: ErrorCode) -> &'static str {
+        match code {
+            ErrorCode::Internal => "internal",
+            ErrorCode::InvalidInput => "invalidInput",
+            ErrorCode::Network => "network",
+            ErrorCode::Offline => "offline",
+            ErrorCode::ServerError => "serverError",
+            ErrorCode::ChecksumMismatch => "checksumMismatch",
+            ErrorCode::UnsafeData => "unsafeData",
+            ErrorCode::UnknownVersion => "unknownVersion",
+            ErrorCode::NoJavaRuntime => "noJavaRuntime",
+            ErrorCode::OfflineAccountBlocked => "offlineAccountBlocked",
+            ErrorCode::NoLoaderVersions => "noLoaderVersions",
+            ErrorCode::UnknownLoaderVersion => "unknownLoaderVersion",
+            ErrorCode::LoaderUnsupported => "loaderUnsupported",
+            ErrorCode::InstallerInvalid => "installerInvalid",
+            ErrorCode::InstallFailed => "installFailed",
+            ErrorCode::InstallStepFailed => "installStepFailed",
+            ErrorCode::NativesInUse => "nativesInUse",
+            ErrorCode::LockTimeout => "lockTimeout",
+            ErrorCode::CredentialStore => "credentialStore",
+            ErrorCode::MissingClientId => "missingClientId",
+            ErrorCode::AppMisconfigured => "appMisconfigured",
+            ErrorCode::AppNotApproved => "appNotApproved",
+            ErrorCode::LoginDeclined => "loginDeclined",
+            ErrorCode::LoginExpired => "loginExpired",
+            ErrorCode::DeviceCodeExpired => "deviceCodeExpired",
+            ErrorCode::NoXboxAccount => "noXboxAccount",
+            ErrorCode::XboxRegionBlocked => "xboxRegionBlocked",
+            ErrorCode::XboxAdultVerification => "xboxAdultVerification",
+            ErrorCode::XboxChildAccount => "xboxChildAccount",
+            ErrorCode::XboxRefused => "xboxRefused",
+            ErrorCode::GameNotOwned => "gameNotOwned",
+            ErrorCode::NoProfile => "noProfile",
+            ErrorCode::AccountNotFound => "accountNotFound",
+            ErrorCode::NoAccount => "noAccount",
+            ErrorCode::Cancelled => "cancelled",
+            ErrorCode::FileSystem => "fileSystem",
+            ErrorCode::OpenFailed => "openFailed",
+        }
+    }
+
+    const ALL_CODES: [ErrorCode; 37] = [
+        ErrorCode::Internal,
+        ErrorCode::InvalidInput,
+        ErrorCode::Network,
+        ErrorCode::Offline,
+        ErrorCode::ServerError,
+        ErrorCode::ChecksumMismatch,
+        ErrorCode::UnsafeData,
+        ErrorCode::UnknownVersion,
+        ErrorCode::NoJavaRuntime,
+        ErrorCode::OfflineAccountBlocked,
+        ErrorCode::NoLoaderVersions,
+        ErrorCode::UnknownLoaderVersion,
+        ErrorCode::LoaderUnsupported,
+        ErrorCode::InstallerInvalid,
+        ErrorCode::InstallFailed,
+        ErrorCode::InstallStepFailed,
+        ErrorCode::NativesInUse,
+        ErrorCode::LockTimeout,
+        ErrorCode::CredentialStore,
+        ErrorCode::MissingClientId,
+        ErrorCode::AppMisconfigured,
+        ErrorCode::AppNotApproved,
+        ErrorCode::LoginDeclined,
+        ErrorCode::LoginExpired,
+        ErrorCode::DeviceCodeExpired,
+        ErrorCode::NoXboxAccount,
+        ErrorCode::XboxRegionBlocked,
+        ErrorCode::XboxAdultVerification,
+        ErrorCode::XboxChildAccount,
+        ErrorCode::XboxRefused,
+        ErrorCode::GameNotOwned,
+        ErrorCode::NoProfile,
+        ErrorCode::AccountNotFound,
+        ErrorCode::NoAccount,
+        ErrorCode::Cancelled,
+        ErrorCode::FileSystem,
+        ErrorCode::OpenFailed,
+    ];
+
+    #[test]
+    fn every_wire_code_is_pinned() {
+        for code in ALL_CODES {
+            assert_eq!(
+                serde_json::to_string(&code).unwrap(),
+                format!("\"{}\"", wire(code))
+            );
+        }
+        // The list is complete: the generated TypeScript union names exactly these codes.
+        let ts = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../src/ipc/bindings/ErrorCode.ts"
+        ))
+        .unwrap();
+        let union = &ts[ts.find("export type ErrorCode").unwrap()..];
+        let mut in_ts: Vec<&str> = union.split('"').skip(1).step_by(2).collect();
+        let mut listed: Vec<&str> = ALL_CODES.iter().map(|c| wire(*c)).collect();
+        in_ts.sort_unstable();
+        listed.sort_unstable();
+        assert_eq!(in_ts, listed);
     }
 
     #[test]

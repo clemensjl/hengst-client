@@ -48,21 +48,40 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
 const COPY_PARAMS = ["loader", "game", "version", "name"] as const;
 
+/**
+ * Where an error shows up, for codes whose wording depends on it: `errors.<code>.<context>.title`
+ * and `.body` are looked up first, the generic `errors.<code>.*` is the fallback. `signIn` carries
+ * the wording of DESIGN.md 11.5, `launch` the offline text of the launch panel (10.2).
+ */
+export type ErrorContext = "signIn" | "launch";
+
+/*
+ * `missingClientId` is the "build without client id" state of DESIGN.md 11.6. It cannot occur in a
+ * build of this repository (the id is built into the core and an empty override falls back to it);
+ * it exists for forks that remove the id. The copy is the single source for the 11.6 block.
+ */
+
 /** Title, body and the label of the error's own action (none for `retry`: that is the panel's retry button). */
 export function describeError(
   dto: ErrorDto,
   t: TFunction,
+  context?: ErrorContext,
 ): { title: string; body: string; actionLabel?: string } {
   const values: Record<string, string> = {};
   for (const key of COPY_PARAMS) {
     const value = dto.params[key];
     if (value !== undefined) values[key] = value;
   }
-  const { title, body } = errorKeys[dto.code];
-  let bodyText = t(body, values);
-  const hint = dto.code === "noLoaderVersions" ? dto.params.hint : undefined;
-  if (hint) bodyText = `${bodyText} ${t(`errors.noLoaderVersions.hint.${hint}`)}`;
-  return { title: t(title, values), body: bodyText, actionLabel: actionLabel(dto.action, t) };
+  // A code this bundle does not know (a newer backend) shows the internal copy.
+  const code = dto.code in errorKeys ? dto.code : "internal";
+  const lookup = (field: "title" | "body") => {
+    const generic = errorKeys[code][field];
+    return context ? [`errors.${code}.${context}.${field}`, generic] : generic;
+  };
+  let body = t(lookup("body"), values);
+  const hint = code === "noLoaderVersions" ? dto.params.hint : undefined;
+  if (hint) body = `${body} ${t(`errors.noLoaderVersions.hint.${hint}`)}`;
+  return { title: t(lookup("title"), values), body, actionLabel: actionLabel(dto.action, t) };
 }
 
 function actionLabel(action: ErrorDto["action"], t: TFunction): string | undefined {

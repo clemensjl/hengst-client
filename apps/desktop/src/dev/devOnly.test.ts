@@ -1,9 +1,8 @@
-import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 const SRC = path.resolve(import.meta.dirname, "..");
-const DIST = path.resolve(SRC, "../dist");
 
 function files(dir: string): string[] {
   return readdirSync(dir).flatMap((name) => {
@@ -28,18 +27,6 @@ describe("the error gallery is a dev-server page", () => {
     expect(main).not.toMatch(/^import .*ErrorGallery/m);
   });
 
-  // Runs against the output of `pnpm build`; without one (a plain test run) there is nothing to check.
-  it.skipIf(!existsSync(path.join(DIST, "assets")))(
-    "a production build contains neither the page nor its sample texts",
-    () => {
-      const built = files(path.join(DIST, "assets"))
-        .filter((f) => /\.(js|css|html)$/.test(f))
-        .map((f) => readFileSync(f, "utf8"))
-        .join("\n");
-      expect(built.length).toBeGreaterThan(1000);
-      for (const marker of ["error-gallery", "ErrorGallery", "gallery-sample-detail"]) {
-        expect(built.includes(marker), marker).toBe(false);
-      }
-    },
-  );
+  // The production output is checked by the build itself (vite-plugins/noDevGallery.ts), not here:
+  // a test that reads dist would depend on the order of the CI steps.
 });

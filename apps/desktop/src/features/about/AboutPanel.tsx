@@ -44,7 +44,7 @@ function SourceLink() {
         {t("about.source")}
         <ExternalLinkIcon aria-hidden="true" />
       </Button>
-      {error && <ErrorPanel error={error} />}
+      {error && <ErrorPanel error={error} autoFocus />}
     </div>
   );
 }

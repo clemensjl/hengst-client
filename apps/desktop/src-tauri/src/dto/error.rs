@@ -27,6 +27,9 @@ pub enum ErrorCode {
     NativesInUse,
     LockTimeout,
     CredentialStore,
+    /// No Microsoft client id in this build. It cannot happen in a build of this repository (the id is
+    /// built in and an empty override falls back to it); the state exists for forks that remove
+    /// the id. DESIGN.md 11.6 describes the "build without client id" block.
     MissingClientId,
     AppMisconfigured,
     AppNotApproved,

@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { tableRows } from "@/styles/designDoc";
 import i18n, { initI18n } from "@/i18n";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
+import de_json from "@/i18n/de.json";
+import en_json from "@/i18n/en.json";
 import { describeError, errorKeys } from "./errorCopy";
 
 initI18n("en", "en-US");
@@ -65,6 +67,121 @@ describe("errorKeys", () => {
         expect(text.endsWith("."), hint).toBe(true);
       }
     }
+  });
+});
+
+const ALL_CODES = [
+  "internal",
+  "invalidInput",
+  "network",
+  "offline",
+  "serverError",
+  "checksumMismatch",
+  "unsafeData",
+  "unknownVersion",
+  "noJavaRuntime",
+  "offlineAccountBlocked",
+  "noLoaderVersions",
+  "unknownLoaderVersion",
+  "loaderUnsupported",
+  "installerInvalid",
+  "installFailed",
+  "installStepFailed",
+  "nativesInUse",
+  "lockTimeout",
+  "credentialStore",
+  "missingClientId",
+  "appMisconfigured",
+  "appNotApproved",
+  "loginDeclined",
+  "loginExpired",
+  "deviceCodeExpired",
+  "noXboxAccount",
+  "xboxRegionBlocked",
+  "xboxAdultVerification",
+  "xboxChildAccount",
+  "xboxRefused",
+  "gameNotOwned",
+  "noProfile",
+  "accountNotFound",
+  "noAccount",
+  "cancelled",
+  "fileSystem",
+  "openFailed",
+];
+
+describe("wire codes and copy groups", () => {
+  it("pins every code string", () => {
+    expect([...codes].sort()).toEqual([...ALL_CODES].sort());
+  });
+
+  // Groups under `errors.` that are not codes: the panel's own labels, the settings load error and
+  // the About panel's inline texts.
+  const NON_CODE_GROUPS = [
+    "action",
+    "details",
+    "copy",
+    "copied",
+    "copyFailed",
+    "settingsLoadFailed",
+    "versionsOffline",
+    "versionsFailed",
+    "versionsRefreshFailed",
+  ];
+  const CONTEXTS = ["signIn", "launch"];
+
+  it("no errors.<group> exists without a matching code or a listed non-code group", () => {
+    for (const json of [de_json, en_json] as Record<string, string>[]) {
+      for (const key of Object.keys(json).filter((k) => k.startsWith("errors."))) {
+        const [, group, second] = key.split(".");
+        const known = ALL_CODES.includes(group) || NON_CODE_GROUPS.includes(group);
+        expect(known, key).toBe(true);
+        // A context group sits directly under a code: errors.<code>.<context>.title|body.
+        if (ALL_CODES.includes(group) && !["title", "body", "hint"].includes(second)) {
+          expect(CONTEXTS, key).toContain(second);
+        }
+      }
+    }
+  });
+});
+
+describe("error contexts", () => {
+  it("network and offline are generic by default, the sign-in wording only in the sign-in context", () => {
+    for (const code of ["network", "offline"] as const) {
+      expect(describeError(dto(code), en).title).toBe("No connection");
+      expect(describeError(dto(code), de).title).toBe("Keine Verbindung");
+      expect(describeError(dto(code), en, "signIn").title).toBe("Cannot reach Microsoft");
+      expect(describeError(dto(code), de, "signIn").title).toBe("Keine Verbindung zu Microsoft");
+      expect(describeError(dto(code), en, "launch").body).toBe(
+        "Files for this version are missing. Check your internet connection and try again.",
+      );
+      expect(describeError(dto(code), de, "launch").body).toBe(
+        "Für diese Version fehlen Dateien. Prüfe die Internetverbindung und versuche es erneut.",
+      );
+      // The generic copy names no service.
+      expect(JSON.stringify(describeError(dto(code), en))).not.toMatch(/Microsoft/);
+    }
+  });
+
+  it("credentialStore is generic by default and says the sign-in was not saved in the sign-in context", () => {
+    expect(describeError(dto("credentialStore"), en).title).not.toMatch(/sign-in/i);
+    expect(describeError(dto("credentialStore"), en, "signIn").title).toBe(
+      "The sign-in could not be saved",
+    );
+    expect(describeError(dto("credentialStore"), de, "signIn").title).toBe(
+      "Die Anmeldung konnte nicht gespeichert werden",
+    );
+  });
+
+  it("a context without its own text for a code falls back to the generic text", () => {
+    expect(describeError(dto("serverError"), en, "launch")).toEqual(
+      describeError(dto("serverError"), en),
+    );
+  });
+
+  it("a code this bundle does not know shows the internal copy instead of throwing", () => {
+    const unknown = dto("fromTheFuture" as ErrorDto["code"]);
+    expect(describeError(unknown, en, "signIn")).toEqual(describeError(dto("internal"), en));
   });
 });
 
@@ -162,11 +279,12 @@ describe("copy of DESIGN.md 11.5 and 11.6", () => {
       for (const code of [...codeCell.matchAll(/`([a-zA-Z]+)`/g)].map((m) => m[1])) {
         // Task 5 adds its own three codes to ErrorCode; they are checked once they exist.
         if (!(code in errorKeys)) continue;
-        const keys = errorKeys[code as ErrorDto["code"]];
-        expect(de(keys.title), `${code} title de`).toBe(title[0]);
-        expect(en(keys.title), `${code} title en`).toBe(title[1]);
-        expect(de(keys.body), `${code} body de`).toBe(body[0]);
-        expect(en(keys.body), `${code} body en`).toBe(body[1]);
+        const d = describeError(dto(code as ErrorDto["code"]), de, "signIn");
+        const e = describeError(dto(code as ErrorDto["code"]), en, "signIn");
+        expect(d.title, `${code} title de`).toBe(title[0]);
+        expect(e.title, `${code} title en`).toBe(title[1]);
+        expect(d.body, `${code} body de`).toBe(body[0]);
+        expect(e.body, `${code} body en`).toBe(body[1]);
         checked++;
       }
     }
