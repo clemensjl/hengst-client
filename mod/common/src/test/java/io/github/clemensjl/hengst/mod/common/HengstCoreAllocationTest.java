@@ -3,7 +3,12 @@ package io.github.clemensjl.hengst.mod.common;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
+import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
+import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -15,6 +20,9 @@ import java.nio.file.Path;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
@@ -274,20 +282,21 @@ class HengstCoreAllocationTest {
     }
 
     /** Counts instead of listing: nothing to allocate in the handler. */
-    private static final class CountingKeyFeature extends io.github.clemensjl.hengst.mod.common.feature.Feature {
+    private static final class CountingKeyFeature extends Feature {
         int downs;
         int ups;
-        private final java.util.List<io.github.clemensjl.hengst.mod.common.feature.KeySpec> keys = java.util.Collections.singletonList(
-                new io.github.clemensjl.hengst.mod.common.feature.KeySpec("count.hold",
-                        io.github.clemensjl.hengst.mod.common.feature.DefaultKey.NONE,
-                        io.github.clemensjl.hengst.mod.common.feature.KeySpec.Mode.HOLD));
+        private final List<KeySpec> keys;
 
-        CountingKeyFeature() {
-            super("counting", 47, io.github.clemensjl.hengst.mod.common.feature.FeatureGroup.HUD,
-                    java.util.EnumSet.allOf(io.github.clemensjl.hengst.mod.common.platform.GameVersion.class));
+        CountingKeyFeature(String id, int number, int count) {
+            super(id, number, FeatureGroup.HUD, EnumSet.allOf(GameVersion.class));
+            KeySpec[] specs = new KeySpec[count];
+            for (int i = 0; i < count; i++) {
+                specs[i] = new KeySpec("count.k" + i, DefaultKey.NONE, i == count - 1 ? KeySpec.Mode.HOLD : KeySpec.Mode.PRESS);
+            }
+            keys = Arrays.asList(specs);
         }
 
-        @Override public java.util.List<io.github.clemensjl.hengst.mod.common.feature.KeySpec> keys() { return keys; }
+        @Override public List<KeySpec> keys() { return keys; }
 
         @Override public void onKey(int key, boolean down, long nowNanos) {
             if (down) { downs++; } else { ups++; }
@@ -296,7 +305,7 @@ class HengstCoreAllocationTest {
 
     @Test void feature_keys_allocate_nothing() {
         core = start(); platform.inWorld = true;
-        CountingKeyFeature f = new CountingKeyFeature();
+        CountingKeyFeature f = new CountingKeyFeature("counting", 47, 1);
         core.activeProfile().module("counting").setEnabled(true);
         int hold = core.keySpecs().size();
         core.registerForTest(f);
@@ -321,5 +330,57 @@ class HengstCoreAllocationTest {
         assertEquals(0, held);
         assertEquals(0, outOfRange);
         assertTrue(f.downs >= 4000 && f.ups >= 3999);
+    }
+
+    /**
+     * Index 128 and up (outside the Integer cache), a feature that is off, and a release caused by a screen opening:
+     * none of them may allocate. Mutations caught: boxing the key index in a map or list lookup; building anything
+     * for a press of a disabled feature; allocating in the tick's release path.
+     */
+    @Test void high_key_indexes_off_features_and_screen_releases_allocate_nothing() {
+        core = start(); platform.inWorld = true;
+        CountingKeyFeature pad = new CountingKeyFeature("pad", 46, 130);
+        CountingKeyFeature on = new CountingKeyFeature("counting", 47, 2);
+        CountingKeyFeature off = new CountingKeyFeature("off", 48, 2);
+        core.activeProfile().module("pad").setEnabled(true);
+        core.activeProfile().module("counting").setEnabled(true);
+        core.activeProfile().module("off").setEnabled(false);
+        core.registerForTest(pad);
+        int onBase = core.keySpecs().size();
+        core.registerForTest(on);
+        int offBase = core.keySpecs().size();
+        core.registerForTest(off);
+        int onHold = onBase + 1;
+        int offHold = offBase + 1;
+        assertTrue(onHold >= 128 && offHold >= 128);
+        for (int i = 0; i < 3000; i++) {
+            core.onFeatureKey(onHold, true); core.onFeatureKey(onHold, false);
+            core.onFeatureKey(offHold, true); core.onFeatureKey(offHold, false);
+            core.onClientTick();
+        }
+        long before = allocated();
+        for (int i = 0; i < 1000; i++) {
+            core.onFeatureKey(onHold, true); core.onFeatureKey(onHold, false);
+            core.onFeatureKey(offHold, true); core.onFeatureKey(offHold, false);
+        }
+        long presses = allocated() - before;
+        // a release caused by a screen opening: press, open, tick (release), close, real release
+        for (int i = 0; i < 3; i++) {
+            core.onFeatureKey(onHold, true); platform.screenOpen = true; core.onClientTick();
+            platform.screenOpen = false; core.onFeatureKey(onHold, false); core.onClientTick();
+        }
+        int upsBefore = on.ups;
+        before = allocated();
+        for (int i = 0; i < 1000; i++) {
+            core.onFeatureKey(onHold, true);
+            platform.screenOpen = true; core.onClientTick();
+            platform.screenOpen = false; core.onFeatureKey(onHold, false); core.onClientTick();
+        }
+        long screenReleases = allocated() - before;
+        System.out.println("HengstCore key allocation at index >= 128: presses " + presses + " bytes, screen releases " + screenReleases + " bytes");
+        assertEquals(0, presses);
+        assertEquals(0, screenReleases);
+        assertEquals(1000, on.ups - upsBefore);
+        assertEquals(0, off.downs + off.ups);
     }
 }

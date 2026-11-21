@@ -10,7 +10,9 @@ import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
+import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
+import io.github.clemensjl.hengst.mod.common.platform.WallClock;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
 import java.nio.file.Path;
@@ -43,7 +45,11 @@ class HengstCoreKeysTest {
         RuntimeException failure;
 
         KeyFeature(String id, int number) {
-            super(id, number, FeatureGroup.HUD, EnumSet.allOf(GameVersion.class));
+            this(id, number, EnumSet.allOf(GameVersion.class));
+        }
+
+        KeyFeature(String id, int number, EnumSet<GameVersion> versions) {
+            super(id, number, FeatureGroup.HUD, versions);
         }
 
         @Override public List<KeySpec> keys() {
@@ -263,5 +269,73 @@ class HengstCoreKeysTest {
         f.failure = new IllegalStateException("boom");
         core.onFeatureKey(PRESS, true);
         assertEquals(2, warningsWith("boom"));
+    }
+
+    /** Mutation caught: adding keys of unsupported features, or letting appendKeys shift later indexes. */
+    @Test void an_unsupported_feature_adds_no_key_and_shifts_no_index() {
+        core = start(); platform.inWorld = true;
+        int base = core.keySpecs().size();
+        List<String> before = ids(core.keySpecs());
+        KeyFeature other = new KeyFeature("modernonly", 47, EnumSet.of(GameVersion.V26_3));
+        core.activeProfile().module("modernonly").setEnabled(true);
+        core.registerForTest(other);
+        assertEquals(base, core.keySpecs().size());
+        assertEquals(before, ids(core.keySpecs()));
+        KeyFeature mine = new KeyFeature("mine", 49);
+        core.activeProfile().module("mine").setEnabled(true);
+        core.registerForTest(mine);
+        assertEquals(base + 2, core.keySpecs().size());
+        core.onFeatureKey(base + 1, true);
+        assertEquals(Arrays.asList("1 down"), mine.events);
+        assertTrue(other.events.isEmpty());
+    }
+
+    /** Mutation caught: dispatch that checks the profile instead of FeatureState (policy ignored), or no re-check when the server changes. */
+    @Test void a_restricted_feature_gets_no_press_until_the_restriction_ends() {
+        RestrictionPolicy policy = (feature, server) -> "blocked.example".equals(server) && feature.id().equals("keys");
+        platform.inWorld = true;
+        platform.serverAddress = "blocked.example";
+        core = HengstCore.start(platform, time, clock, WallClock.SYSTEM, policy);
+        f = new KeyFeature("keys", 47);
+        core.activeProfile().module("keys").setEnabled(true);
+        int base = core.keySpecs().size();
+        core.registerForTest(f);
+        core.onClientTick();
+        core.onFeatureKey(base + 1, true); core.onFeatureKey(base + 1, false);
+        assertTrue(f.events.isEmpty());
+        platform.serverAddress = "free.example";
+        core.onClientTick();
+        core.onFeatureKey(base + 1, true);
+        assertEquals(Arrays.asList("1 down"), f.events);
+        core.onFeatureKey(base + 1, false);
+        platform.serverAddress = "blocked.example";
+        core.onClientTick();
+        core.onFeatureKey(base + 1, true);
+        assertEquals(Arrays.asList("1 down"), f.events);
+    }
+
+    /** Mutation caught: a second release from the tick after the feature-off path, or none at all. */
+    @Test void switched_off_while_held_then_the_world_is_left_releases_exactly_once() {
+        startWithKeys();
+        core.onFeatureKey(HOLD, true);
+        core.activeProfile().module("keys").setEnabled(false); core.applyConfigForTest();
+        platform.inWorld = false;
+        core.onClientTick(); core.onClientTick();
+        core.onFeatureKey(HOLD, false);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+    }
+
+    /** Mutation caught: either derivation of the key list (core from the registry, catalog from create) drifting apart or out of number order. */
+    @Test void the_core_key_list_equals_the_catalog_for_every_version() {
+        for (GameVersion v : GameVersion.values()) {
+            platform.version = v;
+            core = start();
+            assertEquals(ids(FeatureCatalog.keys(v)), ids(core.keySpecs()), v.toString());
+        }
+        int last = Integer.MIN_VALUE;
+        for (Feature feature : FeatureCatalog.create()) {
+            assertTrue(feature.number() > last, "the catalog lists " + feature.id() + " out of number order");
+            last = feature.number();
+        }
     }
 }
