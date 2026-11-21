@@ -704,6 +704,22 @@ class HengstCoreTest {
         assertNotNull(platform.openedScreen);
     }
 
+    @Test void speed_shows_no_spike_after_the_module_was_switched_off_and_on_in_the_same_world() {
+        core = start(); platform.inWorld = true; platform.worldIdentity = new Object();
+        ModuleConfig cfg = core.activeProfile().module("speed");
+        cfg.setEnabled(true); core.applyConfigForTest();
+        core.onClientTick(); platform.playerX += 0.25; core.onClientTick();
+        HudModule speed = (HudModule) core.registry().byId("speed");
+        assertEquals("5.0 m/s", ((io.github.clemensjl.hengst.mod.common.hud.TextHudModule) speed).text());
+        cfg.setEnabled(false); core.applyConfigForTest();
+        core.onClientTick(); platform.playerX += 4; core.onClientTick();   // 4 blocks while off: within one tick's limit
+        cfg.setEnabled(true); core.applyConfigForTest();                   // an apply also covers a profile switch
+        core.onClientTick();
+        assertEquals("0.0 m/s", ((io.github.clemensjl.hengst.mod.common.hud.TextHudModule) speed).text());
+        platform.playerX += 0.25; core.onClientTick();
+        assertEquals("5.0 m/s", ((io.github.clemensjl.hengst.mod.common.hud.TextHudModule) speed).text());
+    }
+
     @Test void an_exception_in_a_screen_input_does_not_escape_and_is_logged_once() {
         core = start(); platform.inWorld = true;
         final boolean[] armed = {false};
@@ -717,8 +733,10 @@ class HengstCoreTest {
         UiScreen s = platform.openedScreen;
         s.render(canvas, 0, 0, 0f);
         armed[0] = true;
-        s.mouseScrolled(60, 100, -30);                      // six features now: the bad row is below the visible part
-        for (int y = 66; y < 66 + 20 * 7; y += 20) {       // selecting the row of the bad feature rebuilds its options
+        int features = core.registry().all().size();
+        s.mouseScrolled(60, 100, -20.0 * features);         // to the end of the list: the bad row (last) is then visible
+        int lastY = Math.min(66 + 20 * (features + 2), DONE_Y - 20); // a click on Done would close the screen
+        for (int y = 66; y < lastY; y += 20) {             // selecting the row of the bad feature rebuilds its options
             assertFalse(throwsOnClick(s, 60, y));
         }
         assertEquals(1, platform.warnings.size());

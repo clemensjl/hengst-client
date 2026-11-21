@@ -13,8 +13,12 @@ import java.util.List;
 /**
  * Shows the speed in blocks per second, from the distance between the positions of two ticks, averaged over the last
  * up to 10 ticks and multiplied by 20. Horizontal unless {@code include_vertical} is on. The average and the text
- * restart (the tick only remembers the position) after a jump of more than 10 blocks in one tick (teleport), on a new
- * world instance (dimension change, new world) and on a position that is not finite. Empty outside a world.
+ * restart (the tick only remembers the position) after a jump of more than 5 blocks in one tick (teleport,
+ * ender pearl, chorus fruit, respawn: terminal fall velocity is 3.92 blocks per tick, so the shown value never
+ * exceeds 100 m/s), on a new
+ * world instance (dimension change, new world), on a position that is not finite and whenever the core applies the
+ * configuration (module switched off and on, profile switch, server change: the position from before would count as
+ * one step). Empty outside a world.
  */
 public final class SpeedModule extends TextHudModule {
     private static final OptionSpec VERTICAL = OptionSpec.toggle("include_vertical", false);
@@ -22,7 +26,7 @@ public final class SpeedModule extends TextHudModule {
     private static final List<OptionSpec> OPTIONS = Arrays.asList(VERTICAL, DECIMALS);
     private static final int WINDOW = 10;
     private static final double TICKS_PER_SECOND = 20.0;
-    private static final double MAX_STEP_SQUARED = 10.0 * 10.0;
+    private static final double MAX_STEP_SQUARED = 5.0 * 5.0;
     private static final long[] POW10 = {1L, 10L, 100L};
     private static final long NONE = Long.MIN_VALUE;
 
@@ -55,6 +59,16 @@ public final class SpeedModule extends TextHudModule {
     @Override
     public List<OptionSpec> options() {
         return OPTIONS;
+    }
+
+    /**
+     * Called by the core on every apply (start, settings or HUD editor closed, profile switch, server change). Rule: always
+     * forget the position and the average. An apply is rare and never happens while a slider moves, and the one
+     * extra "0.0" it can cause is harmless against a spike after a gap in which the module was not ticked.
+     */
+    @Override
+    public void onConfigChanged(ModuleConfig cfg) {
+        restart(false);
     }
 
     @Override

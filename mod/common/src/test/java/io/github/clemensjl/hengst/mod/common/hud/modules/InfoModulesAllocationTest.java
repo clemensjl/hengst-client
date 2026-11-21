@@ -26,8 +26,13 @@ import org.junit.jupiter.api.io.TempDir;
 /** Direction and speed through the real renderer: nothing is allocated unless a displayed value changed. */
 @Tag("interpreted")
 class InfoModulesAllocationTest {
-    /** A new String with a short text: object header, fields and the backing array. Generous on purpose. */
-    private static final long MAX_BYTES_PER_CHANGE = 128;
+    /**
+     * One shown-value change builds one String and nothing else. The longest speed text "100.00 m/s" is 10 Latin-1
+     * chars: a 24-byte String object (compressed oops: header 12, hash 4, coder 1, hashIsZero 1, value reference 4,
+     * padding 2) plus a 32-byte byte[10] (16 header + 10, padded to 8) = 56 bytes; the texts of the test are shorter
+     * (48 bytes measured). The bound is 56 + 16: a second String (at least 48 bytes) would break it on average.
+     */
+    private static final long MAX_BYTES_PER_CHANGE = 72;
 
     private static final com.sun.management.ThreadMXBean MX =
             (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
@@ -141,6 +146,34 @@ class InfoModulesAllocationTest {
     }
 
     @Test
+    void speed_with_realistic_jittering_steps_allocates_nothing_while_the_shown_text_stays() {
+        ModuleConfig cfg = ModuleConfig.defaults();
+        cfg.setOption("decimals", 2);
+        platform.playerX = 4321.123456;
+        platform.playerZ = -765.4321;
+        for (int i = 0; i < 3000; i++) {
+            platform.playerX += 0.2158 + 1e-12 * (i % 7);
+            speed.tick(ctx, cfg);
+        }
+        String shown = speed.text();
+        assertEquals("4.32 m/s", shown);
+        int n = 20000;
+        int changes = 0;
+        long before = allocated();
+        for (int i = 0; i < n; i++) {
+            platform.playerX += 0.2158 + 1e-12 * (i % 7);
+            speed.tick(ctx, cfg);
+            if (speed.text() != shown) {
+                shown = speed.text();
+                changes++;
+            }
+        }
+        long bytes = allocated() - before;
+        assertEquals(0, changes, "rounding noise flipped the shown text " + changes + " times");
+        assertEquals(0, bytes, "allocated " + bytes + " bytes in " + n + " ticks");
+    }
+
+    @Test
     void speed_allocates_one_short_string_per_value_change() {
         ModuleConfig cfg = ModuleConfig.defaults();
         cfg.setOption("decimals", 2);
@@ -165,7 +198,6 @@ class InfoModulesAllocationTest {
         long bytes = allocated() - before;
         assertTrue(changes > 1000, "too few value changes to prove anything: " + changes);
         assertTrue(bytes <= changes * MAX_BYTES_PER_CHANGE, "allocated " + bytes + " bytes for " + changes + " changes");
-        System.out.println("ALLOC speed bytes per change: " + bytes / Math.max(1, changes));
     }
 
     // Clock and memory, through the real renderer.

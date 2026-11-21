@@ -127,4 +127,18 @@ class DirectionModuleTest {
         m.tick(ctx, cfg);
         assertEquals(shown, m.text());
     }
+
+    @Test
+    void exact_half_degree_boundaries_and_the_largest_yaws() {
+        DirectionModule m = new DirectionModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        Object[][] cases = {{-22.5f, "S 158°"}, {22.5f, "SW 203°"}, {157.5f, "N 338°"},
+            // Float.MAX_VALUE is 2^104 * (2^24 - 1) and 2^24 - 1 = 45 * 372827, so it is a multiple of 360: course 0
+            {Float.MAX_VALUE, "N 0°"}, {-Float.MAX_VALUE, "N 0°"}};
+        for (Object[] c : cases) {
+            platform.playerYaw = (Float) c[0];
+            m.tick(ctx, cfg);
+            assertEquals(c[1], m.text(), "yaw " + c[0]);
+        }
+    }
 }

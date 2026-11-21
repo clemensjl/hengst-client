@@ -585,9 +585,15 @@ class ModulesTest {
 
     @Test
     void default_places_of_the_eight_modules_do_not_overlap_at_320_by_240() {
+        assertDefaultPlacesApart("en_us");
+        assertDefaultPlacesApart("de_de");
+    }
+
+    /** Worst-case texts: direction "NW 337°" (the longest course text), speed "100.00 m/s", coordinates with 2 decimals. */
+    private void assertDefaultPlacesApart(String language) {
         platform.inWorld = true;
         platform.worldIdentity = new Object();
-        platform.playerYaw = -135f;
+        platform.playerYaw = 157f; // course 337: "NW 337°"
         platform.down.add(GameKey.FORWARD);
         platform.playerX = 12345.6789;
         platform.playerY = 120.5;
@@ -598,7 +604,7 @@ class ModulesTest {
                 new io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock();
         wall.utcMillis = java.time.Instant.parse("2026-11-21T23:58:58Z").toEpochMilli(); // "11:58:58 PM"
         HudContext wallCtx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
-        cfg.setOption("decimals", 0);
+        wallCtx.setI18n(io.github.clemensjl.hengst.mod.common.I18n.load(language));
         io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
             new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),
             new ClockModule(), new MemoryModule()};
@@ -610,9 +616,18 @@ class ModulesTest {
             c.setAnchor(all[i].defaultAnchor());
             c.setOffsetX(all[i].defaultOffsetX());
             c.setOffsetY(all[i].defaultOffsetY());
+            c.setOption("decimals", 2);
             c.setOption("seconds", true);
             c.setOption("format", "12h");
             all[i].tick(wallCtx, c);
+            if (all[i] instanceof SpeedModule) {
+                platform.playerX += 5; // the largest counted step: 100 m/s
+                all[i].tick(wallCtx, c);
+                assertEquals("100.00 m/s", ((SpeedModule) all[i]).text());
+            }
+            if (all[i] instanceof DirectionModule) {
+                assertEquals("NW 337°", ((DirectionModule) all[i]).text());
+            }
             rects[i] = new io.github.clemensjl.hengst.mod.common.layout.MutableRect();
             io.github.clemensjl.hengst.mod.common.layout.LayoutMath.resolve(c, all[i].width(canvas, c),
                     all[i].height(canvas, c), canvas.width(), canvas.height(), rects[i]);

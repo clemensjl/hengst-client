@@ -113,21 +113,21 @@ class SpeedModuleTest {
     }
 
     @Test
-    void a_step_of_exactly_ten_blocks_counts_and_a_longer_one_does_not() {
+    void a_step_of_exactly_five_blocks_counts_and_a_longer_one_does_not() {
         SpeedModule m = new SpeedModule();
         ModuleConfig cfg = ModuleConfig.defaults();
         platform.worldIdentity = new Object();
         m.tick(ctx, cfg);
-        platform.playerX += 10.0;
+        platform.playerX += 5.0;
         m.tick(ctx, cfg);
-        assertEquals("200.0 m/s", m.text());
-        platform.playerX += 10.01;
+        assertEquals("100.0 m/s", m.text());
+        platform.playerX += 5.01;
         m.tick(ctx, cfg);
         assertEquals("0.0 m/s", m.text());
     }
 
     @Test
-    void a_vertical_fall_over_ten_blocks_resets_only_when_vertical_counts() {
+    void a_vertical_fall_over_five_blocks_resets_only_when_vertical_counts() {
         SpeedModule m = new SpeedModule();
         ModuleConfig cfg = ModuleConfig.defaults();
         platform.worldIdentity = new Object();
@@ -188,6 +188,27 @@ class SpeedModuleTest {
         platform.worldIdentity = new Object();
         platform.playerX = 8000;
         platform.playerZ = -3000;
+        m.tick(ctx, cfg);
+        assertEquals("0.0 m/s", m.text());
+    }
+
+    @Test
+    void applying_the_config_forgets_the_position_so_a_gap_is_not_one_step() {
+        SpeedModule m = new SpeedModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.worldIdentity = new Object();
+        m.tick(ctx, cfg);
+        platform.playerX += 0.25;
+        m.tick(ctx, cfg);
+        assertEquals("5.0 m/s", m.text());
+        platform.playerX += 4; // while the module was off: not ticked
+        m.onConfigChanged(cfg);
+        m.tick(ctx, cfg);
+        assertEquals("0.0 m/s", m.text());
+        platform.playerX += 0.25;
+        m.tick(ctx, cfg);
+        assertEquals("5.0 m/s", m.text());
+        platform.playerX += 6; // beyond the limit: also reset without the apply
         m.tick(ctx, cfg);
         assertEquals("0.0 m/s", m.text());
     }
