@@ -18,6 +18,11 @@ abstract class TestModProbeMixin {
         LegacyGameTest.stampHud();
     }
 
+    @Inject(method = "onHud(F)V", at = @At("RETURN"), remap = false)
+    private static void hengstTest$afterHud(float tickDelta, CallbackInfo ci) {
+        LegacyGameTest.afterHud();
+    }
+
     @Inject(method = "onMouseButton(IZ)V", at = @At("HEAD"), remap = false)
     private static void hengstTest$mouse(int lwjglButton, boolean pressed, CallbackInfo ci) {
         LegacyGameTest.recordMouse(lwjglButton, pressed);

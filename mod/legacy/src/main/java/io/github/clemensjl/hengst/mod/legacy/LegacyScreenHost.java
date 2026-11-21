@@ -13,6 +13,11 @@ import org.lwjgl.input.Mouse;
  * the bottom of the window) into scaled GUI pixels from the top left and calls {@link #mouseClicked},
  * {@link #mouseReleased} and {@link #mouseDragged} (absolute position); the wheel is read after it from the same
  * event.
+ *
+ * <p>After removal the host forwards nothing: {@code Screen.handleInput} keeps draining both LWJGL queues on this
+ * object after a handler closed it, so events queued in the same tick after Escape or a Done click would otherwise
+ * reach the closed core screen. {@code super.handleMouse()} still runs, and the raw-click hook (ScreenMixin, at the
+ * call site in handleInput) sees every physical button either way.
  */
 public final class LegacyScreenHost extends Screen {
     private final UiScreen ui;
@@ -61,6 +66,9 @@ public final class LegacyScreenHost extends Screen {
 
     @Override
     protected void mouseClicked(int mouseX, int mouseY, int button) {
+        if (removed) {
+            return;
+        }
         int b = LegacyInput.button(button);
         if (b != LegacyInput.OTHER_BUTTON) {
             ui.mouseClicked(mouseX, mouseY, b);
@@ -69,6 +77,9 @@ public final class LegacyScreenHost extends Screen {
 
     @Override
     protected void mouseReleased(int mouseX, int mouseY, int button) {
+        if (removed) {
+            return;
+        }
         int b = LegacyInput.button(button);
         if (b != LegacyInput.OTHER_BUTTON) {
             ui.mouseReleased(mouseX, mouseY, b);
@@ -78,6 +89,9 @@ public final class LegacyScreenHost extends Screen {
     /** Called for move events while a button is held, with the absolute position. */
     @Override
     protected void mouseDragged(int mouseX, int mouseY, int button, long mouseLastClicked) {
+        if (removed) {
+            return;
+        }
         int b = LegacyInput.button(button);
         if (b != LegacyInput.OTHER_BUTTON) {
             ui.mouseDragged(mouseX, mouseY, b);
@@ -92,7 +106,7 @@ public final class LegacyScreenHost extends Screen {
     public void handleMouse() {
         super.handleMouse();
         int wheel = Mouse.getEventDWheel();
-        if (wheel == 0) {
+        if (wheel == 0 || removed) {
             return;
         }
         int notches = scroll.add(wheel);
@@ -115,6 +129,9 @@ public final class LegacyScreenHost extends Screen {
      */
     @Override
     protected void keyPressed(char id, int code) {
+        if (removed) {
+            return;
+        }
         ui.keyPressed(LegacyInput.uiKey(code), hasShiftDown(), hasControlDown());
     }
 

@@ -52,6 +52,8 @@ processResources {
 tasks.withType(JavaCompile).configureEach {
     options.release = 8
     options.encoding = 'UTF-8'
+    // javac on JDK 25 warns that release 8 is obsolete; targeting Java 8 is the purpose of this build.
+    options.compilerArgs << '-Xlint:-options'
 }
 
 // In-game test (source set src/gametest, a second dev-only mod "hengst-gametest"; not part of build, check or test

@@ -12,9 +12,11 @@ import net.minecraft.client.gui.DrawableHelper;
  * <p>GL state. Each call leaves the state that vanilla's own {@code DrawableHelper.fill} leaves behind and that the
  * HUD and screen code is written against: blending off, 2D texturing on, colour white (1, 1, 1, 1). In detail:
  * <ul>
- * <li>{@link #fill}: {@code DrawableHelper.fill} itself enables blending with {@code blendFuncSeparate(770, 771, 1,
- * 0)}, disables texturing, sets the colour to the fill colour and draws, then enables texturing and disables
- * blending. The canvas then resets the colour, which vanilla leaves tinted.</li>
+ * <li>{@link #fill}: the alpha test is switched off around the fill, so faint fills (alpha 1 to 25) are drawn even
+ * after a text call left it on, and switched on again afterwards, the state every text call leaves.
+ * {@code DrawableHelper.fill} itself enables blending with {@code blendFuncSeparate(770, 771, 1, 0)}, disables
+ * texturing, sets the colour to the fill colour and draws, then enables texturing and disables blending. The canvas
+ * then resets the colour, which vanilla leaves tinted.</li>
  * <li>{@link #text}: enables blending with the same blend function (the font renderer does not, so alpha would only
  * be cut by the alpha test), draws through {@code TextRenderer.draw(String, float, float, int, boolean)}, which
  * enables the alpha test and sets the colour, then disables blending and resets the colour. The alpha test stays
@@ -24,11 +26,11 @@ import net.minecraft.client.gui.DrawableHelper;
  * At the HUD hook, vanilla enables blending, sets the same blend function and disables the alpha test itself right
  * after the mod's draw (before the chat), so nothing of this leaks into the chat or the player list.
  *
- * <p>Alpha. ARGB colours; alpha is honoured through blending, with two limits of 1.8.9's fixed-function path:
- * the font renderer treats a text colour with alpha below 4 ({@code (color & 0xFC000000) == 0}) as fully opaque, so
- * such text is skipped here instead of drawn opaque; and with the alpha test on ({@code alphaFunc(GL_GREATER, 0.1)}
- * during the HUD, always for text) fragments with alpha 25 or less (at most 0.1) are discarded, so text and, where
- * the test is on, fills that faint are invisible. A fill with alpha 0 is skipped.
+ * <p>Alpha. ARGB colours; alpha is honoured through blending, with two limits of 1.8.9's fixed-function path for
+ * text: the font renderer treats a text colour with alpha below 4 ({@code (color & 0xFC000000) == 0}) as fully
+ * opaque, so such text is skipped here instead of drawn opaque; and it draws with the alpha test on
+ * ({@code alphaFunc(GL_GREATER, 0.1)}), so text with alpha 25 or less is invisible. Fills honour every alpha above
+ * 0; a fill with alpha 0 is skipped.
  */
 public final class LegacyCanvas implements Canvas {
     private TextRenderer font;
@@ -67,7 +69,9 @@ public final class LegacyCanvas implements Canvas {
         if ((argb >>> 24) == 0) {
             return;
         }
+        GlStateManager.disableAlphaTest();
         DrawableHelper.fill(x1, y1, x2, y2, argb);
+        GlStateManager.enableAlphaTest();
         GlStateManager.color(1.0F, 1.0F, 1.0F, 1.0F);
     }
 

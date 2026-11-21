@@ -1,5 +1,6 @@
 package io.github.clemensjl.hengst.mod.legacy;
 
+import com.mojang.blaze3d.platform.GlStateManager;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
@@ -75,6 +76,11 @@ public final class HengstLegacyMod implements ClientModInitializer {
     /**
      * From the HUD mixin (which checks {@link #ENABLED} first), inside InGameHud.render with the HUD projection set
      * up. The canvas size is the scaled size vanilla's HUD uses, computed without allocating a Window.
+     *
+     * <p>Depth: the hotbar item icons are drawn earlier in the same pass at z 100 and more with the depth test on and
+     * write depth, the mod draws at z 0, so a module over a filled slot would be hidden behind the item. The depth
+     * test is therefore off while the mod draws and on again afterwards, the state vanilla has at this point (the
+     * in-game test checks it with {@code glIsEnabled}) and keeps for the chat and player list.
      */
     public static void onHud(float tickDelta) {
         try {
@@ -82,7 +88,9 @@ public final class HengstLegacyMod implements ClientModInitializer {
             int scale = LegacyInput.guiScale(mc.width, mc.height, mc.options.guiScale, mc.forcesUnicodeFont());
             HUD_CANVAS.begin(mc.textRenderer, LegacyInput.guiSize(mc.width, scale),
                     LegacyInput.guiSize(mc.height, scale));
+            GlStateManager.disableDepthTest();
             core.onHudRender(HUD_CANVAS, tickDelta);
+            GlStateManager.enableDepthTest();
         } catch (RuntimeException | LinkageError e) {
             hookFailed(SITE_HUD, e);
         }

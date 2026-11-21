@@ -47,6 +47,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.GL11;
 
 /**
  * The mod in a real singleplayer world on 1.8.9, driven by a test thread. 1.8.9 has no client gametest API, so the
@@ -70,6 +71,8 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static final int MIN_TEXT_PIXELS = 8;
     private static final int SAME_TOLERANCE = 24;
     private static final int PRESSED_FILL = 0xB0FFFFFF;
+    // Black at alpha 25 (0.098): below the alpha test's 0.1 threshold the font renderer leaves enabled.
+    private static final int FAINT_FILL = 0x19000000;
     private static final long CLIENT_TIMEOUT_S = 120;
 
     // LWJGL 2 event records (2.9.4+legacyfabric.15, Mouse.next / Keyboard.readNext).
@@ -127,6 +130,27 @@ public final class LegacyGameTest implements ClientModInitializer {
     public static void stampHud() {
         hudSeq = ++seq;
         hudCalls++;
+        depthAtHud = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
+    }
+
+    // GL state around the mod's HUD draw and the faint-fill probe (client thread).
+    private static boolean depthAtHud;
+    private static boolean depthAfterHud;
+    private static boolean alphaTestBeforeFaint;
+    private static int[] faintRect;
+    private static final LegacyCanvas FAINT_CANVAS = new LegacyCanvas();
+
+    /** At the end of the mod's HUD hook: records the depth state and, when asked, draws one faint fill. */
+    public static void afterHud() {
+        depthAfterHud = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
+        int[] r = faintRect;
+        if (r != null) {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            int s = LegacyInput.guiScale(mc.width, mc.height, mc.options.guiScale, mc.forcesUnicodeFont());
+            FAINT_CANVAS.begin(mc.textRenderer, LegacyInput.guiSize(mc.width, s), LegacyInput.guiSize(mc.height, s));
+            alphaTestBeforeFaint = GL11.glIsEnabled(GL11.GL_ALPHA_TEST);
+            FAINT_CANVAS.fill(r[0], r[1], r[2], r[3], FAINT_FILL);
+        }
     }
 
     public static void stampChat() {
@@ -162,11 +186,15 @@ public final class LegacyGameTest implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             mc.player.sendChatMessage("/time set 6000");
             mc.player.sendChatMessage("/gamerule doDaylightCycle false");
+            // The "Press E to open your inventory" hint would cover the top right (the settings' buttons).
+            mc.player.sendChatMessage("/achievement give achievement.openInventory");
             return null;
         });
         waitTicks(40);
         onClient(() -> {
-            MinecraftClient.getInstance().inGameHud.getChatHud().clear();
+            MinecraftClient mc = MinecraftClient.getInstance();
+            mc.inGameHud.getChatHud().clear();
+            mc.notification.reset();
             return null;
         });
         waitUntil(() -> hudCalls > 0, 10_000, "HUD hook drawn");
@@ -277,7 +305,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         check(!onClient(() -> platform.input().isDown(GameKey.FORWARD)), "W released is up");
         pass("W held lights the key (pixels)");
 
-        // The player walked: a fresh F1 baseline for the same view.
+        // The player walked: a fresh F1 baseline for the same view, once the player has stopped sliding (a baseline
+        // taken while the camera still moved made the F3 comparison fail now and then on the grass texture).
+        waitTicks(20);
         settle();
         hidden = f1Baseline("hengst-08-f1-baseline");
 
@@ -370,11 +400,154 @@ public final class LegacyGameTest implements ClientModInitializer {
         pass("pause menu screenshot taken");
 
         probeScreen(platform);
+        inputAfterClose(platform);
+        faintFill(layout);
 
         dragFpsToBottomRight(core, layout);
+        moduleOverHotbarItem(core);
     }
 
-    /** Wheel over the settings' feature list: one notch moves it by one 12 px step (ScrollList.NOTCH). */
+    /**
+     * A fill with alpha 25 drawn after the mod's text, where the font renderer has left the alpha test on with its
+     * 0.1 threshold: it must still darken the frame (translucent backgrounds are honoured).
+     */
+    private static void faintFill(Layout layout) throws Exception {
+        final int[] r = layout.control();
+        BufferedImage plain = shot("hengst-30-faint-fill-off");
+        onClient(() -> {
+            faintRect = r;
+            return null;
+        });
+        settle();
+        BufferedImage faint = shot("hengst-31-faint-fill-on");
+        onClient(() -> {
+            faintRect = null;
+            return null;
+        });
+        check(onClient(() -> alphaTestBeforeFaint), "alpha test on before the faint fill, as the font renderer leaves it");
+        double before = meanLuma(plain, r);
+        double after = meanLuma(faint, r);
+        check(after < before - 5, "a fill with alpha 25 darkens the frame: luma " + before + " -> " + after);
+        pass("fill with alpha 25 drawn although the alpha test was on (luma " + Math.round(before) + " -> "
+                + Math.round(after) + ")");
+    }
+
+    /**
+     * A module dragged over a filled hotbar slot: the item icon is drawn earlier in the HUD at a positive z and writes
+     * depth, the mod draws at z 0 afterwards; its text must stay visible over the item.
+     */
+    private static void moduleOverHotbarItem(final HengstCore core) throws Exception {
+        onClient(() -> {
+            // One item: a stack count would draw white digits into the checked region itself.
+            MinecraftClient.getInstance().player.sendChatMessage("/give @p minecraft:obsidian 1");
+            return null;
+        });
+        waitTicks(20);
+        onClient(() -> {
+            MinecraftClient.getInstance().inGameHud.getChatHud().clear();
+            return null;
+        });
+        settle();
+        check(onClient(() -> MinecraftClient.getInstance().player.inventory.main[0] != null), "hotbar slot 1 filled");
+        Layout layout = layout();
+        int w = layout.w;
+        int h = layout.h;
+        // Item icon of hotbar slot 1 (InGameHud.renderHotbar: x = w / 2 - 90 + 2, y = h - 16 - 3, 16 x 16).
+        int[] item = {w / 2 - 88, h - 19, w / 2 - 72, h - 3};
+        int[] cps = layout.rect("cps");
+        onClient(() -> {
+            core.onOpenHudEditorKey();
+            return null;
+        });
+        settle();
+        int x = cps[0] + 2;
+        int y = cps[1] + 2;
+        int tx = item[0] + 2;
+        int ty = item[1] + 2;
+        mouse(0, true, x, y, 0);
+        waitTicks(1);
+        for (int i = 1; i <= 5; i++) {
+            mouse(-1, false, x + (tx - x) * i / 5, y + (ty - y) * i / 5, 0);
+            waitTicks(1);
+        }
+        mouse(0, false, tx, ty, 0);
+        waitTicks(2);
+        key(Keyboard.KEY_ESCAPE, (char) 0);
+        waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the editor");
+        settle();
+        int[] moved = layout().rect("cps");
+        int[] overlap = {Math.max(moved[0], item[0]), Math.max(moved[1], item[1]), Math.min(moved[2], item[2]),
+                Math.min(moved[3], item[3])};
+        check(overlap[2] - overlap[0] >= 8 && overlap[3] - overlap[1] >= 6, "CPS module over the hotbar item, module "
+                + Arrays.toString(moved) + " item " + Arrays.toString(item));
+        BufferedImage img = shot("hengst-32-cps-over-hotbar-item");
+        checkText(img, overlap, "CPS text over the filled hotbar slot");
+        check(onClient(() -> depthAtHud && depthAfterHud), "depth test on at the HUD hook and again after the mod drew");
+        pass("a module over a filled hotbar slot stays visible (pixels); depth state restored after the mod HUD");
+    }
+
+    /**
+     * Screen.handleInput keeps draining both LWJGL queues on the same screen object after a handler closed it: events
+     * queued in the same tick after the closing one must not reach the closed core screen, while the raw-click hook
+     * still sees the physical buttons.
+     */
+    private static void inputAfterClose(final Platform platform) throws Exception {
+        final ProbeUi keysProbe = new ProbeUi(platform);
+        keysProbe.closeOnEscape = true;
+        onClient(() -> {
+            platform.openScreen(keysProbe);
+            return null;
+        });
+        settle();
+        onClient(() -> {
+            queueKey(Keyboard.KEY_ESCAPE, (char) 0, true);
+            queueKey(Keyboard.KEY_ESCAPE, (char) 0, false);
+            queueKey(Keyboard.KEY_A, 'a', true);
+            queueKey(Keyboard.KEY_A, 'a', false);
+            return null;
+        });
+        waitTicks(3);
+        List<UiKey> keys = onClient(() -> new ArrayList<UiKey>(keysProbe.keys));
+        check(keys.equals(Arrays.asList(UiKey.ESCAPE)), "keys after Escape closed the screen in the same tick, got "
+                + keys);
+        check(onClient(() -> MinecraftClient.getInstance().currentScreen == null), "Escape closed the probe screen");
+
+        final ProbeUi clickProbe = new ProbeUi(platform);
+        clickProbe.closeOnClick = true;
+        onClient(() -> {
+            platform.openScreen(clickProbe);
+            return null;
+        });
+        settle();
+        final int[] c = onClient(() -> {
+            Screen s = MinecraftClient.getInstance().currentScreen;
+            return new int[] {s.width / 2, s.height / 2};
+        });
+        onClient(() -> {
+            MOUSE_LOG.clear();
+            queueMouse(0, true, c[0], c[1], 0);
+            queueMouse(0, false, c[0], c[1], 0);
+            queueMouse(-1, false, c[0], c[1], 120);
+            queueKey(Keyboard.KEY_A, 'a', true);
+            queueKey(Keyboard.KEY_A, 'a', false);
+            return null;
+        });
+        waitTicks(3);
+        List<int[]> clicks = onClient(() -> new ArrayList<int[]>(clickProbe.clicks));
+        List<Double> scrolls = onClient(() -> new ArrayList<Double>(clickProbe.scrolls));
+        List<UiKey> clickKeys = onClient(() -> new ArrayList<UiKey>(clickProbe.keys));
+        check(clicks.size() == 1 && clicks.get(0)[3] == 1, "only the closing press reached the screen, got "
+                + dump(clicks));
+        check(scrolls.isEmpty() && clickKeys.isEmpty(), "no wheel or key after the close, got " + scrolls + " "
+                + clickKeys);
+        List<int[]> log = onClient(() -> new ArrayList<int[]>(MOUSE_LOG));
+        check(count(log, 0, 1, 1) == 1 && count(log, 0, 0, 0) + count(log, 0, 0, 1) == 1,
+                "the raw-click hook saw the press and the release: " + dump(log));
+        settle();
+        pass("input queued after the closing event of a tick does not reach the closed screen; raw clicks still seen");
+    }
+
+    /** Wheel over the settings' feature list: one notch moves it by one row (20 px, SettingsScreen.ROW). */
     private static void settingsWheel() throws Exception {
         final ScrollList list = onClient(() -> {
             UiScreen settings = unwrap(((LegacyScreenHost) MinecraftClient.getInstance().currentScreen).ui());
@@ -390,19 +563,19 @@ public final class LegacyGameTest implements ClientModInitializer {
         wheel(gx, gy, -120);
         waitTicks(2);
         int down = onClient(list::offset);
-        check(down == 12, "one notch towards the user scrolls the feature list down by one step, offset " + down);
+        check(down == 20, "one notch towards the user scrolls the feature list down by one row, offset " + down);
         settle();
         BufferedImage scrolled = shot("hengst-11-settings-list-scrolled");
         int[] listRect = {bounds[0], bounds[1], bounds[0] + bounds[2], bounds[1] + bounds[3]};
         check(diffFraction(top, scrolled, listRect) > 0.01, "the scrolled list is drawn differently");
         wheel(gx, gy, 60);
         waitTicks(2);
-        check(onClient(list::offset) == 12, "half a notch does nothing yet");
+        check(onClient(list::offset) == 20, "half a notch does nothing yet");
         wheel(gx, gy, 60);
         waitTicks(2);
         int back = onClient(list::offset);
         check(back == 0, "two half notches away from the user scroll back up by one step, offset " + back);
-        pass("wheel over the settings list: one row step (12 px) per notch, half notches accumulate");
+        pass("wheel over the settings list: one row (20 px) per notch, half notches accumulate");
     }
 
     /** Scroll notches, key repeat and the removal rule on a probe screen hosted by the adapter. */
@@ -531,38 +704,51 @@ public final class LegacyGameTest implements ClientModInitializer {
      * blank them, in this frame (chat) or the next (hotbar).
      */
     private static void vanillaHudUnchanged(final HengstCore core, Layout layout, String prefix) throws Exception {
-        onClient(() -> {
-            MinecraftClient.getInstance().inGameHud.getChatHud()
-                    .addMessage(new LiteralText("Hengst in-game test: a vanilla chat line next to the mod HUD"));
-            core.renderer().setSuppressed(true);
-            return null;
-        });
-        settle();
-        BufferedImage vanilla = shot(prefix + "-vanilla-only");
-        onClient(() -> {
-            core.renderer().setSuppressed(false);
-            return null;
-        });
-        settle();
-        BufferedImage withMod = shot(prefix + "-with-mod");
         int w = layout.w;
         int h = layout.h;
         int[] hotbar = {w / 2 - 91, h - 22, w / 2 + 91, h};
         int[] hearts = {w / 2 - 91, h - 39, w / 2 - 10, h - 30};
         int keysRight = layout.rect("keystrokes")[2];
-        // The newest chat line (unfocused chat): GUI y h - 38 to h - 29, over the hearts row.
+        // The newest chat line (unfocused chat): GUI y h - 38 to h - 29, the hearts row. So the hearts are compared
+        // in a pair without a chat line and the chat line in a second pair: each check sees only its own element.
         int[] chat = {keysRight + 2, h - 38, 200, h - 29};
         // The hand is drawn by the world pass of the next frame: state the canvas leaked would show there too.
         int[] hand = {w / 2 + 100, h * 3 / 4, w - 50, h - 2};
-        checkSame(withMod, vanilla, hand, "hand (next frame's world render) with and without the mod HUD");
-        checkSame(withMod, vanilla, hotbar, "hotbar with and without the mod HUD");
-        checkSame(withMod, vanilla, hearts, "hearts with and without the mod HUD");
-        checkText(vanilla, chat, "chat line drawn (vanilla only)");
-        checkSame(withMod, vanilla, chat, "chat line with and without the mod HUD");
+
+        BufferedImage[] pair = suppressedPair(core, prefix + "-vanilla-only", prefix + "-with-mod");
+        checkSame(pair[1], pair[0], hand, "hand (next frame's world render) with and without the mod HUD");
+        checkSame(pair[1], pair[0], hotbar, "hotbar with and without the mod HUD");
+        checkSame(pair[1], pair[0], hearts, "hearts with and without the mod HUD");
+
+        onClient(() -> {
+            MinecraftClient.getInstance().inGameHud.getChatHud()
+                    .addMessage(new LiteralText("Hengst in-game test: a vanilla chat line next to the mod HUD"));
+            return null;
+        });
+        pair = suppressedPair(core, prefix + "-chat-vanilla-only", prefix + "-chat-with-mod");
+        checkText(pair[0], chat, "chat line drawn (vanilla only)");
+        checkSame(pair[1], pair[0], chat, "chat line with and without the mod HUD");
         onClient(() -> {
             MinecraftClient.getInstance().inGameHud.getChatHud().clear();
             return null;
         });
+    }
+
+    /** Two frames, the mod HUD suppressed in the first and drawn in the second. */
+    private static BufferedImage[] suppressedPair(final HengstCore core, String vanillaName, String withModName)
+            throws Exception {
+        onClient(() -> {
+            core.renderer().setSuppressed(true);
+            return null;
+        });
+        settle();
+        BufferedImage vanilla = shot(vanillaName);
+        onClient(() -> {
+            core.renderer().setSuppressed(false);
+            return null;
+        });
+        settle();
+        return new BufferedImage[] {vanilla, shot(withModName)};
     }
 
     private static void checkFpsBottomRight(String shownName, String hiddenName) throws Exception {
@@ -757,21 +943,27 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static void mouse(final int button, final boolean state, final int guiX, final int guiY, final int wheel)
             throws Exception {
         onClient(() -> {
-            MinecraftClient mc = MinecraftClient.getInstance();
-            int scale = LegacyInput.guiScale(mc.width, mc.height, mc.options.guiScale, mc.forcesUnicodeFont());
-            int guiH = LegacyInput.guiSize(mc.height, scale);
-            final int rawX = guiX * scale + scale / 2;
-            final int rawY = (guiH - 1 - guiY) * scale + scale / 2;
-            check(LegacyInput.guiX(rawX, LegacyInput.guiSize(mc.width, scale), mc.width) == guiX
-                    && LegacyInput.guiY(rawY, guiH, mc.height) == guiY, "raw position round trip");
-            if (mouseBuffer == null) {
-                mouseBuffer = Mouse.class.getDeclaredField("readBuffer");
-                mouseBuffer.setAccessible(true);
-            }
-            append(mouseBuffer, MOUSE_EVENT_SIZE, b -> b.put((byte) button).put((byte) (state ? 1 : 0)).putInt(rawX)
-                    .putInt(rawY).putInt(wheel).putLong(System.nanoTime()));
+            queueMouse(button, state, guiX, guiY, wheel);
             return null;
         });
+    }
+
+    /** Client thread only: appends one mouse event; several calls in one task land in the same tick. */
+    private static void queueMouse(final int button, final boolean state, final int guiX, final int guiY,
+            final int wheel) throws Exception {
+        MinecraftClient mc = MinecraftClient.getInstance();
+        int scale = LegacyInput.guiScale(mc.width, mc.height, mc.options.guiScale, mc.forcesUnicodeFont());
+        int guiH = LegacyInput.guiSize(mc.height, scale);
+        final int rawX = guiX * scale + scale / 2;
+        final int rawY = (guiH - 1 - guiY) * scale + scale / 2;
+        check(LegacyInput.guiX(rawX, LegacyInput.guiSize(mc.width, scale), mc.width) == guiX
+                && LegacyInput.guiY(rawY, guiH, mc.height) == guiY, "raw position round trip");
+        if (mouseBuffer == null) {
+            mouseBuffer = Mouse.class.getDeclaredField("readBuffer");
+            mouseBuffer.setAccessible(true);
+        }
+        append(mouseBuffer, MOUSE_EVENT_SIZE, b -> b.put((byte) button).put((byte) (state ? 1 : 0)).putInt(rawX)
+                .putInt(rawY).putInt(wheel).putLong(System.nanoTime()));
     }
 
     private static void click(int button) throws Exception {
@@ -795,14 +987,19 @@ public final class LegacyGameTest implements ClientModInitializer {
 
     private static void keyDown(final int key, final char ch, final boolean state) throws Exception {
         onClient(() -> {
-            if (keyBuffer == null) {
-                keyBuffer = Keyboard.class.getDeclaredField("readBuffer");
-                keyBuffer.setAccessible(true);
-            }
-            append(keyBuffer, KEY_EVENT_SIZE, b -> b.putInt(key).put((byte) (state ? 1 : 0)).putInt(ch)
-                    .putLong(System.nanoTime()).put((byte) 0));
+            queueKey(key, ch, state);
             return null;
         });
+    }
+
+    /** Client thread only: appends one keyboard event. */
+    private static void queueKey(final int key, final char ch, final boolean state) throws Exception {
+        if (keyBuffer == null) {
+            keyBuffer = Keyboard.class.getDeclaredField("readBuffer");
+            keyBuffer.setAccessible(true);
+        }
+        append(keyBuffer, KEY_EVENT_SIZE, b -> b.putInt(key).put((byte) (state ? 1 : 0)).putInt(ch)
+                .putLong(System.nanoTime()).put((byte) 0));
     }
 
     /** A key press and release, handled in the next client tick. */
@@ -914,6 +1111,12 @@ public final class LegacyGameTest implements ClientModInitializer {
         return f.get(owner);
     }
 
+    /**
+     * A second {@code onHudRender} on the client thread, outside the frame, into a recording canvas. It cannot change
+     * core state the checks read: HudRenderer.render only reads the profile and the game, and the only fields the
+     * modules write while rendering are their text and label width caches, which the recording canvas fills with the
+     * same font renderer metrics the HUD canvas uses.
+     */
     private static Layout layout() throws Exception {
         return onClient(() -> {
             MinecraftClient mc = MinecraftClient.getInstance();
@@ -995,6 +1198,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         final List<UiKey> keys = new ArrayList<UiKey>();
         int closed;
         boolean reentrant;
+        // Behave like the core's Done button and Escape: close the screen from inside the handler.
+        boolean closeOnEscape;
+        boolean closeOnClick;
 
         ProbeUi(Platform platform) {
             this.platform = platform;
@@ -1007,6 +1213,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         @Override
         public boolean mouseClicked(int mouseX, int mouseY, int button) {
             clicks.add(new int[] {mouseX, mouseY, button, 1});
+            if (closeOnClick) {
+                platform.closeScreen();
+            }
             return true;
         }
 
@@ -1031,6 +1240,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         @Override
         public boolean keyPressed(UiKey key, boolean shift, boolean control) {
             keys.add(key);
+            if (closeOnEscape && key == UiKey.ESCAPE) {
+                platform.closeScreen();
+            }
             return true;
         }
 
