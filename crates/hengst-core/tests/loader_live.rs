@@ -1,10 +1,16 @@
-//! Live launches of the Fabric family against the real services. Run one game at a time:
+//! Live launches of the Fabric family, Forge and NeoForge against the real services. Run one game
+//! at a time:
 //! `cargo test -p hengst-core --features dev-offline --test loader_live -- --ignored --test-threads=1`
+//!
+//! Forge and NeoForge are prepared twice before the start: a modern build must run its installer
+//! processors once (the marker of an earlier run is removed to observe that) and start none on
+//! the second prepare; legacy and spec-0 builds must start none and leave no marker.
 //!
 //! A launch passes when, in this order, the game prints an LWJGL line (window and GL context
 //! exist), prints a late-loading marker (texture atlases created after the resource reload:
-//! `blocks.png-atlas` on modern versions, `textures-atlas` on 1.8.9 and 1.12.2), the loader
-//! banner has appeared, the process is still alive 15 s after the late marker, and no new file
+//! `blocks.png-atlas` on modern versions, `textures-atlas` on 1.8.9 and 1.12.2,
+//! `textures/blocks-atlas` on 1.7.10, where the 16x16 placeholder atlases created before mod
+//! loading do not count), the loader banner has appeared, the process is still alive 15 s after the late marker, and no new file
 //! appeared in `crash-reports`. That proves the loader, libraries, natives and arguments are
 //! sound up to the end of initial resource loading. It does not prove the title screen is drawn
 //! (no pixels are checked), that worlds load, or that mods work; a crash later than 15 s after
@@ -33,7 +39,13 @@ use std::time::{Duration, Instant};
 static LOCK: Mutex<()> = Mutex::new(());
 
 const LWJGL_MARKERS: [&str; 2] = ["Backend library: LWJGL version", "LWJGL Version: "];
-const LOADED_MARKERS: [&str; 2] = ["blocks.png-atlas", "textures-atlas"];
+const LOADED_MARKERS: [&str; 3] = [
+    "blocks.png-atlas",
+    "textures-atlas",
+    "textures/blocks-atlas",
+];
+/// 1.7.10 creates empty 16x16 atlases before the mods are loaded.
+const PLACEHOLDER_ATLAS: &str = "Created: 16x16 ";
 /// Lines worth printing as evidence of which loader started.
 const LOADER_HINTS: [&str; 6] = [
     "ModLauncher",
@@ -324,6 +336,7 @@ async fn live_launch_with(
                 if lwjgl_at.is_some()
                     && loaded_at.is_none()
                     && line.contains("Created: ")
+                    && !line.contains(PLACEHOLDER_ATLAS)
                     && LOADED_MARKERS.iter().any(|m| line.contains(m))
                 {
                     loaded_at = Some(started.elapsed());
