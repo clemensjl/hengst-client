@@ -11,7 +11,10 @@ import java.util.List;
 public final class TextFit {
     private TextFit() {}
 
-    /** The text itself if it fits {@code avail} pixels, else its longest prefix that fits; null gives "". */
+    /**
+     * The text itself if it fits {@code avail} pixels, else its longest prefix that fits; null gives "". A cut never
+     * splits a surrogate pair of well-formed input; a lone surrogate already in the input is passed through unchanged.
+     */
     public static String prefix(Canvas c, String text, int avail) {
         if (text == null) {
             return "";
@@ -39,10 +42,14 @@ public final class TextFit {
 
     /**
      * The text itself if it fits, else its start and end joined by ".." keeping as many characters as fit (the extra
-     * one of an odd count goes to the start); never splits a surrogate pair. Throws on null, unlike {@code prefix}.
+     * one of an odd count goes to the start). If not even one character fits next to the "..", the plain
+     * {@link #prefix(Canvas, String, int) prefix} is returned (possibly ""), so the result is never wider than
+     * {@code avail} (for {@code avail >= 0}). An empty text is returned as is. Never splits a surrogate pair of
+     * well-formed input; a lone surrogate already in the input is passed through unchanged. Throws on null, unlike
+     * {@code prefix}.
      */
     public static String middle(Canvas c, String text, int avail) {
-        if (c.textWidth(text) <= avail) {
+        if (text.isEmpty() || c.textWidth(text) <= avail) {
             return text;
         }
         int len = text.length();
@@ -62,7 +69,7 @@ public final class TextFit {
                 return s;
             }
         }
-        return "..";
+        return prefix(c, text, avail);
     }
 
     /**

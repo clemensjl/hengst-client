@@ -39,7 +39,7 @@ class TextFitTest {
     @Test void middle_keeps_start_and_end() {
         assertEquals("abc..ij", TextFit.middle(c, "abcdefghij", 42));
         assertEquals("abcdefghij", TextFit.middle(c, "abcdefghij", 60));
-        assertEquals("..", TextFit.middle(c, "abcdefghij", 13));
+        assertEquals("ab", TextFit.middle(c, "abcdefghij", 13));
     }
 
     @Test void middle_counts_the_ellipsis_and_puts_the_extra_char_of_an_odd_split_in_front() {
@@ -57,10 +57,52 @@ class TextFitTest {
         assertSame(fits, TextFit.middle(c, fits, 100));
         String empty = "";
         assertSame(empty, TextFit.middle(c, empty, 0));
-        assertEquals("..", TextFit.middle(c, "abcdefghij", 0));
-        assertEquals("..", TextFit.middle(c, "abcdefghij", -5));
-        assertEquals("..", TextFit.middle(c, "abcdefghij", 11));
-        assertEquals("..", TextFit.middle(c, empty, -1));
+        assertEquals("", TextFit.middle(c, "abcdefghij", 0));
+        assertEquals("", TextFit.middle(c, "abcdefghij", -5));
+        assertEquals("a", TextFit.middle(c, "abcdefghij", 11));
+        assertSame(empty, TextFit.middle(c, empty, -1));
+    }
+
+    @Test void middle_is_never_wider_than_the_space_when_not_even_the_ellipsis_plus_a_char_fits() {
+        assertEquals("", TextFit.middle(c, "W", 3));
+        // ".." fits exactly (12 px) but no character fits next to it (18 px): plain cut by the rule
+        assertEquals("ab", TextFit.middle(c, "abcdefghij", 12));
+        assertEquals("ab", TextFit.middle(c, "abcdefghij", 17));
+        assertEquals("a..", TextFit.middle(c, "abcdefghij", 18));
+        for (int avail = -3; avail < 70; avail++) {
+            assertTrue(c.textWidth(TextFit.middle(c, "abcdefghij", avail)) <= Math.max(avail, 0), "avail " + avail);
+        }
+    }
+
+    @Test void adjacent_surrogate_pairs_at_the_cut_stay_whole() {
+        // prefix: the cut would land between the two pairs' halves
+        assertEquals("a" + SMILE, TextFit.prefix(c, "a" + SMILE + SMILE + "b", 24));
+        assertEquals("a", TextFit.prefix(c, "a" + SMILE + SMILE + "b", 12));
+        // middle: head and tail boundaries both fall inside pairs
+        String four = SMILE + SMILE + SMILE + SMILE;
+        assertEquals(SMILE + "..", TextFit.middle(c, four, 30));
+        assertNoLoneSurrogate(TextFit.middle(c, four, 30));
+        for (int avail = 0; avail < 50; avail++) {
+            assertNoLoneSurrogate(TextFit.middle(c, four, avail));
+            assertNoLoneSurrogate(TextFit.prefix(c, four, avail));
+        }
+    }
+
+    @Test void a_too_narrow_choice_widget_never_draws_text_wider_than_its_text_area() {
+        final int[] widest = {0};
+        FakeCanvas rec = new FakeCanvas() {
+            @Override
+            public void text(String text, int x, int y, int argb, boolean shadow) {
+                widest[0] = Math.max(widest[0], textWidth(text));
+            }
+        };
+        for (int w = 0; w < 80; w++) {
+            ChoiceWidget cw = new ChoiceWidget("Profile", new String[] {"Competitive 12"}, () -> "Competitive 12", s -> { });
+            cw.x = 0; cw.y = 0; cw.w = w; cw.h = 20;
+            widest[0] = 0;
+            cw.render(rec, 0, 0);
+            assertTrue(widest[0] <= Math.max(w - 4, 0), "w " + w + " drew " + widest[0]);
+        }
     }
 
     @Test void wrap_by_words_and_long_words_alone() {
