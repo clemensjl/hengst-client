@@ -451,7 +451,7 @@ class SettingsScreenTest {
     @Test void long_profile_name_is_shortened_in_the_middle_keeping_start_and_end() {
         FakeCanvas c = new FakeCanvas();
         String name = "Competitive Season Setup 12";
-        String cut = ChoiceWidget.middleCut(c, name, 76);
+        String cut = TextFit.middle(c, name, 76);
         assertTrue(c.textWidth(cut) <= 76);
         assertTrue(cut.contains("..") && cut.startsWith("Compe") && cut.endsWith("12"), cut);
     }

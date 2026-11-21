@@ -323,8 +323,8 @@ public final class SettingsScreen implements UiScreen {
         int textW = sw - 2 * MARGIN;
         lineHeight = c.fontHeight() + 1;
         shownFailure = model.failureKey();
-        noticeLines = TextWrap.wrap(c, notice, textW);
-        warnLines = shownFailure == null ? NO_LINES : TextWrap.wrap(c, i18n.get(shownFailure), textW);
+        noticeLines = TextFit.wrap(c, notice, textW);
+        warnLines = shownFailure == null ? NO_LINES : TextFit.wrap(c, i18n.get(shownFailure), textW);
         done.w = Math.min(100, sw - 2 * MARGIN);
         done.h = DONE_H;
         done.x = sw - MARGIN - done.w;

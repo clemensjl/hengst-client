@@ -8,6 +8,7 @@ import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameKey;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.InputView;
+import io.github.clemensjl.hengst.mod.common.ui.TextFit;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
@@ -125,8 +126,8 @@ public final class KeystrokesModule extends HudModule {
     private void fit(Canvas c, int slot, int cellWidth) {
         String text = labels[slot];
         int tw = c.textWidth(text);
-        while (tw > cellWidth && !text.isEmpty()) {
-            text = text.substring(0, text.length() - 1);
+        if (tw > cellWidth) {
+            text = TextFit.prefix(c, text, cellWidth);
             tw = c.textWidth(text);
         }
         shown[slot] = text;
