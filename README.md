@@ -11,11 +11,11 @@ Microsoft sign-in is implemented, tested against mocked service responses; no re
     cargo install --git https://github.com/clemensjl/hengst-client hengst-cli --locked
     hengst versions
 
-Requires Rust 1.88 or newer. No prebuilt binaries yet.
+Requires Rust 1.89 or newer. No prebuilt binaries yet.
 
 ## Build
 
-Requires Rust 1.88 or newer.
+Requires Rust 1.89 or newer.
 
     cargo build --release
     target/release/hengst versions

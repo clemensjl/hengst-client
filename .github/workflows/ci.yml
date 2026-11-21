@@ -4,6 +4,9 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
 
 jobs:
   test:
@@ -16,10 +19,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-features
       - run: cargo test -p hengst-core --lib
 
   prepare-matrix:
+    # Hits live third-party services and "latest" moves upstream: weekly and on demand only.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: windows-latest
     strategy:
@@ -33,6 +39,8 @@ jobs:
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --offline Dev --dry-run
 
   loader-matrix:
+    # Hits live third-party services and "latest" moves upstream: weekly and on demand only.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     needs: test
     runs-on: windows-latest
     strategy:
