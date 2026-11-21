@@ -325,18 +325,18 @@ class SettingsScreenTest {
         screen.render(canvas, 0, 0, 0f);
         ScrollList list = screen.featureList();
         assertTrue(screen.mouseScrolled(50, 100, -1));
-        assertEquals(12, list.offset());
+        assertEquals(20, list.offset());
         for (int i = 0; i < 50; i++) screen.mouseScrolled(50, 100, -1);
-        assertEquals(12 * 20 - list.height(), list.offset());
+        // whole rows only: the last row ends inside the list, no partial row at the top
+        assertEquals((12 - list.height() / 20) * 20, list.offset());
         for (int i = 0; i < 50; i++) screen.mouseScrolled(50, 100, 1);
         assertEquals(0, list.offset());
         assertFalse(screen.mouseScrolled(5, 230, 1));
-        // offset 12: row 0 (y 24..42) is cut by the list top and must not react
+        // one notch is one whole row: row 0 is above the list, row 1 starts at the list top (y 36)
         screen.mouseScrolled(50, 100, -1);
         screen.render(canvas, 0, 0, 0f);
-        assertFalse(screen.mouseClicked(12, 36 + 3, 0));
         assertEquals(0, changed);
-        assertTrue(screen.mouseClicked(12, 36 + 20 - 12 + 5, 0));   // row 1 is now at y 44
+        assertTrue(screen.mouseClicked(12, 36 + 5, 0));
         assertTrue(model.config("f1").enabled());
     }
 

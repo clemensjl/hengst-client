@@ -72,25 +72,41 @@ class WidgetsTest {
         l.setWidgets(ws, 20);
         l.scroll(-100); assertEquals(300, l.offset());
         l.scroll(100); assertEquals(0, l.offset());
-        l.scroll(-1); assertEquals(12, l.offset());
+        l.scroll(-1); assertEquals(20, l.offset());
+    }
+
+    @Test void scroll_list_scrolls_by_whole_rows_so_no_row_is_cut_at_the_top() {
+        ScrollList l = new ScrollList(0, 0, 200, 110);   // 5 full rows and a 10 px rest
+        List<Widget> ws = new ArrayList<>();
+        for (int i = 0; i < 20; i++) ws.add(new ButtonWidget("b" + i, () -> {}));
+        l.setWidgets(ws, 20);
+        for (int step = 0; step < 30; step++) {
+            l.scroll(-1);
+            assertEquals(0, l.offset() % 20, "offset " + l.offset());
+        }
+        assertEquals(300, l.offset());   // rows 15..19 fill the list, not 290 (row 14 cut at the top)
+        l.scroll(0.4);                   // less than half a notch: no move
+        assertEquals(300, l.offset());
+        l.scroll(3);
+        assertEquals(240, l.offset());
     }
 
     @Test void scroll_list_draws_and_clicks_only_rows_fully_inside() {
-        ScrollList l = new ScrollList(0, 0, 200, 100);
+        ScrollList l = new ScrollList(0, 0, 200, 110);
         int[] clicks = new int[20];
         List<Widget> ws = new ArrayList<>();
         for (int i = 0; i < 20; i++) { int n = i; ws.add(new ButtonWidget("b" + i, () -> clicks[n]++)); }
         l.setWidgets(ws, 20);
-        l.scroll(-1); // offset 12: row 0 is cut at the top, row 5 (y 88..108) at the bottom
+        l.scroll(-1); // offset 20: row 0 above the list, row 1 at the top, row 6 (y 100..120) cut at the bottom
         FakeCanvas c = new FakeCanvas();
         l.render(c, 0, 0);
         assertFalse(c.calls.stream().anyMatch(s -> s.startsWith("text b0 ")));
         assertTrue(c.calls.stream().anyMatch(s -> s.startsWith("text b1 ")));
-        assertFalse(c.calls.stream().anyMatch(s -> s.startsWith("text b5 ")));
-        assertTrue(l.mouseClicked(10, 4, 0) == false);          // inside the cut row 0
-        assertTrue(l.mouseClicked(10, 95, 0) == false);         // inside the cut row 5
-        assertEquals(0, clicks[0] + clicks[5]);
-        assertTrue(l.mouseClicked(10, 14, 0)); assertEquals(1, clicks[1]);
+        assertTrue(c.calls.stream().anyMatch(s -> s.startsWith("text b5 ")));
+        assertFalse(c.calls.stream().anyMatch(s -> s.startsWith("text b6 ")));
+        assertTrue(l.mouseClicked(10, 105, 0) == false);        // inside the cut row 6
+        assertEquals(0, clicks[0] + clicks[6]);
+        assertTrue(l.mouseClicked(10, 4, 0)); assertEquals(1, clicks[1]);
         assertFalse(l.mouseClicked(10, 150, 0));                // outside the list
     }
 
@@ -100,7 +116,7 @@ class WidgetsTest {
         for (int i = 0; i < 20; i++) ws.add(new ButtonWidget("b" + i, () -> {}));
         l.setWidgets(ws, 20);
         l.scroll(-5);
-        assertEquals(60, l.offset());
+        assertEquals(100, l.offset());
         l.reset();
         assertEquals(0, l.offset());
     }

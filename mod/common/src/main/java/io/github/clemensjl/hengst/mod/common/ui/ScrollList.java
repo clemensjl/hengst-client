@@ -4,9 +4,12 @@ import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import java.util.ArrayList;
 import java.util.List;
 
-/** A vertical list of equally tall rows. Rows not fully inside the list are neither drawn nor clickable. */
+/**
+ * A vertical list of equally tall rows. Rows not fully inside the list are neither drawn nor clickable. The list
+ * scrolls by whole rows (one per wheel notch), so the top row always starts at the list top and no empty band
+ * appears there; only the rest below the last whole row stays empty.
+ */
 public final class ScrollList {
-    private static final int NOTCH = 12;
     private static final int GAP = 2;
 
     private int x;
@@ -42,9 +45,9 @@ public final class ScrollList {
         return offset;
     }
 
-    /** One notch is 12 px; positive amounts scroll up (as the adapters deliver the wheel). */
+    /** One notch is one row; positive amounts scroll up (as the adapters deliver the wheel). */
     public void scroll(double amount) {
-        offset -= (int) Math.round(amount * NOTCH);
+        offset -= (int) Math.round(amount) * rowHeight;
         clamp();
     }
 
@@ -65,9 +68,14 @@ public final class ScrollList {
         return widgets;
     }
 
+    /** Keeps the offset a whole number of rows, at most as far as the last row ends inside the list. */
     private void clamp() {
-        int max = Math.max(0, widgets.size() * rowHeight - h);
+        int fullRows = rowHeight > 0 ? h / rowHeight : 0;
+        int max = Math.max(0, (widgets.size() - fullRows) * rowHeight);
         offset = Math.max(0, Math.min(max, offset));
+        if (rowHeight > 0) {
+            offset -= offset % rowHeight;
+        }
     }
 
     private boolean place(int i) {
