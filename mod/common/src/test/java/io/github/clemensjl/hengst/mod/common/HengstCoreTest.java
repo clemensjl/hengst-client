@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
@@ -121,9 +122,8 @@ class HengstCoreTest {
 
     @Test void unsupported_module_never_renders() {
         core = start();   // FakePlatform.version is V1_8_9
-        core.registry().register(new FixedSizeModule("future", 99, 10, 10, EnumSet.of(GameVersion.V26_3)));
         core.activeProfile().module("future").setEnabled(true);
-        core.renderer().rebuild(core.activeProfile());
+        core.registerForTest(new FixedSizeModule("future", 99, 10, 10, EnumSet.of(GameVersion.V26_3)));
         assertEquals(4, core.renderer().activeCount());
     }
 
@@ -446,7 +446,7 @@ class HengstCoreTest {
 
     @Test void a_failing_screen_open_leaves_a_clean_state() {
         core = start(); platform.inWorld = true;
-        core.registry().register(new TestFeature("bad", 0, EnumSet.allOf(GameVersion.class)) {
+        core.registerForTest(new TestFeature("bad", 0, EnumSet.allOf(GameVersion.class)) {
             @Override public List<OptionSpec> options() { throw new IllegalStateException("boom"); }
         });
         core.onOpenSettingsKey();
@@ -461,7 +461,7 @@ class HengstCoreTest {
     @Test void an_exception_in_a_screen_input_does_not_escape_and_is_logged_once() {
         core = start(); platform.inWorld = true;
         final boolean[] armed = {false};
-        core.registry().register(new TestFeature("bad", 99, EnumSet.allOf(GameVersion.class)) {
+        core.registerForTest(new TestFeature("bad", 99, EnumSet.allOf(GameVersion.class)) {
             @Override public List<OptionSpec> options() {
                 if (armed[0]) throw new IllegalStateException("boom");
                 return super.options();
@@ -624,5 +624,34 @@ class HengstCoreTest {
         platform.screenOpenFailure = new IllegalStateException("three");
         core.onClientTick();
         assertEquals(3, platform.warnings.size());
+    }
+
+    @Test void a_fifth_distinct_exception_class_at_one_site_is_not_logged_on_every_occurrence() {
+        platform.inWorld = true;
+        core = start();
+        RuntimeException[] kinds = {new IllegalStateException("1"), new UnsupportedOperationException("2"),
+                new IllegalArgumentException("3"), new ArithmeticException("4"), new ClassCastException("5")};
+        for (RuntimeException kind : kinds) {
+            platform.screenOpenFailure = kind;
+            core.onClientTick();
+        }
+        assertEquals(4, platform.warnings.size());                         // the table holds four classes
+        platform.screenOpenFailure = kinds[4];
+        core.onClientTick(); core.onClientTick();
+        assertEquals(4, platform.warnings.size());                         // the fifth class stays silent
+        platform.screenOpenFailure = null;
+        core.onClientTick();                                               // a success re-arms the site
+        platform.screenOpenFailure = kinds[4];
+        core.onClientTick();
+        assertEquals(5, platform.warnings.size());
+    }
+
+    // ---- registry ----
+
+    @Test void registering_on_the_registry_after_start_fails_fast() {
+        core = start();
+        assertThrows(IllegalStateException.class,
+                () -> core.registry().register(new FixedSizeModule("late", 98, 10, 10, EnumSet.of(GameVersion.V1_8_9))));
+        assertNull(core.registry().byId("late"));
     }
 }

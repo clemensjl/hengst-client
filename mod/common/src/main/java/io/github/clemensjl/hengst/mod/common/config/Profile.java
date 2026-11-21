@@ -12,7 +12,7 @@ import java.util.Set;
  * Not thread-safe: client thread only.
  */
 public final class Profile {
-        // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
+    // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
     private final Map<String, Object> entries = new LinkedHashMap<String, Object>();
 
     /** The module's config; creates the defaults if there is none (or the stored entry is not an object). */

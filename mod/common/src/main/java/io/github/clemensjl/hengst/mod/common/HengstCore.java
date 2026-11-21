@@ -8,6 +8,7 @@ import io.github.clemensjl.hengst.mod.common.config.SettingsStore;
 import io.github.clemensjl.hengst.mod.common.editor.HudEditorClose;
 import io.github.clemensjl.hengst.mod.common.editor.HudEditorModel;
 import io.github.clemensjl.hengst.mod.common.editor.HudEditorScreen;
+import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
 import io.github.clemensjl.hengst.mod.common.hud.CpsCounter;
 import io.github.clemensjl.hengst.mod.common.hud.FrameCounter;
@@ -123,6 +124,7 @@ public final class HengstCore {
         renderer = new HudRenderer(registry, platform.version());
         renderer.rebuild(profile);
         lastSaveNanos = time.nanoTime();
+        registry.seal();
     }
 
     /** See the class comment for when to call it. Throws only if the platform itself fails. */
@@ -168,7 +170,8 @@ public final class HengstCore {
     /**
      * From the version's HUD hook, with a valid canvas of the current GUI scale. Draws the active modules unless the
      * HUD is hidden (F1), the player is not in a world, the debug overlay (F3) is open or one of the mod's own
-     * screens is open; vanilla screens such as chat and inventory do not hide it. {@code partialTick} is currently unused. Allocation free.
+     * screens is open; vanilla screens such as chat and inventory do not hide it. {@code partialTick} is currently
+     * unused. Allocation free.
      */
     public void onHudRender(Canvas canvas, float partialTick) {
         try {
@@ -305,25 +308,41 @@ public final class HengstCore {
     }
 
     // ---- for tests ----
+    // Test access only: adapters and features must not use these. They are public because the adapters' in-game tests
+    // live in other packages.
 
-    /** For tests: the loaded profile. */
+    /** Test access only, not for adapters or features: the loaded profile. */
     public Profile activeProfile() {
         return profile;
     }
 
-    /** For tests: the HUD renderer. */
+    /** Test access only, not for adapters or features: the HUD renderer. */
     public HudRenderer renderer() {
         return renderer;
     }
 
-    /** For tests: the shared counters and platform. */
+    /** Test access only, not for adapters or features: the shared counters and platform. */
     public HudContext context() {
         return ctx;
     }
 
-    /** For tests: lets a test register an extra feature, then call {@code renderer().rebuild(activeProfile())}. */
+    /**
+     * Test access only, not for adapters or features: the registry, sealed since {@link #start}. Registering on it
+     * throws {@link IllegalStateException}; use {@link #registerForTest}.
+     */
     public FeatureRegistry registry() {
         return registry;
+    }
+
+    /** Test access only, not for adapters or features: registers an extra feature after start and rebuilds the HUD. */
+    public void registerForTest(Feature feature) {
+        registry.unseal();
+        try {
+            registry.register(feature);
+        } finally {
+            registry.seal();
+        }
+        renderer.rebuild(profile);
     }
 
     // ---- screens ----
@@ -537,10 +556,12 @@ public final class HengstCore {
                 return;
             }
         }
-        if (n < MAX_KINDS) {
-            loggedKinds[site][n] = kind;
-            loggedCount[site] = n + 1;
+        if (n >= MAX_KINDS) {
+            // The table is full: further classes at this site stay silent until a success re-arms it.
+            return;
         }
+        loggedKinds[site][n] = kind;
+        loggedCount[site] = n + 1;
         platform.logWarning("Hengst: " + what + " failed: " + e);
     }
 

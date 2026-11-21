@@ -1092,7 +1092,7 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static void registerDummyFeatures(final HengstCore core) throws Exception {
         onClient(() -> {
             for (int i = 0; i < 16; i++) {
-                core.registry().register(new Feature("gametest_row_" + i, 900 + i, FeatureGroup.COMFORT,
+                core.registerForTest(new Feature("gametest_row_" + i, 900 + i, FeatureGroup.COMFORT,
                         EnumSet.of(GameVersion.V1_8_9)) {
                 });
             }
