@@ -139,3 +139,10 @@ tasks.register('gameTests') {
     description = 'Runs the in-game test twice: fresh run directory, then a restart with the saved layout.'
     dependsOn 'runGameTest', 'runGameTestRestart'
 }
+
+// The GPL-3.0 text travels with the jar, under a name that cannot collide with other mods' license files.
+tasks.named('jar') {
+    from("${rootDir}/../../LICENSE") {
+        rename { 'LICENSE_hengst' }
+    }
+}
