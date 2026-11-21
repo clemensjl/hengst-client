@@ -12,7 +12,7 @@ public final class FpsModule extends TextHudModule {
     private int last = -1;
 
     public FpsModule() {
-        super("fps", 1, EnumSet.allOf(GameVersion.class));
+        super("fps", 1, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
     }
 
     @Override

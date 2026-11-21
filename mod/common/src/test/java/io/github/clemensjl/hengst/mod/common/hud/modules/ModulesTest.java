@@ -304,14 +304,38 @@ class ModulesTest {
         assertEquals(58, k.width(c, cfg));
         assertEquals(70, k.height(c, cfg));
         cfg.setOption("show_space", Boolean.FALSE);
+        k.tick(ctx, cfg);
         assertEquals(58, k.width(c, cfg));
         assertEquals(58, k.height(c, cfg));
         cfg.setOption("show_space", Boolean.TRUE);
         cfg.setOption("show_mouse", Boolean.FALSE);
+        k.tick(ctx, cfg);
         assertEquals(50, k.height(c, cfg));
         cfg.setOption("show_space", Boolean.FALSE);
+        k.tick(ctx, cfg);
         assertEquals(58, k.width(c, cfg));
         assertEquals(38, k.height(c, cfg));
+    }
+
+    @Test
+    void keystrokes_height_and_render_use_the_options_cached_by_the_last_tick() {
+        KeystrokesModule k = new KeystrokesModule();
+        FakeCanvas c = new FakeCanvas();
+        k.tick(ctx, cfg);
+        k.render(c, cfg, ctx);
+        int full = c.calls.size();
+        cfg.setOption("show_mouse", Boolean.FALSE);
+        cfg.setOption("show_space", Boolean.FALSE);
+        // Not ticked yet: neither height nor render read the config, they still show the cached state.
+        assertEquals(70, k.height(c, cfg));
+        c.calls.clear();
+        k.render(c, cfg, ctx);
+        assertEquals(full, c.calls.size());
+        k.tick(ctx, cfg);
+        assertEquals(38, k.height(c, cfg));
+        c.calls.clear();
+        k.render(c, cfg, ctx);
+        assertEquals(full - 5, c.calls.size());            // two mouse cells with their labels, the space bar
     }
 
     @Test
@@ -390,6 +414,7 @@ class ModulesTest {
         assertEquals(9, c.calls.size());
         assertEquals("fill 0 40 58 50 6f000000", c.calls.get(8));
         cfg.setOption("show_space", Boolean.FALSE);
+        k.tick(ctx, cfg);
         c.calls.clear();
         k.render(c, cfg, ctx);
         assertEquals(8, c.calls.size());

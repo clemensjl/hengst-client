@@ -31,7 +31,7 @@ public final class CoordinatesModule extends TextHudModule {
     private long lastZ;
 
     public CoordinatesModule() {
-        super("coordinates", 6, EnumSet.allOf(GameVersion.class));
+        super("coordinates", 6, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
     }
 
     @Override

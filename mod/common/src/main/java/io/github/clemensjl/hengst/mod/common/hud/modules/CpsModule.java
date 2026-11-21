@@ -20,7 +20,7 @@ public final class CpsModule extends TextHudModule {
     private boolean lastShowRight;
 
     public CpsModule() {
-        super("cps", 2, EnumSet.allOf(GameVersion.class));
+        super("cps", 2, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
     }
 
     @Override

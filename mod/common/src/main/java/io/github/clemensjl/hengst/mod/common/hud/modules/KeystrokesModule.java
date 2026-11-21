@@ -39,9 +39,12 @@ public final class KeystrokesModule extends HudModule {
     private final String[] shown = {"", "", "", "", "LMB", "RMB"};
     private final int[] labelWidths = {-1, -1, -1, -1, -1, -1};
     private int refreshIn;
+    // The options, read in tick (boxed by the config) so height and render read primitives.
+    private boolean showMouse = true;
+    private boolean showSpace = true;
 
     public KeystrokesModule() {
-        super("keystrokes", 3, EnumSet.allOf(GameVersion.class));
+        super("keystrokes", 3, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
     }
 
     @Override
@@ -51,6 +54,8 @@ public final class KeystrokesModule extends HudModule {
 
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
+        showMouse = (Boolean) cfg.option(SHOW_MOUSE);
+        showSpace = (Boolean) cfg.option(SHOW_SPACE);
         if (--refreshIn > 0) {
             return;
         }
@@ -76,10 +81,10 @@ public final class KeystrokesModule extends HudModule {
     @Override
     public int height(Canvas c, ModuleConfig cfg) {
         int h = 2 * KEY + GAP;
-        if ((Boolean) cfg.option(SHOW_MOUSE)) {
+        if (showMouse) {
             h += KEY + GAP;
         }
-        if ((Boolean) cfg.option(SHOW_SPACE)) {
+        if (showSpace) {
             h += SPACE_H + GAP;
         }
         return h;
@@ -93,12 +98,12 @@ public final class KeystrokesModule extends HudModule {
         cell(c, cfg, input, GameKey.BACK, 2, STEP, STEP, KEY, KEY);
         cell(c, cfg, input, GameKey.RIGHT, 3, 2 * STEP, STEP, KEY, KEY);
         int y = 2 * STEP;
-        if ((Boolean) cfg.option(SHOW_MOUSE)) {
+        if (showMouse) {
             cell(c, cfg, input, GameKey.ATTACK, LMB, 0, y, MOUSE_W, KEY);
             cell(c, cfg, input, GameKey.USE, RMB, WIDTH - MOUSE_W, y, MOUSE_W, KEY);
             y += STEP;
         }
-        if ((Boolean) cfg.option(SHOW_SPACE)) {
+        if (showSpace) {
             c.fill(0, y, WIDTH, y + SPACE_H, input.isDown(GameKey.JUMP) ? PRESSED_FILL : IDLE_FILL);
         }
     }
