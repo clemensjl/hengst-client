@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Dev runs only (runClient, runGameTest). The game's log4j is 2.0-beta9, which cannot read the config Loom
+     generates (property defaults like ${sys:fabric.log.level:-info}): with it only ERROR lines reach the log. -->
+<Configuration status="WARN">
+    <Appenders>
+        <Console name="SysOut" target="SYSTEM_OUT">
+            <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level] (%logger) %msg%n"/>
+        </Console>
+        <File name="LatestFile" fileName="logs/latest.log" append="false">
+            <PatternLayout pattern="[%d{HH:mm:ss}] [%t/%level] (%logger) %msg%n"/>
+        </File>
+    </Appenders>
+    <Loggers>
+        <Root level="info">
+            <AppenderRef ref="SysOut"/>
+            <AppenderRef ref="LatestFile"/>
+        </Root>
+    </Loggers>
+</Configuration>

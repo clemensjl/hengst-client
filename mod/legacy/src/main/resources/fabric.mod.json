@@ -12,9 +12,13 @@
       "io.github.clemensjl.hengst.mod.legacy.HengstLegacyMod"
     ]
   },
+  "mixins": [
+    "hengst.mixins.json"
+  ],
   "depends": {
     "fabricloader": ">=0.20.1",
     "minecraft": "1.8.9",
-    "legacy-fabric-api": "*"
+    "legacy-fabric-api": ">=${legacy_fabric_api_min}",
+    "java": ">=8"
   }
 }

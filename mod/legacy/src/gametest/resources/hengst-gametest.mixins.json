@@ -1,0 +1,15 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "io.github.clemensjl.hengst.mod.legacy.gametest",
+  "compatibilityLevel": "JAVA_8",
+  "client": [
+    "TestChatHudMixin",
+    "TestFrameMixin",
+    "TestModProbeMixin",
+    "TestMouseInputMixin"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

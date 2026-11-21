@@ -218,8 +218,9 @@ public final class HengstCore {
      * any screen open; two presses without a release in between count once. Releases the game routes to a screen
      * may be missing: the core tolerates that.
      *
-     * <p>1.8.9: use {@code KeyBinding.setKeyBindState(IZ)V}, which sees press and release ({@code onKeyPressed}
-     * fires on press only), and map the codes {@code -100} to 0 and {@code -99} to 1; keyboard codes are dropped.
+     * <p>1.8.9: use {@code KeyBinding.setKeyPressed(IZ)V} (MCP {@code setKeyBindState}), which sees press and release
+     * ({@code onKeyPressed} fires on press only), mapping {@code -100} to 0 and {@code -99} to 1 and dropping
+     * keyboard codes, plus {@code Screen.handleInput()V} for the events an open screen drains from LWJGL's queue.
      * Modern versions: {@code MouseHandler.onButton}.
      */
     public void onMouseButton(int button, boolean pressed) {
