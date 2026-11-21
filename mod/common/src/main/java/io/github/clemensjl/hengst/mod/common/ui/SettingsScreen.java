@@ -12,6 +12,7 @@ import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -37,6 +38,7 @@ public final class SettingsScreen implements UiScreen {
     private static final int DIM = 0xC0101010;
     private static final int WARNING = 0xFFFF5555;
     private static final int NOTICE = 0xFFAAAAAA;
+    private static final int GROUP_TEXT = 0xFFAAAAAA;
     private static final String[] NO_LINES = new String[0];
 
     private static final String[] COLOR_KEYS = {"white", "yellow", "lime", "aqua", "red", "orange", "gray", "black"};
@@ -87,8 +89,18 @@ public final class SettingsScreen implements UiScreen {
             }
         });
         List<Widget> rows = new ArrayList<Widget>();
-        for (Feature f : model.features()) {
-            rows.add(new FeatureRow(f));
+        for (FeatureGroup group : FeatureGroup.values()) {
+            boolean headed = false;
+            for (Feature f : model.features()) {
+                if (f.group() != group) {
+                    continue;
+                }
+                if (!headed) {
+                    rows.add(new GroupRow(i18n.get("hengst.group." + group.name().toLowerCase(Locale.ROOT))));
+                    headed = true;
+                }
+                rows.add(new FeatureRow(f));
+            }
         }
         featureList.setWidgets(rows, ROW);
         refresh();
@@ -457,6 +469,20 @@ public final class SettingsScreen implements UiScreen {
 
     Widget doneButton() {
         return done;
+    }
+
+    /** A group heading in the feature list: text only, no fill, not clickable. */
+    private static final class GroupRow extends Widget {
+        private final String name;
+
+        GroupRow(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public void render(Canvas c, int mx, int my) {
+            c.text(fitted(c, name, w - 6), x + 4, y + (h - c.fontHeight()) / 2, GROUP_TEXT, true);
+        }
     }
 
     /** One list row: the switch on the left 20 px, the rest selects the feature. */

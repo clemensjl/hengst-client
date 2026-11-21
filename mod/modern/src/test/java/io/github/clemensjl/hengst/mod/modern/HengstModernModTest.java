@@ -60,7 +60,7 @@ class HengstModernModTest {
         HengstCore core = HengstModernMod.GUARD.start(() -> workingPlatform(dir, opened), TimeSource.SYSTEM);
         core.onOpenSettingsKey();
         opened[0].render(CANVAS, 0, 0, 0f);
-        opened[0].mouseClicked(12, 46, 0);                        // the FPS switch: a change waiting to be saved
+        opened[0].mouseClicked(12, 66, 0);                        // the FPS switch: a change waiting to be saved
         Path profile = dir.resolve("hengst/profiles/default.json");
         assertFalse(Files.exists(profile));
         HengstModernMod.ENABLED = true;

@@ -42,7 +42,7 @@ import org.junit.jupiter.api.io.TempDir;
 class HengstCoreTest {
     // Screen geometry on the 320 x 240 FakeCanvas: the FPS switch in the feature list and the Done button.
     private static final int FPS_SWITCH_X = 12;
-    private static final int FPS_SWITCH_Y = 46;
+    private static final int FPS_SWITCH_Y = 66;
     private static final int DONE_X = 260;
     private static final int DONE_Y = 222;
     private static final int HEADER_Y = 18;
@@ -717,7 +717,7 @@ class HengstCoreTest {
         UiScreen s = platform.openedScreen;
         s.render(canvas, 0, 0, 0f);
         armed[0] = true;
-        for (int y = 46; y < 46 + 20 * 5; y += 20) {       // selecting the row of the bad feature rebuilds its options
+        for (int y = 66; y < 66 + 20 * 5; y += 20) {       // selecting the row of the bad feature rebuilds its options
             assertFalse(throwsOnClick(s, 60, y));
         }
         assertEquals(1, platform.warnings.size());

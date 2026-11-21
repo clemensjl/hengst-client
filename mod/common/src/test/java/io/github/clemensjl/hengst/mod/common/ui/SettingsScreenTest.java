@@ -28,6 +28,7 @@ import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.testutil.CountingCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
+import io.github.clemensjl.hengst.mod.common.testutil.GroupFeature;
 import io.github.clemensjl.hengst.mod.common.testutil.TestFeature;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -94,7 +95,7 @@ class SettingsScreenTest {
     @Test void toggling_feature_marks_changed() {
         screen.render(canvas, 0, 0, 0f);
         assertFalse(model.config("fps").enabled());
-        assertTrue(screen.mouseClicked(12, 46, 0));
+        assertTrue(screen.mouseClicked(12, 66, 0));
         assertTrue(model.config("fps").enabled()); assertEquals(1, changed);
     }
     @Test void copy_and_delete_profile() {
@@ -126,7 +127,7 @@ class SettingsScreenTest {
     @Test void notice_is_drawn_wrapped_unscaled_and_fits_the_width() {
         screen.render(canvas, 0, 0, 0f);
         String notice = I18n.load("en_us").get("hengst.notice");
-        List<Drawn> lines = textCalls(canvas, "ffaaaaaa");
+        List<Drawn> lines = textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.x == 8).collect(java.util.stream.Collectors.toList());   // the group headers (x 12) share the colour
         assertTrue(lines.size() >= 2);
         assertEquals(notice, String.join(" ", lines.stream().map(d -> d.text).toArray(String[]::new)));
         for (Drawn d : lines) assertTrue(d.x >= 0 && d.x + 6 * d.text.length() <= 320, d.text);
@@ -150,7 +151,7 @@ class SettingsScreenTest {
         ScreenClose close = new ScreenClose(model::saveIfDirty, () -> renderer.rebuild(active[0]), platform, "the settings");
         screen = new SettingsScreen(model, I18n.load("en_us"), close);
         screen.render(canvas, 0, 0, 0f);
-        screen.mouseClicked(12, 46, 0);
+        screen.mouseClicked(12, 66, 0);
         assertEquals(0, renderer.activeCount());
         screen.keyPressed(UiKey.ESCAPE, false, false);
         assertTrue(store.load("default").module("fps").enabled());
@@ -244,7 +245,7 @@ class SettingsScreenTest {
 
     @Test void edit_hud_saves_pending_changes_first() {
         screen.render(canvas, 0, 0, 0f);
-        screen.mouseClicked(12, 46, 0);
+        screen.mouseClicked(12, 66, 0);
         screen.mouseClicked(270, 15, 0);
         assertTrue(store.load("default").module("fps").enabled());
     }
@@ -273,7 +274,7 @@ class SettingsScreenTest {
     @Test void slider_option_is_coerced_and_marks_changed() {
         open(allModules(), "en_us");
         screen.render(canvas, 0, 0, 0f);
-        assertTrue(screen.mouseClicked(60, 36 + 3 * 20 + 5, 0));    // select coordinates (4th row)
+        assertTrue(screen.mouseClicked(60, 36 + 4 * 20 + 5, 0));    // select coordinates (row 4, the header is row 0)
         assertEquals("coordinates", model.selected().id());
         screen.render(canvas, 0, 0, 0f);
         int before = changed;
@@ -292,7 +293,7 @@ class SettingsScreenTest {
     @Test void toggle_option_and_text_colour_choice() {
         open(allModules(), "en_us");
         screen.render(canvas, 0, 0, 0f);
-        screen.mouseClicked(60, 36 + 2 * 20 + 5, 0);                 // keystrokes
+        screen.mouseClicked(60, 36 + 3 * 20 + 5, 0);                 // keystrokes
         screen.render(canvas, 0, 0, 0f);
         assertTrue(model.config("keystrokes").background());
         assertTrue(screen.mouseClicked(200, 36 + 5, 0));             // background
@@ -327,16 +328,16 @@ class SettingsScreenTest {
         assertEquals(20, list.offset());
         for (int i = 0; i < 50; i++) screen.mouseScrolled(50, 100, -1);
         // whole rows only: the last row ends inside the list, no partial row at the top
-        assertEquals((12 - list.height() / 20) * 20, list.offset());
+        assertEquals((13 - list.height() / 20) * 20, list.offset());
         for (int i = 0; i < 50; i++) screen.mouseScrolled(50, 100, 1);
         assertEquals(0, list.offset());
         assertFalse(screen.mouseScrolled(5, 230, 1));
-        // one notch is one whole row: row 0 is above the list, row 1 starts at the list top (y 36)
+        // one notch is one whole row: row 0 (the header) is above the list, row 1 (f0) starts at the list top (y 36)
         screen.mouseScrolled(50, 100, -1);
         screen.render(canvas, 0, 0, 0f);
         assertEquals(0, changed);
         assertTrue(screen.mouseClicked(12, 36 + 5, 0));
-        assertTrue(model.config("f1").enabled());
+        assertTrue(model.config("f0").enabled());
     }
 
     // ---- fitting ----
@@ -401,14 +402,14 @@ class SettingsScreenTest {
         model.fail(SettingsModel.KEY_PROFILE_LOAD_FAILED, "x");   // longest warning sentence on screen
         for (int row = 0; row < 4; row++) {
             screen.render(canvas, 0, 0, 0f);
-            screen.mouseClicked(60, 36 + row * 20 + 5, 0);
+            screen.mouseClicked(60, 36 + (row + 1) * 20 + 5, 0);
             canvas.calls.clear();
             screen.render(canvas, 0, 0, 0f);
             List<Drawn> texts = textCalls(canvas, null);
             assertFalse(texts.isEmpty());
             checkFits(texts);
             // hint-like free texts: notice and warning are wrapped, not cut
-            assertEquals(I18n.load("de_de").get("hengst.notice"), joined(textCalls(canvas, "ffaaaaaa")));
+            assertEquals(I18n.load("de_de").get("hengst.notice"), joined(textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.x == 8).collect(java.util.stream.Collectors.toList())));
             assertEquals(I18n.load("de_de").get(SettingsModel.KEY_PROFILE_LOAD_FAILED), joined(textCalls(canvas, "ffff5555")));
         }
         // buttons are shown in full, also in the confirm state
@@ -624,7 +625,7 @@ class SettingsScreenTest {
         open(allModules(), "de_de");
         CountingCanvas cc = new CountingCanvas();
         screen.render(cc, 0, 0, 0f);
-        screen.mouseClicked(60, 36 + 3 * 20 + 5, 0);   // coordinates: has a slider
+        screen.mouseClicked(60, 36 + 4 * 20 + 5, 0);   // coordinates: has a slider
         for (int i = 0; i < 300; i++) screen.render(cc, 150 + i % 50, 60, 0f);
         com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
         long id = Thread.currentThread().getId();
@@ -649,10 +650,10 @@ class SettingsScreenTest {
         r.register(new FpsModule());
         open(r, "en_us");
         screen.render(canvas, 0, 0, 0f);
-        screen.mouseClicked(60, 36 + 5, 0);                          // fps (number 1) is the first row
+        screen.mouseClicked(60, 36 + 1 * 20 + 5, 0);                // fps: row 1, the HUD header is row 0
         assertEquals("fps", model.selected().id());
         assertEquals(3, screen.optionList().widgets().size());       // background, shadow, colour, no options
-        screen.mouseClicked(60, 36 + 20 + 5, 0);
+        screen.mouseClicked(60, 36 + 3 * 20 + 5, 0);                 // zoom: row 3 (row 2 is the Visual header)
         assertEquals("zoom", model.selected().id());
         assertEquals(1, screen.optionList().widgets().size());       // only its own option
     }
@@ -671,7 +672,7 @@ class SettingsScreenTest {
         open(r, "en_us");
         screen = new SettingsScreen(model, I18n.of(primary, fallback), () -> closeCount++);
         screen.render(canvas, 0, 0, 0f);
-        screen.mouseClicked(60, 36 + 5, 0);
+        screen.mouseClicked(60, 36 + 20 + 5, 0);                     // row 1, the Visual header is row 0
         canvas.calls.clear();
         screen.render(canvas, 0, 0, 0f);
     }
@@ -680,6 +681,121 @@ class SettingsScreenTest {
         java.util.Map<String, Object> m = new java.util.HashMap<>();
         for (int i = 0; i < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
         return m;
+    }
+
+    static final EnumSet<GameVersion> ALL = EnumSet.allOf(GameVersion.class);
+    /** n features "f0" .. "f<n-1>" with the numbers 1 .. n, all in group HUD. */
+    private static FeatureRegistry registryWith(int n) {
+        FeatureRegistry r = new FeatureRegistry();
+        for (int i = 0; i < n; i++) { r.register(new TestFeature("f" + i, i + 1, ALL)); }
+        return r;
+    }
+    private FeatureRegistry defaultRegistry() { return allModules(); }   // fps, cps, keystrokes, coordinates
+    /** Draws the screen again and returns the calls of that frame. */
+    private List<String> drawn() { canvas.calls.clear(); screen.render(canvas, 0, 0, 0f); return canvas.calls; }
+    /** Opens with fixed English texts so headers and the names of the test features are readable (the real language file does not know "comfy" and "vis"). */
+    private void openNamed(FeatureRegistry reg) {
+        open(reg, "en_us");
+        screen = new SettingsScreen(model, I18n.of(texts("hengst.group.hud", "HUD", "hengst.group.visual", "Visual", "hengst.group.comfort", "Comfort",
+                "hengst.feature.fps", "fps", "hengst.feature.cps", "cps", "hengst.feature.comfy", "comfy", "hengst.feature.vis", "vis"), texts()), () -> closeCount++);
+    }
+    /** All texts the last frame draws in the feature list (x 8 to 136, y 36 to 186), top to bottom: headers and feature names. */
+    private List<String> listTexts() {
+        drawn();
+        List<String> out = new ArrayList<>();
+        for (Drawn d : textCalls(canvas, null)) { if (d.x >= 8 && d.x < 136 && d.y >= 36 && d.y < 186) { out.add(d.text); } }
+        return out;
+    }
+
+    @Test void features_are_grouped_under_headers_in_group_order() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new TestFeature("fps", 1, ALL)); reg.register(new TestFeature("cps", 2, ALL));
+        reg.register(new GroupFeature("comfy", 21, FeatureGroup.COMFORT)); reg.register(new GroupFeature("vis", 25, FeatureGroup.VISUAL));
+        openNamed(reg);
+        assertEquals(Arrays.asList("HUD", "fps", "cps", "Visual", "vis", "Comfort", "comfy"), listTexts());   // 7 rows, all visible
+    }
+    @Test void a_group_without_supported_features_has_no_header() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new TestFeature("fps", 1, ALL));
+        reg.register(new GroupFeature("vis", 25, FeatureGroup.VISUAL, EnumSet.of(GameVersion.V26_3)));
+        openNamed(reg);   // version 1.8.9
+        assertEquals(Arrays.asList("HUD", "fps"), listTexts());
+    }
+    @Test void a_header_is_drawn_in_grey_at_x_plus_4_without_a_fill() {
+        openNamed(registryWith(1));
+        List<String> calls = drawn();
+        assertTrue(calls.contains("text HUD 12 40 ffaaaaaa true"), calls.toString());
+        assertFalse(calls.stream().anyMatch(c -> c.startsWith("fill 8 36 ")), "no fill for the header row");
+    }
+    @Test void a_header_too_wide_for_its_row_is_cut_by_text_fit() {
+        open(registryWith(1), "en_us");
+        screen = new SettingsScreen(model, I18n.of(texts("hengst.group.hud", "A very long group name that cannot fit"), texts()), () -> closeCount++);
+        drawn();
+        List<Drawn> headers = textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.y < 186).collect(java.util.stream.Collectors.toList());
+        assertEquals(1, headers.size());
+        assertEquals("A very long group na", headers.get(0).text);   // 20 characters of 6 px fit into 128 - 6
+        assertTrue(headers.get(0).x + 6 * headers.get(0).text.length() <= 8 + 128);
+    }
+    @Test void clicking_a_header_selects_and_changes_nothing() {
+        open(defaultRegistry(), "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        Feature before = model.selected();
+        assertFalse(screen.mouseClicked(60, 46, 0));         // row 0 (y 36 to 56) is the header HUD
+        assertSame(before, model.selected());
+        assertFalse(model.dirty());
+    }
+    @Test void the_scroll_indicator_appears_only_when_the_list_overflows() {
+        open(registryWith(4), "en_us");
+        assertFalse(drawn().contains("fill 134 36 136 186 40ffffff"));
+        open(registryWith(11), "en_us");   // 11 HUD features + 1 header = 12 rows, 7 visible
+        assertTrue(drawn().contains("fill 134 36 136 186 40ffffff"));
+        assertTrue(drawn().contains("fill 134 36 136 123 c0ffffff"));   // th = max(8, 150 * 7 / 12) = 87
+        screen.mouseScrolled(40, 100, -10);
+        assertTrue(drawn().contains("fill 134 99 136 186 c0ffffff"));   // maxOffset 100, ty = 36 + 63
+    }
+    @Test void the_indicator_is_hidden_for_a_list_that_just_fits_and_shown_for_one_row_more() {
+        open(registryWith(6), "en_us");    // 7 rows = 140 px in a 150 px list
+        screen.render(canvas, 0, 0, 0f);
+        assertFalse(screen.featureList().overflows());
+        assertFalse(drawn().stream().anyMatch(c -> c.startsWith("fill 134 ") && c.endsWith("ffffff")));
+        open(registryWith(7), "en_us");    // 8 rows = 160 px: one more than fits
+        screen.render(canvas, 0, 0, 0f);
+        assertTrue(screen.featureList().overflows());
+        assertTrue(drawn().contains("fill 134 36 136 186 40ffffff"));
+        assertTrue(drawn().contains("fill 134 36 136 167 c0ffffff"));   // th = 150 * 7 / 8 = 131, offset 0: top
+        screen.mouseScrolled(40, 100, -5);
+        assertEquals(20, screen.featureList().offset());
+        assertTrue(drawn().contains("fill 134 55 136 186 c0ffffff"));   // maxOffset 20, ty = 36 + 19: bottom
+    }
+    @Test void rows_are_4_px_narrower_with_the_indicator() {
+        open(registryWith(4), "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        assertEquals(128, screen.featureList().widgets().get(1).w);
+        open(registryWith(11), "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        assertEquals(124, screen.featureList().widgets().get(1).w);
+    }
+    @Test void a_list_that_shrinks_while_scrolled_to_the_end_clamps_and_the_indicator_follows() {
+        open(registryWith(11), "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseScrolled(40, 100, -50);
+        screen.render(canvas, 0, 0, 0f);
+        assertEquals(100, screen.featureList().offset());
+        List<Widget> nine = new ArrayList<>(screen.featureList().widgets().subList(0, 9));
+        screen.featureList().setWidgets(nine, 20);
+        assertEquals(40, screen.featureList().offset());                // (9 - 7) rows
+        assertTrue(drawn().contains("fill 134 70 136 186 c0ffffff"));   // th = 150 * 7 / 9 = 116, at the end: 36 + 34
+        screen.featureList().setWidgets(new ArrayList<>(nine.subList(0, 5)), 20);
+        assertEquals(0, screen.featureList().offset());
+        assertFalse(drawn().stream().anyMatch(c -> c.startsWith("fill 134 ") && c.endsWith("ffffff")));
+    }
+    @Test void keyboard_does_not_scroll_and_the_wheel_still_does_with_headers() {
+        open(registryWith(11), "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        assertFalse(screen.keyPressed(UiKey.DOWN, false, false));
+        assertEquals(0, screen.featureList().offset());
+        assertTrue(screen.mouseScrolled(40, 100, -2));
+        assertEquals(40, screen.featureList().offset());
     }
 
     @Test void option_labels_prefer_the_feature_specific_key_then_the_global_one_then_the_key() {
