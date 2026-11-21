@@ -15,6 +15,8 @@ import {
 } from "./designDoc";
 import { buttonVariants } from "@/components/ui/button";
 import { classConflicts, classLiterals } from "./classConflicts";
+import { ALLOWED_SAMPLES, BANNED_CLASSES, bannedIn } from "./gatePatterns";
+import { handWritten } from "./sourceFiles";
 
 const THEMES = [":root", ".dark"] as const;
 
@@ -85,6 +87,17 @@ describe("tokens", () => {
     expect(cssVar(":root", "--input")).toBe("var(--border-control)");
     for (const b of decorativeBorders) {
       expect(cssVar(":root", "--input")).not.toBe(`var(${b})`);
+    }
+  });
+
+  it("Tailwind does not scan the tests and gate helpers, whose banned class strings would become utilities", () => {
+    for (const source of [
+      "../**/*.test.{ts,tsx}",
+      "./gatePatterns.ts",
+      "./classConflicts.ts",
+      "./sourceFiles.ts",
+    ]) {
+      expect(CSS).toContain(`@source not "${source}";`);
     }
   });
 
@@ -168,12 +181,15 @@ describe("tokens", () => {
   });
 
   it("spacing, radius and motion tokens are declared on :root with the values of DESIGN.md sections 4, 5 and 8", () => {
-    const rows = [
-      ...tableRows("## 4. Spacing"),
-      ...tableRows("## 5. Shape, borders, elevation"),
-      ...tableRows("## 8. Motion"),
-    ].filter((r) => /^`--(space|radius|dur|ease)-/.test(r[0]));
-    expect(rows.length).toBeGreaterThanOrEqual(16);
+    const section = (heading: string, prefix: RegExp) =>
+      tableRows(heading).filter((r) => prefix.test(r[0]));
+    // The exact counts of the tables: 7 spacing steps, 3 radii, 7 motion tokens (one curve, six
+    // durations). A row added to DESIGN.md without a token, or a parser that misses one, fails here.
+    const spacing = section("## 4. Spacing", /^`--space-/);
+    const radius = section("## 5. Shape, borders, elevation", /^`--radius-/);
+    const motion = section("## 8. Motion", /^`--(dur|ease)-/);
+    expect([spacing.length, radius.length, motion.length]).toEqual([7, 3, 7]);
+    const rows = [...spacing, ...radius, ...motion];
     for (const [name, value] of rows) {
       const token = firstToken(name)!;
       const doc = value.replace(/`/g, "");
@@ -234,43 +250,34 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
   });
 
   it("none of the shadcn defaults the design rules out remains", () => {
-    const banned = [
-      "ring-ring/",
-      "outline-ring/",
-      "dark:",
-      "shadow-xs",
-      "shadow-sm",
-      "rounded-2xl",
-      "rounded-3xl",
-      "rounded-4xl",
-      "var(--accent)",
-      "animate-pulse",
-      "text-white",
-      "bg-input/",
-      "focus-visible:ring",
-      "focus-visible:border-ring",
-      "hover:bg-primary/",
-      "hover:bg-destructive/",
-      "font-medium",
-      "var(--primary)",
-      "shadow-2xs",
-      "shadow-2xl",
-      "rounded-xs",
-      "rounded-full",
-    ];
     for (const { name, text } of files) {
-      for (const b of banned) expect(text.includes(b), `${name}: ${b}`).toBe(false);
-      // A bare `shadow` is Tailwind's default shadow, not the elevation token.
-      expect(/(?:^|[\s"'`:])shadow(?![-\w])/.test(text), `${name}: bare shadow`).toBe(false);
+      expect(bannedIn(text), name).toEqual([]);
     }
   });
 
-  // DESIGN.md names no alpha modifier on a color utility, so none may appear. The pill radius is
-  // `rounded-pill` (mapped to --radius-pill), never `rounded-full`.
-  it("no color utility carries an alpha modifier", () => {
-    const alpha =
-      /\b(?:[a-z-]+:)*(?:bg|text|border|ring|outline|fill|stroke|from|to|via|decoration|shadow|divide|accent|caret)-[a-z0-9-]+\/(?:\d|\[)/;
-    for (const { name, text } of files) expect(alpha.test(text), name).toBe(false);
+  // Each banned pattern must flag its own sample, and the patterns must not be so wide that they
+  // flag what the design allows: a pattern that silently stops matching fails here.
+  it("every banned pattern flags its sample and none flags an allowed class", () => {
+    expect(BANNED_CLASSES.length).toBeGreaterThan(25);
+    for (const b of BANNED_CLASSES) {
+      expect(b.pattern.test(b.sample), `${b.why}: ${b.sample}`).toBe(true);
+    }
+    for (const sample of ALLOWED_SAMPLES) {
+      expect(bannedIn(sample), sample).toEqual([]);
+    }
+    // The holes the re-review found, as classes in a list.
+    for (const hole of [
+      "shadow-inner",
+      "inset-shadow-sm",
+      "drop-shadow-lg",
+      "rounded-t-full",
+      "rounded-[8px]",
+      "bg-(--primary)",
+      "bg-[#fff]/50",
+      "hover:text-[#000]",
+    ]) {
+      expect(bannedIn(`flex ${hole} p-2`), hole).not.toEqual([]);
+    }
   });
 
   it("no component relies on a later class beating an earlier one", () => {
@@ -289,12 +296,62 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
     }
   });
 
+  it("no hand-written component relies on a later class beating an earlier one", () => {
+    // Everything outside components/ui that builds class lists (cn calls and plain strings):
+    // Badge, Segments, Sidebar, Shell, Boot and the feature views.
+    expect(handWritten.length).toBeGreaterThan(10);
+    for (const { file, text } of handWritten) {
+      for (const list of classLiterals(text)) {
+        expect(classConflicts(list), `${file}: ${list}`).toEqual([]);
+      }
+    }
+  });
+
   it("the conflict check catches the conflicts it is for", () => {
-    expect(classConflicts("px-4 px-0")).not.toEqual([]);
-    expect(classConflicts("px-4 hover:px-0")).toEqual([]);
-    expect(classConflicts("text-label text-foreground")).toEqual([]);
-    expect(classConflicts("text-label text-small")).not.toEqual([]);
-    expect(classConflicts("border border-transparent border-input")).not.toEqual([]);
+    const conflicting = [
+      "px-4 px-0",
+      "text-label text-small",
+      "text-label text-[13px]",
+      "text-[13px] text-sm",
+      "text-body text-label",
+      "border border-transparent border-input",
+      "bg-surface bg-[#fff]",
+      "bg-[#fff] bg-hover",
+      "flex block",
+      "items-center items-start",
+      "justify-between justify-center",
+      "overflow-hidden overflow-auto",
+      "overflow-x-hidden overflow-x-auto",
+      "leading-5 leading-6",
+      "tracking-tight tracking-wide",
+      "duration-100 duration-200",
+      "ring-1 ring-2",
+      "ring-input ring-focus",
+      "outline-2 outline-1",
+      "outline-none outline-dashed",
+      "outline-focus outline-input",
+      "rounded-md rounded-lg",
+      "font-semibold font-normal",
+    ];
+    for (const list of conflicting) expect(classConflicts(list), list).not.toEqual([]);
+    const fine = [
+      "px-4 hover:px-0",
+      "text-label text-foreground",
+      "text-[13px] text-foreground",
+      "text-[#123456] text-sm",
+      "border border-b",
+      "border-x border-b border-input",
+      "p-4 px-2 pt-1",
+      "rounded-md rounded-t-lg",
+      "text-body font-semibold",
+      "text-label leading-5",
+      "flex items-center justify-between gap-2",
+      "overflow-x-hidden overflow-y-auto",
+      "ring-1 ring-input",
+      "outline-2 outline-focus outline-solid",
+      "hidden wide:flex",
+    ];
+    for (const list of fine) expect(classConflicts(list), list).toEqual([]);
   });
 
   const primaryUtility =

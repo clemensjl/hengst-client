@@ -133,8 +133,13 @@ export const useApp = create<AppState>()((set, get) => ({
     subscribeEvents((event) => {
       if (event.event === "dataChanged") {
         if (event.data.scope === "settings")
+          // A save that found the file damaged resets it and leaves a notice for this reload.
           void get()
             .loadSettings()
+            .then((data) => {
+              if (data.notice === "reset")
+                toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
+            })
             .catch(() => {});
         if (event.data.scope === "versions") {
           set({ versionsStale: null });

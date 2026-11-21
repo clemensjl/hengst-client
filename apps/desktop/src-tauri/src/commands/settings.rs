@@ -62,13 +62,10 @@ fn apply(s: &mut Settings, patch: SettingsPatch) {
     }
 }
 
-/// The notice of a reset settings file is handed out once (`Option::take`).
+/// The notice of a reset settings file (from the start or found by an update) is handed out once.
 pub fn settings_get_impl(state: &AppState) -> Result<SettingsDto, ErrorDto> {
-    let notice = state
-        .pending_notice
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
+    // Notice first, then the values: an update that lands in between is not announced twice.
+    let notice = state.settings.take_notice();
     Ok(SettingsDto::new(state.settings.get(), notice))
 }
 
@@ -228,6 +225,30 @@ mod tests {
         assert_eq!(settings_get_impl(&state).unwrap().notice, None);
         // A reload after an update does not bring it back either.
         settings_update_impl(&state, theme_patch(Theme::Dark)).unwrap();
+        assert_eq!(settings_get_impl(&state).unwrap().notice, None);
+    }
+
+    #[test]
+    fn an_update_that_finds_the_file_damaged_announces_the_reset_through_the_next_get() {
+        let dir = tempfile::tempdir().unwrap();
+        // Unreadable at start, damaged when the update reads it again.
+        std::fs::create_dir(dir.path().join("settings.json")).unwrap();
+        let state = state_in(dir.path());
+        let log = record(&state);
+        assert_eq!(settings_get_impl(&state).unwrap().notice, None);
+        std::fs::remove_dir(dir.path().join("settings.json")).unwrap();
+        std::fs::write(dir.path().join("settings.json"), "{").unwrap();
+        settings_update_impl(&state, theme_patch(Theme::Dark)).unwrap();
+        // The event that makes the web view ask again is the one every update emits.
+        assert_eq!(
+            *log.lock().unwrap(),
+            [AppEvent::DataChanged {
+                scope: DataScope::Settings
+            }]
+        );
+        let after = settings_get_impl(&state).unwrap();
+        assert_eq!(after.notice, Some(SettingsNotice::Reset));
+        assert_eq!(after.theme, Theme::Dark);
         assert_eq!(settings_get_impl(&state).unwrap().notice, None);
     }
 

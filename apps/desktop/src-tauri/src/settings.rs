@@ -154,12 +154,20 @@ struct Inner {
     settings: Settings,
     /// See `Loaded::blocked`. While set, `update` reads the file again first.
     blocked: Option<String>,
+    /// The "damaged and reset" notice, from the start or from an update that found the file
+    /// damaged when it read it again. `take_notice` hands it out once.
+    notice: Option<SettingsNotice>,
 }
 
 /// The settings in memory. Every writer goes through `update`; there is no second way to write.
+///
+/// Two locks: `state` guards the values and is only ever held for a copy or a commit, never across
+/// file I/O, so `get` (the window's theme handler runs on the event loop) cannot be held up by a
+/// save; `save` serializes whole updates (copy, change, save, commit).
 #[derive(Clone)]
 pub struct SettingsHandle {
-    inner: Arc<Mutex<Inner>>,
+    state: Arc<Mutex<Inner>>,
+    save: Arc<Mutex<()>>,
 }
 
 impl SettingsHandle {
@@ -176,11 +184,13 @@ impl SettingsHandle {
 
     pub fn from_loaded(paths: Paths, loaded: Loaded) -> SettingsHandle {
         SettingsHandle {
-            inner: Arc::new(Mutex::new(Inner {
+            state: Arc::new(Mutex::new(Inner {
                 paths,
                 settings: loaded.settings,
                 blocked: loaded.blocked,
+                notice: loaded.notice,
             })),
+            save: Arc::new(Mutex::new(())),
         }
     }
 
@@ -188,32 +198,50 @@ impl SettingsHandle {
         self.lock().settings.clone()
     }
 
+    /// The pending "damaged and reset" notice, once.
+    pub fn take_notice(&self) -> Option<SettingsNotice> {
+        self.lock().notice.take()
+    }
+
     /// Changes a copy, saves it and only then takes it over. An error from `f` or from saving
-    /// changes neither the file nor the settings in memory. Blocking (file I/O under the lock):
-    /// call it from a blocking thread, never across an await.
+    /// changes neither the file nor the settings in memory. Blocking (file I/O under the save
+    /// lock): call it from a blocking thread, never across an await.
     ///
     /// If the start could not read the file, the defaults in memory are not saved over it: the
     /// file is read again here, and only a successful read (or a missing file) unblocks and
-    /// replaces the defaults; otherwise this fails and the file stays as it is.
+    /// replaces the defaults; otherwise this fails and the file stays as it is. A file found
+    /// damaged on that read is moved aside and its notice is kept for `take_notice`.
     pub fn update(&self, f: impl FnOnce(&mut Settings) -> Result<()>) -> Result<Settings> {
-        let mut guard = self.lock();
-        if let Some(reason) = guard.blocked.clone() {
-            let again = load_settings(&guard.paths, hengst_core::auth::unix_now());
+        let _saving = self.save.lock().unwrap_or_else(|p| p.into_inner());
+        let (paths, blocked, mut copy) = {
+            let guard = self.lock();
+            (
+                guard.paths.clone(),
+                guard.blocked.clone(),
+                guard.settings.clone(),
+            )
+        };
+        if let Some(reason) = blocked {
+            let again = load_settings(&paths, hengst_core::auth::unix_now());
             if again.blocked.is_some() {
                 return Err(hengst_core::Error::Io(std::io::Error::other(reason)));
             }
+            copy = again.settings.clone();
+            let mut guard = self.lock();
             guard.settings = again.settings;
             guard.blocked = None;
+            if again.notice.is_some() {
+                guard.notice = again.notice;
+            }
         }
-        let mut copy = guard.settings.clone();
         f(&mut copy)?;
-        save_settings(&guard.paths, &copy)?;
-        guard.settings = copy.clone();
+        save_settings(&paths, &copy)?;
+        self.lock().settings = copy.clone();
         Ok(copy)
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner())
+        self.state.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
 
@@ -369,6 +397,102 @@ mod tests {
         assert!(loaded.blocked.is_some());
         assert!(dir.path().join("settings.json").is_dir(), "left untouched");
         assert!(!dir.path().join("settings.json.broken-1700").exists());
+    }
+
+    #[test]
+    fn a_damaged_file_found_when_reread_during_an_update_keeps_its_reset_notice() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        // Unreadable at start (a folder where the file belongs): no notice yet, saving blocked.
+        std::fs::create_dir(dir.path().join("settings.json")).unwrap();
+        let handle = SettingsHandle::from_loaded(paths.clone(), load_settings(&paths, 1));
+        assert_eq!(handle.take_notice(), None);
+        // Then it becomes readable, but damaged: the update moves it aside and starts from the
+        // defaults, and the user must still hear about it, once.
+        std::fs::remove_dir(dir.path().join("settings.json")).unwrap();
+        std::fs::write(dir.path().join("settings.json"), "{").unwrap();
+        let saved = handle
+            .update(|s| {
+                s.memory_mb = 4096;
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(saved.memory_mb, 4096);
+        assert_eq!(handle.take_notice(), Some(SettingsNotice::Reset));
+        assert_eq!(handle.take_notice(), None, "handed out once");
+        let aside: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with("settings.json.broken-")
+            })
+            .collect();
+        assert_eq!(aside.len(), 1, "the damaged file is kept aside");
+    }
+
+    #[test]
+    fn a_pending_start_notice_survives_an_update_and_is_taken_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(dir.path().join("settings.json"), "{").unwrap();
+        let handle = SettingsHandle::from_loaded(paths.clone(), load_settings(&paths, 1));
+        handle.update(|_| Ok(())).unwrap();
+        assert_eq!(handle.take_notice(), Some(SettingsNotice::Reset));
+        assert_eq!(handle.take_notice(), None);
+    }
+
+    #[test]
+    fn reading_the_settings_does_not_wait_for_a_save_in_progress() {
+        // The window's theme handler runs on the event loop and calls `get`; a save must not be
+        // able to block it. The closure of `update` runs inside the save, so asking from another
+        // thread there proves `get` needs no lock that the save holds.
+        let dir = tempfile::tempdir().unwrap();
+        let handle = SettingsHandle::new(Paths::new(dir.path()), Settings::default());
+        let reader = handle.clone();
+        handle
+            .update(|_| {
+                let (tx, rx) = std::sync::mpsc::channel();
+                let reader = reader.clone();
+                std::thread::spawn(move || {
+                    let _ = tx.send(reader.get());
+                });
+                assert!(
+                    rx.recv_timeout(std::time::Duration::from_secs(2)).is_ok(),
+                    "get() waited for the save"
+                );
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn saves_are_still_serialized() {
+        let dir = tempfile::tempdir().unwrap();
+        let handle = SettingsHandle::new(Paths::new(dir.path()), Settings::default());
+        let start = handle.get().memory_mb;
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                let handle = handle.clone();
+                std::thread::spawn(move || {
+                    handle
+                        .update(|s| {
+                            s.memory_mb += 1;
+                            Ok(())
+                        })
+                        .unwrap();
+                })
+            })
+            .collect();
+        for t in threads {
+            t.join().unwrap();
+        }
+        assert_eq!(handle.get().memory_mb, start + 8, "no update was lost");
+        assert_eq!(
+            load_settings(&Paths::new(dir.path()), 1).settings.memory_mb,
+            start + 8
+        );
     }
 
     #[test]

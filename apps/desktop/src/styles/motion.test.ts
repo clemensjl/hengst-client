@@ -20,4 +20,15 @@ describe("motion", () => {
     );
     expect(rule).not.toBeNull();
   });
+
+  // DESIGN.md 10.15: the spinner is a progress indicator, not a transition, so it keeps turning
+  // when a keyboard-triggered request runs; under reduced motion it is hidden.
+  it("the spinner utility is exempt from the keyboard rule and turns linearly at 800 ms", () => {
+    const rule = CSS.match(/html\[data-input="keyboard"\] \*:not\(([^)]*)\)/);
+    expect(rule?.[1]).toContain(".spinner");
+    const spinner = CSS.match(/@utility spinner \{([\s\S]*?)\n\}\n/)?.[1] ?? "";
+    expect(spinner).toMatch(/animation:\s*spinner-turn 800ms linear infinite/);
+    expect(spinner).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*display:\s*none/);
+    expect(CSS).toMatch(/@keyframes spinner-turn \{[^}]*\}[^}]*\}/);
+  });
 });

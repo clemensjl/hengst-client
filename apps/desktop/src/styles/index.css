@@ -4,6 +4,14 @@
    vite-plugins/sonnerStaticStyle.ts) because the CSP refuses inline style elements. */
 @import "sonner/dist/styles.css";
 
+/* Tailwind scans every source file for class names. The tests and the gate helpers list banned
+   classes as strings (drop-shadow-lg, rounded-full ...); scanning them would generate exactly
+   those utilities into the production style sheet. */
+@source not "../**/*.test.{ts,tsx}";
+@source not "./gatePatterns.ts";
+@source not "./classConflicts.ts";
+@source not "./sourceFiles.ts";
+
 /* Tokens, shadcn mapping, scales and base rules of DESIGN.md. Values come from DESIGN.md 2.1 and
    sections 4, 5 and 8; tokens.test.ts reads that file and fails if this one drifts from it. */
 
@@ -292,12 +300,28 @@
 }
 
 /* Nothing animates while the last input was the keyboard (DESIGN.md 8, Appendix A). Sonner keeps
-   its own timing. */
-html[data-input="keyboard"] *:not([data-sonner-toaster], [data-sonner-toaster] *),
+   its own timing, and the spinner is a progress indicator, not a transition: it keeps turning. */
+html[data-input="keyboard"] *:not([data-sonner-toaster], [data-sonner-toaster] *, .spinner),
 html[data-input="keyboard"] *::before,
 html[data-input="keyboard"] *::after {
   transition: none !important;
   animation: none !important;
+}
+
+/* DESIGN.md 10.15: a spinner turns linearly at 800 ms per turn and is hidden under reduced motion
+   (its label carries the state). Put it on the lucide `loader-circle` icon. */
+@keyframes spinner-turn {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@utility spinner {
+  animation: spinner-turn 800ms linear infinite;
+
+  @media (prefers-reduced-motion: reduce) {
+    display: none;
+  }
 }
 
 /* A layer that opens by pointer fades and scales from the trigger; by keyboard it just appears
