@@ -153,7 +153,8 @@ public final class ModernPlatform implements Platform {
         @Override
         public String serverAddress() {
             Minecraft mc = Minecraft.getInstance();
-            if (mc.hasSingleplayerServer()) {
+            // Null until a world exists (the connecting screens already have the entry), as on 1.8.9.
+            if (mc.level == null || mc.hasSingleplayerServer()) {
                 return null;
             }
             ServerData server = mc.getCurrentServer();

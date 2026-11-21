@@ -111,6 +111,8 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         Platform platform = core.context().platform();
 
         check(HengstModernMod.ENABLED, "mod enabled");
+        // Singleplayer: no server address (the multiplayer case, an address only once the world exists, is not tested).
+        check(ctx.computeOnClient(mc -> platform.game().serverAddress()) == null, "no server address in singleplayer");
         check(core.renderer().activeCount() == 4, "four active modules, got " + core.renderer().activeCount());
         Layout layout = layout(ctx);
         check(layout.draws > 0, "the core draws the HUD in a world");

@@ -114,7 +114,15 @@ public final class HengstModernMod implements ClientModInitializer {
     }
 
     private static void onStopping(Minecraft client) {
-        if (!ENABLED) {
+        stopCore(core);
+    }
+
+    /**
+     * Writes the core's pending changes whenever a core exists, also after a hook failure cleared {@link #ENABLED}:
+     * the last unsaved changes must not be lost because the mod switched itself off. Fenced on its own.
+     */
+    static void stopCore(HengstCore core) {
+        if (core == null) {
             return;
         }
         try {
