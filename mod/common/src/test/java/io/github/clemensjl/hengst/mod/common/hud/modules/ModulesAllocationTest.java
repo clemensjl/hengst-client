@@ -20,6 +20,7 @@ import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -214,5 +215,22 @@ class ModulesAllocationTest {
         assertTrue(fpsBytes > 0 && fpsBytes <= MAX_BYTES_PER_CHANGE, "fps " + fpsBytes);
         assertTrue(cpsBytes > 0 && cpsBytes <= MAX_BYTES_PER_CHANGE, "cps " + cpsBytes);
         assertTrue(coordBytes > 0 && coordBytes <= MAX_BYTES_PER_CHANGE, "coordinates " + coordBytes);
+    }
+
+    @Tag("interpreted")
+    @Test
+    void keystrokes_with_a_too_wide_label_allocates_nothing_after_its_first_frame() {
+        platform.labels.put(GameKey.FORWARD, "Button 4");
+        KeystrokesModule keys = new KeystrokesModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        CountingCanvas canvas = new CountingCanvas();
+        keys.tick(ctx, cfg);
+        keys.render(canvas, cfg, ctx);
+        long before = allocated();
+        for (int i = 0; i < 1000; i++) {
+            keys.render(canvas, cfg, ctx);
+        }
+        long used = allocated() - before;
+        assertEquals(0, used, "allocated " + used + " bytes");
     }
 }

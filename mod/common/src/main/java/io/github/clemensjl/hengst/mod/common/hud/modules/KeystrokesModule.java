@@ -124,10 +124,10 @@ public final class KeystrokesModule extends HudModule {
 
     /** Runs once per label change (needs the canvas for measuring); allocates only when it has to cut. */
     private void fit(Canvas c, int slot, int cellWidth) {
-        String text = labels[slot];
-        int tw = c.textWidth(text);
-        if (tw > cellWidth) {
-            text = TextFit.prefix(c, text, cellWidth);
+        String full = labels[slot];
+        int tw = c.textWidth(full);
+        String text = TextFit.prefix(c, full, cellWidth, tw);
+        if (text != full) {
             tw = c.textWidth(text);
         }
         shown[slot] = text;
