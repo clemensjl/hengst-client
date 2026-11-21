@@ -135,9 +135,14 @@ public final class ModernPlatform implements Platform {
             *///?}
         }
 
+        /**
+         * The F3 screen itself. Not {@code DebugScreenOverlay.showDebugScreen()}: that is also true when a debug entry
+         * is set to "always on" (debug profiles, e.g. the Performance profile shows the FPS line without F3), which
+         * would hide the mod HUD for good.
+         */
         @Override
         public boolean debugOverlayOpen() {
-            return Minecraft.getInstance().getDebugOverlay().showDebugScreen();
+            return Minecraft.getInstance().debugEntries.isOverlayVisible();
         }
 
         @Override

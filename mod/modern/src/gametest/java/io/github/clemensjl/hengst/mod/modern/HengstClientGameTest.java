@@ -34,6 +34,8 @@ import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
+import net.minecraft.client.gui.components.debug.DebugScreenEntries;
+import net.minecraft.client.gui.components.debug.DebugScreenEntryStatus;
 //? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
 //?} else {
@@ -196,6 +198,19 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         checkText(f3Closed, keysLow, "keystrokes after F3 closed");
         checkShown(f3Closed, hidden, layout, "fps", "after F3 closed");
         pass("F3 hides the mod HUD (pixels) and it returns when F3 closes");
+
+        // A vanilla debug entry set to "always on" (debug profiles, e.g. the Performance profile) is drawn without
+        // F3; the debug screen is not open then, so the mod HUD must stay.
+        ctx.runOnClient(mc -> mc.debugEntries.setStatus(DebugScreenEntries.FPS, DebugScreenEntryStatus.ALWAYS_ON));
+        ctx.waitTicks(2);
+        check(!ctx.computeOnClient(mc -> platform.game().debugOverlayOpen()),
+                "an always-on debug entry does not count as the open debug screen");
+        check(layout(ctx).draws > 0, "the core draws with an always-on debug entry");
+        BufferedImage alwaysOn = shot(ctx, "hengst-09b-debug-entry-always-on");
+        checkText(alwaysOn, keysLow, "keystrokes with an always-on debug entry");
+        ctx.runOnClient(mc -> mc.debugEntries.setStatus(DebugScreenEntries.FPS, DebugScreenEntryStatus.IN_OVERLAY));
+        ctx.waitTicks(2);
+        pass("an always-on vanilla debug entry (F3 closed) leaves the mod HUD drawn (pixels)");
 
         ctx.runOnClient(mc -> addChatLine(mc, "Hengst in-game test: this chat line draws over the mod HUD"));
         ctx.setScreen(OrderChatScreen::new);
