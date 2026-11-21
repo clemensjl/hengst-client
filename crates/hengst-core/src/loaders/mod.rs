@@ -178,6 +178,7 @@ pub async fn prepare_loader(
             })
         }
         LoaderKind::Forge | LoaderKind::NeoForge => {
+            forge::check_home(paths, req.kind, game)?;
             let list = list_versions(dl.client(), ep, req.kind, game).await?;
             let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
             let (installer, sha1) =
@@ -192,7 +193,7 @@ pub async fn prepare_loader(
                 forge::open_installer(&p, kind, &g, &maven, installer, sha1)
             })
             .await
-            .expect("installer task panicked")?;
+            .map_err(|e| std::io::Error::other(format!("installer task failed: {e}")))??;
             let extra_downloads = match &fi.contents.kind {
                 forge::installer::InstallerKind::Modern(profile) => {
                     libraries::resolve(&profile.libraries, env, paths)?.downloads

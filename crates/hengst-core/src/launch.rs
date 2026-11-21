@@ -196,7 +196,7 @@ pub async fn prepare_with_runner(
             forge::finish_install(&fi, &merged, &paths, &java, &jar, &sha1, runner.as_ref())
         })
         .await
-        .expect("install task panicked")?;
+        .map_err(|e| std::io::Error::other(format!("install task failed: {e}")))??;
     }
 
     let assets = match &merged.asset_index {

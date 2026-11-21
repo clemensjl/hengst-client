@@ -235,11 +235,39 @@ fn absolute_root(paths: &Paths) -> Result<(PathBuf, PathBuf)> {
     Ok((root, libraries))
 }
 
-/// Exclusive lock for installing one loader version, held until the file is dropped. A second
-/// launch preparing the same version waits here. The OS releases it if the process dies.
-fn install_lock(paths: &Paths, id: &str) -> Result<std::fs::File> {
-    validate_id(id)?;
-    let path = paths.tmp().join(format!("loader-{id}.lock"));
+/// Processors write files shared by all builds of one game version (split and remapped client
+/// jars, mappings), so there is one install lock per loader kind and game version, not per build.
+/// The lock lives outside the work directory.
+fn install_lock_path(paths: &Paths, kind: LoaderKind, game: &str) -> Result<PathBuf> {
+    validate_id(game)?;
+    Ok(paths
+        .tmp()
+        .join(format!("loader-{}-{game}.lock", kind.slug())))
+}
+
+/// How long `lock_file` waits before saying so, and at most.
+#[derive(Clone, Copy)]
+struct LockTiming {
+    notice_after: std::time::Duration,
+    limit: std::time::Duration,
+}
+
+impl LockTiming {
+    const DEFAULT: LockTiming = LockTiming {
+        notice_after: std::time::Duration::from_secs(3),
+        limit: std::time::Duration::from_secs(30 * 60),
+    };
+}
+
+/// An exclusive lock on `path`, held until the file is dropped; the OS releases it if the process
+/// dies. While another launch holds it, waits: after `notice_after` it tells the user once through
+/// `notice`, after `limit` it gives up with an error.
+fn lock_file(
+    path: &Path,
+    label: &str,
+    timing: LockTiming,
+    notice: &dyn Fn(&str),
+) -> Result<std::fs::File> {
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir)?;
     }
@@ -247,19 +275,71 @@ fn install_lock(paths: &Paths, id: &str) -> Result<std::fs::File> {
         .create(true)
         .truncate(false)
         .write(true)
-        .open(&path)?;
-    file.lock().map_err(|e| {
-        Error::Installer(format!(
-            "could not lock {} for installing {id}: {e}",
-            path.display()
-        ))
-    })?;
-    Ok(file)
+        .open(path)?;
+    let start = std::time::Instant::now();
+    let mut told = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => return Err(e.into()),
+        }
+        let waited = start.elapsed();
+        if waited >= timing.limit {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "another install of {label} is still running after {} s (lock {}); try again later",
+                    timing.limit.as_secs(),
+                    path.display()
+                ),
+            )));
+        }
+        if !told && waited >= timing.notice_after {
+            notice(&format!(
+                "another install of {label} is running; waiting for it to finish"
+            ));
+            told = true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// Every path a processor gets lies under the launcher directory, and the planner refuses `;` and
+/// `,` in path arguments. Such a directory is refused here, before anything is fetched.
+pub fn check_home(paths: &Paths, kind: LoaderKind, game: &str) -> Result<()> {
+    let root = std::path::absolute(paths.root())?;
+    let text = root.to_string_lossy();
+    if let Some(c) = text.chars().find(|c| matches!(c, ';' | ',')) {
+        return Err(Error::LoaderUnsupported {
+            loader: kind.to_string(),
+            game: game.to_string(),
+            reason: format!(
+                "the launcher directory {text} contains '{c}', which installer processors cannot take in a path; use a directory without ';' or ','"
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// The installer must still be the file that was verified: it is re-hashed right before it is
+/// read again.
+fn check_installer(installer: &Path, sha1: &str) -> Result<()> {
+    let actual = sha1_file(installer)?;
+    if !actual.eq_ignore_ascii_case(sha1) {
+        return Err(Error::Checksum {
+            path: installer.to_path_buf(),
+            expected: sha1.to_string(),
+            actual,
+        });
+    }
+    Ok(())
 }
 
 /// Reads a verified installer and checks it is for `game`. A legacy installer's universal jar is
-/// extracted right away (under the install lock), because the version info it rewrites decides
-/// which libraries are downloaded.
+/// extracted right away, because the version info it rewrites decides which libraries are
+/// downloaded. That extraction needs no lock: it replaces the jar only when it differs, through a
+/// temp file and a rename.
 pub fn open_installer(
     paths: &Paths,
     kind: LoaderKind,
@@ -270,11 +350,12 @@ pub fn open_installer(
 ) -> Result<ForgeInstall> {
     validate_id(game)?;
     validate_id(maven)?;
+    check_home(paths, kind, game)?;
+    check_installer(&installer, &installer_sha1)?;
     let mut contents = read_installer(&installer)?;
     check_game(&contents, game)?;
     if matches!(contents.kind, InstallerKind::Legacy { .. }) {
         let (_, libraries) = absolute_root(paths)?;
-        let _lock = install_lock(paths, &contents.version.id)?;
         extract_embedded(&installer, &mut contents, &libraries, kind, maven)?;
     }
     Ok(ForgeInstall {
@@ -320,7 +401,7 @@ pub fn install_log(paths: &Paths, id: &str) -> PathBuf {
 }
 
 /// Brings the installation of `fi` (merged into `merged`) up to date on every launch, under an
-/// exclusive per-version lock: restores and verifies the installer-provided artifacts, verifies
+/// exclusive lock per loader kind and game version: restores and verifies the installer-provided artifacts, verifies
 /// the vanilla jar the processors read, plans the processors and runs them unless the recorded
 /// install state is still valid, then records it. Blocking; call it off the async runtime.
 /// `java` is the runtime the game itself uses. Profiles without client processors (legacy,
@@ -334,9 +415,18 @@ pub fn finish_install(
     vanilla_sha1: &str,
     runner: &dyn ProcessRunner,
 ) -> Result<()> {
+    check_home(paths, fi.kind, &fi.game)?;
     let (root, libraries) = absolute_root(paths)?;
     let id = merged.id.as_str();
-    let _lock = install_lock(paths, id)?;
+    validate_id(id)?;
+    let _lock = lock_file(
+        &install_lock_path(paths, fi.kind, &fi.game)?,
+        &format!("{} for Minecraft {}", fi.kind, fi.game),
+        LockTiming::DEFAULT,
+        &|m| runner.notice(m),
+    )?;
+    // Read again below (extraction, data files): it must still be the verified file.
+    check_installer(&fi.installer, &fi.installer_sha1)?;
 
     // A foreign file may have been put at a provided path since the last launch: restore it from
     // the verified installer, then check what goes on the classpath.
@@ -1061,7 +1151,8 @@ mod tests {
         assert_eq!(cwd, work);
         assert!(!cwd.starts_with(root.join("libraries")) && !cwd.starts_with(root.join("meta")));
         assert!(!work.exists());
-        assert!(root.join("tmp").join(format!("loader-{ID}.lock")).is_file());
+        // One lock for every Forge build of this game version, outside the work directory.
+        assert!(root.join("tmp").join("loader-forge-1.20.1.lock").is_file());
     }
 
     #[test]
@@ -1104,5 +1195,104 @@ mod tests {
         assert_eq!(patcher.max_active.load(Ordering::SeqCst), 1);
         assert_eq!(patcher.runs.load(Ordering::SeqCst), 1);
         assert!(s.marker().is_file());
+    }
+
+    #[test]
+    fn installer_changed_after_the_downloads_is_refused_inside_the_lock() {
+        let s = setup();
+        std::fs::write(&s.fi.installer, b"swapped after verification").unwrap();
+        let err = s.finish(&NoStart).unwrap_err();
+        assert!(matches!(err, Error::Checksum { .. }), "{err}");
+    }
+
+    #[test]
+    fn install_lock_waits_with_one_notice_and_gives_up_at_the_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("tmp").join("x.lock");
+        let holder = lock_file(
+            &path,
+            "forge for Minecraft 1.20.1",
+            LockTiming::DEFAULT,
+            &|_| {},
+        )
+        .unwrap();
+        let notices = std::sync::Mutex::new(Vec::new());
+        let timing = LockTiming {
+            notice_after: std::time::Duration::from_millis(100),
+            limit: std::time::Duration::from_millis(600),
+        };
+        let err = lock_file(&path, "forge for Minecraft 1.20.1", timing, &|m| {
+            notices.lock().unwrap().push(m.to_string())
+        })
+        .unwrap_err();
+        let m = err.to_string();
+        assert!(
+            m.contains("another install of forge for Minecraft 1.20.1 is still running"),
+            "{m}"
+        );
+        assert_eq!(
+            *notices.lock().unwrap(),
+            ["another install of forge for Minecraft 1.20.1 is running; waiting for it to finish"]
+        );
+        // Released while the second one waits: it gets the lock.
+        let release = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            drop(holder);
+        });
+        let timing = LockTiming {
+            notice_after: std::time::Duration::from_millis(100),
+            limit: std::time::Duration::from_secs(10),
+        };
+        lock_file(&path, "forge for Minecraft 1.20.1", timing, &|_| {}).unwrap();
+        release.join().unwrap();
+    }
+
+    #[test]
+    fn launcher_home_with_list_separators_is_refused_up_front() {
+        for (dir, c) in [("a;b", ';'), ("a,b", ',')] {
+            let paths = Paths::new(Path::new("C:/games").join(dir).join("home"));
+            let err = check_home(&paths, LoaderKind::NeoForge, "1.21.1").unwrap_err();
+            let m = err.to_string();
+            assert!(
+                matches!(err, Error::LoaderUnsupported { .. })
+                    && m.contains(&format!("'{c}'"))
+                    && m.contains(dir),
+                "{m}"
+            );
+        }
+        check_home(&Paths::new("C:/games/home"), LoaderKind::Forge, "1.20.1").unwrap();
+    }
+
+    #[tokio::test]
+    async fn prepare_loader_checks_the_home_before_any_request() {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        let u = format!("http://127.0.0.1:{port}");
+        let ep = LoaderEndpoints {
+            forge_files: u.clone(),
+            forge_maven: u,
+            ..LoaderEndpoints::default()
+        };
+        let tmp = tempfile::tempdir().unwrap();
+        let paths = Paths::new(tmp.path().join("a;b"));
+        let dl = Downloader::new(reqwest::Client::new());
+        let req = crate::loaders::LoaderRequest {
+            kind: LoaderKind::Forge,
+            version: None,
+        };
+        let err = crate::loaders::prepare_loader(
+            &dl,
+            &paths,
+            &ep,
+            &req,
+            "1.20.1",
+            &crate::rules::Env::windows_x64(),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, Error::LoaderUnsupported { .. }), "{err}");
     }
 }

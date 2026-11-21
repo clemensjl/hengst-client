@@ -675,6 +675,11 @@ pub fn install_state_valid(
 pub trait ProcessRunner: Send + Sync {
     /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none).
     fn run(&self, cmd: &mut Command) -> std::io::Result<i32>;
+
+    /// Tells the user about a wait (another launch is installing the same version).
+    fn notice(&self, message: &str) {
+        eprintln!("{message}");
+    }
 }
 
 /// Starts the real process.
