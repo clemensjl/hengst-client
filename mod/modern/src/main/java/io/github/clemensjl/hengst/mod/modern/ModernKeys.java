@@ -7,6 +7,7 @@ import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import java.util.List;
 import java.util.function.ToIntFunction;
+import java.util.function.UnaryOperator;
 //? if >=26.1 {
 import net.fabricmc.fabric.api.client.keymapping.v1.KeyMappingHelper;
 //?} else {
@@ -57,15 +58,25 @@ final class ModernKeys {
      * set only when every registration succeeded. Throws what a step throws; the caller keeps the mod inert then.
      */
     static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes) {
+        register(keys, codes, ModernKeys::registerMapping);
+    }
+
+    /** {@link #register(List, ToIntFunction)} with the API mod's helper replaceable, for the adapter tests. */
+    static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes, UnaryOperator<KeyMapping> registrar) {
         int[] keyCodes = new int[keys.size()];
         for (int i = 0; i < keyCodes.length; i++) {
             keyCodes[i] = codes.applyAsInt(keys.get(i).defaultKey());
         }
         KeyMapping[] built = new KeyMapping[keyCodes.length];
         for (int i = 0; i < built.length; i++) {
-            built[i] = registerMapping(new KeyMapping(keys.get(i).translationKey(), keyCodes[i], CATEGORY));
+            built[i] = registrar.apply(new KeyMapping(keys.get(i).translationKey(), keyCodes[i], CATEGORY));
         }
         mappings = built;
+    }
+
+    /** The registered mappings in index order; empty until {@link #register} succeeded. For tests. */
+    static KeyMapping[] mappings() {
+        return mappings;
     }
 
     /** This version's key code for a default key: GLFW key codes on 1.21.11, SDL scancodes on 26.3. */
@@ -80,7 +91,7 @@ final class ModernKeys {
         }
     }
 
-    private static KeyMapping registerMapping(KeyMapping mapping) {
+    static KeyMapping registerMapping(KeyMapping mapping) {
         //? if >=26.1 {
         return KeyMappingHelper.registerKeyMapping(mapping);
         //?} else {

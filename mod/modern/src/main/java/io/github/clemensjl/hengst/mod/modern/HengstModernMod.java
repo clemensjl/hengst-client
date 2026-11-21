@@ -10,12 +10,14 @@ import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
+import java.util.function.UnaryOperator;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 //? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -92,8 +94,14 @@ public final class HengstModernMod implements ClientModInitializer {
      */
     static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
             Supplier<? extends Platform> platform) {
+        return start(keys, codes, ModernKeys::registerMapping, platform);
+    }
+
+    /** {@link #start(Supplier, ToIntFunction, Supplier)} with the API mod's key helper replaceable, for the tests. */
+    static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
+            UnaryOperator<KeyMapping> registrar, Supplier<? extends Platform> platform) {
         try {
-            ModernKeys.register(keys.get(), codes);
+            ModernKeys.register(keys.get(), codes, registrar);
         } catch (RuntimeException | LinkageError e) {
             LOGGER.error("[hengst] key bindings failed to register; the mod stays inactive", e);
             return null;
