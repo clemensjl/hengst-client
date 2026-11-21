@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "id": "hengst-gametest",
+  "version": "0.0.0",
+  "name": "Hengst in-game test",
+  "environment": "client",
+  "entrypoints": {
+    "fabric-client-gametest": [
+      "io.github.clemensjl.hengst.mod.modern.HengstClientGameTest"
+    ]
+  },
+  "depends": {
+    "hengst": "*"
+  }
+}

@@ -1,0 +1,57 @@
+plugins {
+    id 'java-library'
+}
+
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
+group = shared.maven_group
+version = shared.mod_version
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 8
+    options.encoding = 'UTF-8'
+}
+
+// com.sun.management (allocation measurement) is not part of release 8; main stays at 8.
+tasks.named('compileTestJava') {
+    options.release = 17
+}
+
+test {
+    useJUnitPlatform {
+        excludeTags 'interpreted'
+    }
+    finalizedBy 'interpretedTest'
+}
+
+// Allocation tests count bytes per call and must be exact: in the interpreter they are (under the JIT, deoptimization
+// shows up as one-off allocations of the measuring thread).
+tasks.register('interpretedTest', Test) {
+    description = 'Runs the tests tagged "interpreted" with -Xint.'
+    group = 'verification'
+    useJUnitPlatform {
+        includeTags 'interpreted'
+    }
+    jvmArgs '-Xint'
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+}
+
+// The GPL-3.0 text travels with the jar, under a name that cannot collide with other mods' license files.
+tasks.named('jar') {
+    from("${rootDir}/../../LICENSE") {
+        rename { 'LICENSE_hengst' }
+    }
+}

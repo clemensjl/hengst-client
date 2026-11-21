@@ -1,0 +1,148 @@
+plugins {
+    id 'net.fabricmc.fabric-loom-remap' version '1.16.1'
+    // Must match the Loom version above (Legacy Looming 1.16.x builds on Loom 1.16).
+    id 'legacy-looming' version '1.16.1'
+}
+
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
+group = shared.maven_group
+version = "${shared.mod_version}+1.8.9"
+
+base {
+    archivesName = 'hengst-mod'
+}
+
+def legacyFabricApiVersion = '1.13.5+1.8.9'
+
+dependencies {
+    minecraft 'com.mojang:minecraft:1.8.9'
+    mappings legacy.yarn('1.8.9', '604')
+    modImplementation 'net.fabricmc:fabric-loader:0.20.1'
+    modImplementation "net.legacyfabric.legacy-fabric-api:legacy-fabric-api:${legacyFabricApiVersion}"
+
+    implementation "${shared.maven_group}:common:${shared.mod_version}"
+    include "${shared.maven_group}:common:${shared.mod_version}"
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+test {
+    useJUnitPlatform()
+    // The game's log4j config on the test classpath writes logs/ into the working directory: keep that in build/.
+    def testRunDir = layout.buildDirectory.dir('test-run').get().asFile
+    workingDir = testRunDir
+    doFirst { testRunDir.mkdirs() }
+}
+
+processResources {
+    // Minimum Legacy Fabric API: the version built against, without its "+1.8.9" build metadata.
+    def props = [version: project.version, legacy_fabric_api_min: legacyFabricApiVersion.split('\\+')[0]]
+    inputs.properties props
+
+    filesMatching('fabric.mod.json') {
+        expand props
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 8
+    options.encoding = 'UTF-8'
+    // javac on JDK 25 warns that release 8 is obsolete; targeting Java 8 is the purpose of this build.
+    options.compilerArgs << '-Xlint:-options'
+}
+
+// In-game test (source set src/gametest, a second dev-only mod "hengst-gametest"; not part of build, check or test
+// and never in the jar). 1.8.9 has no client gametest API: the harness drives the game from its own thread,
+// creates a flat world, feeds input events into LWJGL's queues and asserts on framebuffer screenshots.
+//   runGameTest         fresh run directory (build/run/gameTest), the full check list
+//   runGameTestRestart  same run directory kept, checks that the layout saved by the first run is loaded
+//   gameTests           both, in that order
+// Screenshots: build/run/gameTest/screenshots. A failed check exits the game with code 1 and fails the task.
+sourceSets {
+    gametest {
+        compileClasspath += sourceSets.main.compileClasspath + sourceSets.main.output
+        runtimeClasspath += sourceSets.main.runtimeClasspath + sourceSets.main.output
+    }
+}
+
+def gameTestRunDir = file('build/run/gameTest')
+
+loom {
+    log4jConfigs.setFrom(file('dev-log4j2.xml'))
+    mods {
+        hengst {
+            sourceSet sourceSets.main
+        }
+        'hengst-gametest' {
+            sourceSet sourceSets.gametest
+        }
+    }
+    runs {
+        client {
+            // -PmixinVerbose logs every applied mixin.
+            if (project.hasProperty('mixinVerbose')) {
+                vmArg '-Dmixin.debug.verbose=true'
+            }
+        }
+        gameTest {
+            inherit client
+            configName = 'Game Test'
+            source sourceSets.gametest
+            runDir 'build/run/gameTest'
+            property 'hengst.gametest.phase', 'full'
+        }
+        gameTestRestart {
+            inherit client
+            configName = 'Game Test Restart'
+            source sourceSets.gametest
+            // inherit does not copy the run directory
+            runDir 'build/run/gameTest'
+            property 'hengst.gametest.phase', 'restart'
+        }
+    }
+}
+
+def deleteGameTestRunDir = tasks.register('deleteGameTestRunDir', Delete) {
+    delete gameTestRunDir
+}
+
+// Options for the test run: sound off, no pause when the window loses focus, fast graphics (no vignette, which
+// darkens the whole frame under the HUD only), no clouds, peaceful, GUI scale 2, English; other lines are kept.
+def prepareGameTestOptions = tasks.register('prepareGameTestOptions') {
+    outputs.upToDateWhen { false }
+    mustRunAfter deleteGameTestRunDir
+    doLast {
+        gameTestRunDir.mkdirs()
+        def wanted = ['soundCategory_master': '0.0', 'pauseOnLostFocus': 'false', 'fancyGraphics': 'false',
+                      'renderClouds': 'false', 'difficulty': '0', 'guiScale': '2', 'lang': 'en_US']
+        def options = new File(gameTestRunDir, 'options.txt')
+        def lines = options.exists() ? options.readLines('UTF-8').findAll { !wanted.containsKey(it.split(':')[0]) } : []
+        wanted.each { k, v -> lines << "${k}:${v}" }
+        options.write(lines.join('\n') + '\n', 'UTF-8')
+    }
+}
+
+tasks.named('runGameTest') {
+    dependsOn deleteGameTestRunDir, prepareGameTestOptions
+}
+tasks.named('runGameTestRestart') {
+    dependsOn prepareGameTestOptions
+    mustRunAfter 'runGameTest'
+}
+tasks.register('gameTests') {
+    group = 'verification'
+    description = 'Runs the in-game test twice: fresh run directory, then a restart with the saved layout.'
+    dependsOn 'runGameTest', 'runGameTestRestart'
+}
+
+// The GPL-3.0 text travels with the jar, under a name that cannot collide with other mods' license files.
+tasks.named('jar') {
+    from("${rootDir}/../../LICENSE") {
+        rename { 'LICENSE_hengst' }
+    }
+}

@@ -1,0 +1,7 @@
+plugins {
+    id 'dev.kikugie.stonecutter'
+    // Puts the shared Loom artifact on the classpath; each version node applies its own plugin id.
+    id 'net.fabricmc.fabric-loom' apply false
+}
+
+stonecutter.active '26.3'
