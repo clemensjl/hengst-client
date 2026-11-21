@@ -274,14 +274,40 @@ fn create_window(
         window.maximize()?;
     }
     window.show()?;
-    // Windows may show the window without activating it, behind the launching terminal.
-    window.set_focus()?;
-    let (visible, focused) = (window.is_visible()?, window.is_focused()?);
-    if cfg!(debug_assertions) {
-        eprintln!("[debug] main window after show: visible={visible} focused={focused}");
+    // Windows may show the window without activating it, behind the launching terminal. None of
+    // this may abort the creation of a window that is already visible.
+    if let Err(e) = window.set_focus() {
+        eprintln!("could not focus the main window: {e}");
     }
-    if !visible {
-        window.show()?;
+    match (window.is_visible(), window.is_focused()) {
+        (Ok(visible), Ok(focused)) => {
+            if cfg!(debug_assertions) {
+                eprintln!("[debug] main window after show: visible={visible} focused={focused}");
+            }
+            if !visible {
+                if let Err(e) = window.show() {
+                    eprintln!("could not show the main window: {e}");
+                }
+            }
+        }
+        (visible, focused) => eprintln!(
+            "could not read the main window state: visible={:?} focused={:?}",
+            visible.err(),
+            focused.err()
+        ),
+    }
+    // With the setting on System the native background follows the OS theme at runtime too.
+    {
+        let (themed, handle) = (window.clone(), app.clone());
+        window.on_window_event(move |event| {
+            if let WindowEvent::ThemeChanged(os_theme) = event {
+                if handle.state::<AppState>().settings.get().theme == Theme::System {
+                    if let Err(e) = themed.set_background_color(Some(background_color(*os_theme))) {
+                        eprintln!("could not update the window background: {e}");
+                    }
+                }
+            }
+        });
     }
 
     if let (true, Some(normal)) = (restore, normal) {

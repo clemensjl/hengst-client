@@ -1,8 +1,8 @@
 use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
 use crate::dto::settings::{Patch, SettingsDto, SettingsPatch};
 use crate::error::error_dto;
-use crate::events::{AppEvent, DataScope};
-use crate::settings::Settings;
+use crate::events::{AppEvent, DataScope, EventHub};
+use crate::settings::{Settings, SettingsHandle};
 use crate::state::AppState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -72,22 +72,31 @@ pub fn settings_get_impl(state: &AppState) -> Result<SettingsDto, ErrorDto> {
     Ok(SettingsDto::new(state.settings.get(), notice))
 }
 
-pub fn settings_update_impl(
-    state: &AppState,
+/// Validates, saves and announces a change. Blocking (file I/O): the command runs it on a
+/// blocking thread.
+fn update_blocking(
+    settings: &SettingsHandle,
+    events: &EventHub,
     patch: SettingsPatch,
 ) -> Result<SettingsDto, ErrorDto> {
     validate(&patch)?;
-    let saved = state
-        .settings
+    let saved = settings
         .update(|s| {
             apply(s, patch);
             Ok(())
         })
         .map_err(|e| error_dto(&e))?;
-    state.events.emit(AppEvent::DataChanged {
+    events.emit(AppEvent::DataChanged {
         scope: DataScope::Settings,
     });
     Ok(SettingsDto::new(saved, None))
+}
+
+pub fn settings_update_impl(
+    state: &AppState,
+    patch: SettingsPatch,
+) -> Result<SettingsDto, ErrorDto> {
+    update_blocking(&state.settings, &state.events, patch)
 }
 
 #[tauri::command]
@@ -95,16 +104,26 @@ pub fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, ErrorDto>
     settings_get_impl(&state)
 }
 
+/// Async so the file I/O (under `SettingsHandle`'s lock, which is never held across an await)
+/// runs on a blocking thread and not on the main thread.
 #[tauri::command]
-pub fn settings_update<R: Runtime>(
+pub async fn settings_update<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, AppState>,
     patch: SettingsPatch,
 ) -> Result<SettingsDto, ErrorDto> {
     let theme_changed = patch.theme.is_some();
-    let dto = settings_update_impl(&state, patch)?;
+    let (settings, events) = (state.settings.clone(), state.events.clone());
+    let dto =
+        tauri::async_runtime::spawn_blocking(move || update_blocking(&settings, &events, patch))
+            .await
+            .map_err(|e| {
+                error_dto(&hengst_core::Error::Io(std::io::Error::other(
+                    e.to_string(),
+                )))
+            })??;
     if theme_changed {
-        // The window is already saved in the new theme; a failing title bar must not undo that.
+        // The settings are already saved in the new theme; a failing title bar must not undo that.
         if let Err(e) = crate::startup::apply_window_theme(&window, dto.theme) {
             eprintln!("could not set the window theme: {e}");
         }

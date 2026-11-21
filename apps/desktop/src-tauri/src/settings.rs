@@ -44,6 +44,10 @@ pub struct Settings {
     pub minimize_on_launch: bool,
     pub selected_instance: Option<String>,
     pub dev_account: bool,
+    /// Keys this version does not know (written by a newer or a later version of the app). They
+    /// are kept when the file is saved.
+    #[serde(flatten)]
+    pub unknown: serde_json::Map<String, serde_json::Value>,
 }
 
 impl Default for Settings {
@@ -57,6 +61,7 @@ impl Default for Settings {
             minimize_on_launch: true,
             selected_instance: None,
             dev_account: false,
+            unknown: serde_json::Map::new(),
         }
     }
 }
@@ -65,37 +70,78 @@ fn file(paths: &Paths) -> PathBuf {
     paths.root().join("settings.json")
 }
 
-/// Missing file: defaults. Unreadable, damaged or of a newer `format`: the file is moved to
-/// `settings.json.broken-<now>` (never overwritten, never deleted), defaults are used and the
-/// notice says so.
-pub fn load_settings(paths: &Paths, now: u64) -> (Settings, Option<SettingsNotice>) {
+/// The result of reading the settings file at start.
+#[derive(Debug)]
+pub struct Loaded {
+    pub settings: Settings,
+    pub notice: Option<SettingsNotice>,
+    /// `Some(reason)`: the file must not be written (it could not be read, or a damaged file could
+    /// not be moved aside), so the defaults in `settings` are in memory only.
+    pub blocked: Option<String>,
+}
+
+/// Missing file: defaults. A file that was read and does not parse, or is of a newer `format`, is
+/// damaged: it is moved to `settings.json.broken-<now>` (never overwritten, never deleted),
+/// defaults are used and the notice says so. A read error other than "not found" (a sharing
+/// violation, missing permission) says nothing about the content: the file stays untouched, no
+/// notice is given, and `blocked` forbids saving over it. If moving a damaged file aside fails,
+/// it is blocked too.
+pub fn load_settings(paths: &Paths, now: u64) -> Loaded {
     let path = file(paths);
-    let parsed = match std::fs::read(&path) {
-        Ok(bytes) => serde_json::from_slice::<Settings>(&bytes)
-            .ok()
-            .filter(|s| s.format <= SETTINGS_FORMAT),
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return (Settings::default(), None);
+            return Loaded {
+                settings: Settings::default(),
+                notice: None,
+                blocked: None,
+            };
         }
-        Err(_) => None,
+        Err(e) => {
+            return Loaded {
+                settings: Settings::default(),
+                notice: None,
+                blocked: Some(format!("could not read {}: {e}", path.display())),
+            };
+        }
     };
-    if let Some(s) = parsed {
-        return (s, None);
+    if let Some(s) = serde_json::from_slice::<Settings>(&bytes)
+        .ok()
+        .filter(|s| s.format <= SETTINGS_FORMAT)
+    {
+        return Loaded {
+            settings: s,
+            notice: None,
+            blocked: None,
+        };
     }
     let mut aside = path.as_os_str().to_owned();
     aside.push(format!(".broken-{now}"));
-    if let Err(e) = std::fs::rename(&path, &aside) {
-        eprintln!("could not move the damaged settings file aside: {e}");
+    let blocked = std::fs::rename(&path, &aside)
+        .err()
+        .map(|e| format!("could not move the damaged settings file aside, it stays as it is: {e}"));
+    Loaded {
+        settings: Settings::default(),
+        notice: Some(SettingsNotice::Reset),
+        blocked,
     }
-    (Settings::default(), Some(SettingsNotice::Reset))
 }
 
-/// Temp file next to the target, then rename over it.
+/// Temp file next to the target, flushed to disk, then renamed over it.
 pub fn save_settings(paths: &Paths, s: &Settings) -> Result<()> {
+    use std::io::Write;
     let target = file(paths);
     std::fs::create_dir_all(paths.root())?;
     let tmp = unique_temp(&target);
-    std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
+    let written = (|| -> std::io::Result<()> {
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&serde_json::to_vec_pretty(s).map_err(std::io::Error::other)?)?;
+        f.sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     if let Err(e) = std::fs::rename(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
@@ -103,35 +149,70 @@ pub fn save_settings(paths: &Paths, s: &Settings) -> Result<()> {
     Ok(())
 }
 
+struct Inner {
+    paths: Paths,
+    settings: Settings,
+    /// See `Loaded::blocked`. While set, `update` reads the file again first.
+    blocked: Option<String>,
+}
+
 /// The settings in memory. Every writer goes through `update`; there is no second way to write.
 #[derive(Clone)]
 pub struct SettingsHandle {
-    inner: Arc<Mutex<(Paths, Settings)>>,
+    inner: Arc<Mutex<Inner>>,
 }
 
 impl SettingsHandle {
     pub fn new(paths: Paths, settings: Settings) -> SettingsHandle {
+        SettingsHandle::from_loaded(
+            paths,
+            Loaded {
+                settings,
+                notice: None,
+                blocked: None,
+            },
+        )
+    }
+
+    pub fn from_loaded(paths: Paths, loaded: Loaded) -> SettingsHandle {
         SettingsHandle {
-            inner: Arc::new(Mutex::new((paths, settings))),
+            inner: Arc::new(Mutex::new(Inner {
+                paths,
+                settings: loaded.settings,
+                blocked: loaded.blocked,
+            })),
         }
     }
 
     pub fn get(&self) -> Settings {
-        self.lock().1.clone()
+        self.lock().settings.clone()
     }
 
     /// Changes a copy, saves it and only then takes it over. An error from `f` or from saving
-    /// changes neither the file nor the settings in memory.
+    /// changes neither the file nor the settings in memory. Blocking (file I/O under the lock):
+    /// call it from a blocking thread, never across an await.
+    ///
+    /// If the start could not read the file, the defaults in memory are not saved over it: the
+    /// file is read again here, and only a successful read (or a missing file) unblocks and
+    /// replaces the defaults; otherwise this fails and the file stays as it is.
     pub fn update(&self, f: impl FnOnce(&mut Settings) -> Result<()>) -> Result<Settings> {
         let mut guard = self.lock();
-        let mut copy = guard.1.clone();
+        if let Some(reason) = guard.blocked.clone() {
+            let again = load_settings(&guard.paths, hengst_core::auth::unix_now());
+            if again.blocked.is_some() {
+                return Err(hengst_core::Error::Io(std::io::Error::other(reason)));
+            }
+            guard.settings = again.settings;
+            guard.blocked = None;
+        }
+        let mut copy = guard.settings.clone();
         f(&mut copy)?;
-        save_settings(&guard.0, &copy)?;
-        guard.1 = copy.clone();
+        save_settings(&guard.paths, &copy)?;
+        guard.settings = copy.clone();
         Ok(copy)
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, (Paths, Settings)> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
 }
@@ -153,7 +234,11 @@ mod tests {
     #[test]
     fn missing_settings_give_defaults() {
         let dir = tempfile::tempdir().unwrap();
-        let (s, notice) = load_settings(&Paths::new(dir.path()), 1700);
+        let Loaded {
+            settings: s,
+            notice,
+            ..
+        } = load_settings(&Paths::new(dir.path()), 1700);
         assert_eq!(s, Settings::default());
         assert_eq!(s.memory_mb, 2048);
         assert_eq!(s.theme, Theme::System);
@@ -181,7 +266,7 @@ mod tests {
         assert!(text.contains("\"format\": 1"), "{text}");
         assert!(text.contains("\"memoryMb\""), "{text}");
         assert!(text.contains("\"language\": \"de\""), "{text}");
-        assert_eq!(load_settings(&paths, 1).0, s);
+        assert_eq!(load_settings(&paths, 1).settings, s);
         let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
         assert_eq!(leftovers.len(), 1, "no temp file stays behind");
     }
@@ -190,7 +275,11 @@ mod tests {
     fn broken_settings_are_moved_aside() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("settings.json"), "{").unwrap();
-        let (s, notice) = load_settings(&Paths::new(dir.path()), 1700);
+        let Loaded {
+            settings: s,
+            notice,
+            ..
+        } = load_settings(&Paths::new(dir.path()), 1700);
         assert_eq!(s, Settings::default());
         assert_eq!(notice, Some(SettingsNotice::Reset));
         let moved = dir.path().join("settings.json.broken-1700");
@@ -203,7 +292,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let text = r#"{"format":2,"theme":"sepia"}"#;
         std::fs::write(dir.path().join("settings.json"), text).unwrap();
-        let (s, notice) = load_settings(&Paths::new(dir.path()), 1700);
+        let Loaded {
+            settings: s,
+            notice,
+            ..
+        } = load_settings(&Paths::new(dir.path()), 1700);
         assert_eq!(s, Settings::default());
         assert_eq!(notice, Some(SettingsNotice::Reset));
         let moved = dir.path().join("settings.json.broken-1700");
@@ -219,7 +312,11 @@ mod tests {
             r#"{"format":1,"theme":"dark"}"#,
         )
         .unwrap();
-        let (s, notice) = load_settings(&Paths::new(dir.path()), 1);
+        let Loaded {
+            settings: s,
+            notice,
+            ..
+        } = load_settings(&Paths::new(dir.path()), 1);
         assert_eq!(notice, None);
         assert_eq!(s.theme, Theme::Dark);
         assert_eq!(s.memory_mb, 2048);
@@ -259,5 +356,93 @@ mod tests {
         assert!(result.is_err());
         assert_eq!(handle.get(), Settings::default());
         assert!(!dir.path().join("settings.json").exists());
+    }
+
+    #[test]
+    fn a_read_error_is_not_a_damaged_file() {
+        let dir = tempfile::tempdir().unwrap();
+        // A folder where the file belongs: reading it fails with something other than "not found".
+        std::fs::create_dir(dir.path().join("settings.json")).unwrap();
+        let loaded = load_settings(&Paths::new(dir.path()), 1700);
+        assert_eq!(loaded.settings, Settings::default());
+        assert_eq!(loaded.notice, None, "no 'damaged' message for a read error");
+        assert!(loaded.blocked.is_some());
+        assert!(dir.path().join("settings.json").is_dir(), "left untouched");
+        assert!(!dir.path().join("settings.json.broken-1700").exists());
+    }
+
+    #[test]
+    fn nothing_is_saved_over_an_unreadable_file_until_a_read_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::create_dir(dir.path().join("settings.json")).unwrap();
+        let handle = SettingsHandle::from_loaded(paths.clone(), load_settings(&paths, 1));
+        let set_memory = |h: &SettingsHandle| {
+            h.update(|s| {
+                s.memory_mb = 4096;
+                Ok(())
+            })
+        };
+        assert!(set_memory(&handle).is_err());
+        assert!(dir.path().join("settings.json").is_dir());
+        // The file becomes readable (the sharing violation is over): its content is adopted, not
+        // replaced by the defaults, and only then is it written.
+        std::fs::remove_dir(dir.path().join("settings.json")).unwrap();
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"format":1,"theme":"dark"}"#,
+        )
+        .unwrap();
+        let saved = set_memory(&handle).unwrap();
+        assert_eq!(saved.theme, Theme::Dark);
+        assert_eq!(saved.memory_mb, 4096);
+        assert_eq!(load_settings(&paths, 2).settings, saved);
+    }
+
+    #[test]
+    fn a_damaged_file_that_cannot_be_moved_aside_is_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(dir.path().join("settings.json"), "{").unwrap();
+        // Another program has the file open for reading without allowing a rename (Windows share
+        // mode FILE_SHARE_READ): it can be read, but not moved aside.
+        use std::os::windows::fs::OpenOptionsExt;
+        let _held = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(dir.path().join("settings.json"))
+            .unwrap();
+        let loaded = load_settings(&paths, 1700);
+        assert!(loaded.blocked.is_some());
+        let handle = SettingsHandle::from_loaded(paths, loaded);
+        assert!(handle.update(|_| Ok(())).is_err());
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("settings.json")).unwrap(),
+            "{"
+        );
+    }
+
+    #[test]
+    fn unknown_keys_survive_a_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::write(
+            dir.path().join("settings.json"),
+            r#"{"format":1,"futureKey":{"a":[1,2]},"theme":"light"}"#,
+        )
+        .unwrap();
+        let loaded = load_settings(&paths, 1);
+        assert_eq!(loaded.notice, None);
+        let handle = SettingsHandle::from_loaded(paths, loaded);
+        handle
+            .update(|s| {
+                s.theme = Theme::Dark;
+                Ok(())
+            })
+            .unwrap();
+        let text = std::fs::read_to_string(dir.path().join("settings.json")).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(json["futureKey"]["a"][1], 2);
+        assert_eq!(json["theme"], "dark");
     }
 }

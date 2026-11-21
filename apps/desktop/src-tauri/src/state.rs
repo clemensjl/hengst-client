@@ -20,10 +20,13 @@ pub struct AppState {
 
 impl AppState {
     pub fn new(paths: Paths, endpoints: Endpoints) -> AppState {
-        let (settings, notice) = load_settings(&paths, unix_now());
+        let loaded = load_settings(&paths, unix_now());
+        if let Some(reason) = &loaded.blocked {
+            eprintln!("settings: {reason}; the defaults are used and nothing is saved until the file can be read");
+        }
         AppState {
-            settings: SettingsHandle::new(paths.clone(), settings),
-            pending_notice: Mutex::new(notice),
+            pending_notice: Mutex::new(loaded.notice),
+            settings: SettingsHandle::from_loaded(paths.clone(), loaded),
             paths,
             endpoints,
             events: EventHub::default(),
