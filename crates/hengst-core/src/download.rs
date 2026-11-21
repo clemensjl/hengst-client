@@ -12,9 +12,38 @@ pub const USER_AGENT: &str = concat!(
     " (github.com/clemensjl/hengst-client)"
 );
 
+/// Largest answer accepted for a `.sha1` sidecar.
+pub const MAX_SIDECAR_BYTES: usize = 1024;
+/// Largest answer accepted for JSON metadata (version lists, profiles, promotions, manifests).
+pub const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+/// Largest file accepted from a download that has no size in its metadata.
+pub const MAX_FILE_BYTES: usize = 512 * 1024 * 1024;
+const MAX_REDIRECTS: usize = 10;
+
+/// Decides whether a redirect from the last of `previous` to `next` may be followed: at most
+/// `MAX_REDIRECTS` hops, and never from https to anything but https.
+fn redirect_allowed(
+    previous: &[reqwest::Url],
+    next: &reqwest::Url,
+) -> std::result::Result<(), String> {
+    if previous.len() >= MAX_REDIRECTS {
+        return Err(format!("too many redirects (more than {MAX_REDIRECTS})"));
+    }
+    if previous.last().is_some_and(|from| from.scheme() == "https") && next.scheme() != "https" {
+        return Err(format!("refusing a redirect from https to {next}"));
+    }
+    Ok(())
+}
+
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(USER_AGENT)
+        .redirect(reqwest::redirect::Policy::custom(
+            |attempt| match redirect_allowed(attempt.previous(), attempt.url()) {
+                Ok(()) => attempt.follow(),
+                Err(reason) => attempt.error(reason),
+            },
+        ))
         .connect_timeout(Duration::from_secs(15))
         .read_timeout(Duration::from_secs(30))
         .build()
@@ -146,8 +175,22 @@ impl Downloader {
         }
     }
 
+    /// `get_bytes_limited` with the downloader's retry policy for transient failures.
+    async fn get_with_retries(&self, url: &str, limit: usize) -> Result<Vec<u8>> {
+        let mut attempt = 0;
+        loop {
+            match get_bytes_limited(&self.client, url, limit).await {
+                Err(e) if attempt + 1 < self.retries && is_retryable(&e) => {
+                    attempt += 1;
+                    tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
+                }
+                other => return other,
+            }
+        }
+    }
+
     async fn try_fetch(&self, item: &Download) -> Result<()> {
-        let bytes = get_bytes(&self.client, &item.url).await?;
+        let bytes = get_bytes_limited(&self.client, &item.url, MAX_FILE_BYTES).await?;
         if let Some(expected) = &item.sha1 {
             let actual = sha1_hex(&bytes);
             if !actual.eq_ignore_ascii_case(expected) {
@@ -212,7 +255,7 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
         }
     }
     let url = format!("{}.sha1", item.url);
-    let body = match get_bytes(&dl.client, &url).await {
+    let body = match dl.get_with_retries(&url, MAX_SIDECAR_BYTES).await {
         Ok(b) => b,
         Err(Error::Status { status: 404, .. }) => {
             return Err(Error::NoChecksum {
@@ -231,7 +274,9 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
     };
     let text = String::from_utf8_lossy(&body);
     let hash = text.split_whitespace().next().unwrap_or("");
-    validate_sha1(hash)?;
+    if validate_sha1(hash).is_err() {
+        return Err(Error::InvalidChecksumFile { url });
+    }
     let hash = hash.to_ascii_lowercase();
     if let Some(file) = cache_file {
         // Best effort: the hash is verified in memory; a locked or unwritable cache only means
@@ -254,12 +299,27 @@ async fn write_cache_entry(file: &Path, hash: &str) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Fetches JSON metadata (at most `MAX_JSON_BYTES`).
 pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    get_bytes_limited(client, url, MAX_JSON_BYTES).await
+}
+
+/// Fetches a body of at most `limit` bytes. The limit is enforced on the bytes actually read,
+/// so a missing or false Content-Length does not get around it.
+pub async fn get_bytes_limited(
+    client: &reqwest::Client,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<u8>> {
     let http = |source| Error::Http {
         url: url.to_string(),
         source,
     };
-    let resp = client.get(url).send().await.map_err(http)?;
+    let too_large = || Error::TooLarge {
+        url: url.to_string(),
+        limit,
+    };
+    let mut resp = client.get(url).send().await.map_err(http)?;
     let status = resp.status();
     if !status.is_success() {
         return Err(Error::Status {
@@ -267,7 +327,17 @@ pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
             status: status.as_u16(),
         });
     }
-    Ok(resp.bytes().await.map_err(http)?.to_vec())
+    if resp.content_length().is_some_and(|n| n > limit as u64) {
+        return Err(too_large());
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.map_err(http)? {
+        if body.len() + chunk.len() > limit {
+            return Err(too_large());
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 fn is_retryable(e: &Error) -> bool {
@@ -316,6 +386,104 @@ mod tests {
             sha1,
             sha1_from_cache: false,
         }
+    }
+
+    fn url(s: &str) -> reqwest::Url {
+        reqwest::Url::parse(s).unwrap()
+    }
+
+    #[test]
+    fn redirect_policy_refuses_https_downgrade_and_long_chains() {
+        let https = [url("https://a.example/x")];
+        assert!(redirect_allowed(&https, &url("https://b.example/y")).is_ok());
+        let err = redirect_allowed(&https, &url("http://b.example/y")).unwrap_err();
+        assert!(err.contains("https"), "{err}");
+        // http to http and http to https stay allowed.
+        let http = [url("http://a.example/x")];
+        assert!(redirect_allowed(&http, &url("http://b.example/y")).is_ok());
+        assert!(redirect_allowed(&http, &url("https://b.example/y")).is_ok());
+        let long: Vec<_> = (0..MAX_REDIRECTS)
+            .map(|_| url("http://a.example/"))
+            .collect();
+        assert!(redirect_allowed(&long, &url("http://b.example/")).is_err());
+    }
+
+    #[tokio::test]
+    async fn client_follows_http_redirects() {
+        let server = MockServer::start().await;
+        Mock::given(path("/old"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", format!("{}/new", server.uri())),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(path("/new"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(b"ok".to_vec()))
+            .mount(&server)
+            .await;
+        let body = get_bytes(&http_client(), &format!("{}/old", server.uri()))
+            .await
+            .unwrap();
+        assert_eq!(body, b"ok");
+    }
+
+    #[tokio::test]
+    async fn reads_are_capped_on_bytes_read() {
+        let server = MockServer::start().await;
+        Mock::given(path("/big"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![b'a'; 200]))
+            .mount(&server)
+            .await;
+        let u = format!("{}/big", server.uri());
+        let ok = get_bytes_limited(&http_client(), &u, 200).await.unwrap();
+        assert_eq!(ok.len(), 200);
+        let err = get_bytes_limited(&http_client(), &u, 199)
+            .await
+            .unwrap_err();
+        let m = err.to_string();
+        assert!(matches!(&err, Error::TooLarge { limit: 199, .. }), "{m}");
+        assert!(m.contains(&u) && m.contains("199"), "{m}");
+    }
+
+    #[tokio::test]
+    async fn oversized_sidecar_is_refused() {
+        let server = MockServer::start().await;
+        Mock::given(path("/lib.jar.sha1"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_bytes(vec![b'a'; MAX_SIDECAR_BYTES + 1]),
+            )
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut items = vec![item(&server, dir.path(), "lib.jar", None)];
+        let err = fill_missing_sha1(&Downloader::new(http_client()), &mut items)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, Error::TooLarge { limit, .. } if *limit == MAX_SIDECAR_BYTES),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn sidecar_request_is_retried_after_a_transient_error() {
+        let server = MockServer::start().await;
+        Mock::given(path("/lib.jar.sha1"))
+            .respond_with(ResponseTemplate::new(503))
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        Mock::given(path("/lib.jar.sha1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(HELLO_SHA1))
+            .mount(&server)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut items = vec![item(&server, dir.path(), "lib.jar", None)];
+        fill_missing_sha1(&Downloader::new(http_client()), &mut items)
+            .await
+            .unwrap();
+        assert_eq!(items[0].sha1.as_deref(), Some(HELLO_SHA1));
     }
 
     #[test]
@@ -444,7 +612,7 @@ mod tests {
         let mut items = vec![item(&server, dir.path(), "g.jar", None)];
         assert!(matches!(
             fill_missing_sha1(&dl, &mut items).await,
-            Err(Error::UnsafePath(_))
+            Err(Error::InvalidChecksumFile { .. })
         ));
         assert!(items[0].sha1.is_none());
         assert!(!dir.path().join("sub").join("g.jar.sha1").exists());

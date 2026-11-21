@@ -45,6 +45,12 @@ pub enum Error {
         #[source]
         source: reqwest::Error,
     },
+    #[error(
+        "{url} sends more than {limit} bytes, which is more than the launcher accepts from it"
+    )]
+    TooLarge { url: String, limit: usize },
+    #[error("checksum file {url} does not contain a SHA-1")]
+    InvalidChecksumFile { url: String },
     #[error("no checksum available for {url}; refusing to download it unverified")]
     NoChecksum { url: String },
     #[error("loader profile inherits from {found}, expected {expected}")]
