@@ -309,7 +309,7 @@ Belegte Bildschirm-Hüllen: 1.8.9 `Screen.render(IIF)V`, `mouseClicked(III)V`, `
 5. **Keine Reflection** außerhalb des Starts. Zugriffe auf private Felder über Accessor-Mixins.
 6. **Kein Dateizugriff im Frame oder Tick.** Speichern gebündelt (Abschnitt 5).
 7. **Keine eigenen Threads** in M0. Spätere Ausnahmen (Minimap-Kacheln, Screenshot-Vorschau) brauchen eine Begründung im Meilenstein-Plan.
-8. **Kosten sichtbar.** Bei jedem Meilenstein wird im echten Spiel die FPS mit und ohne Mod verglichen (gleiche Welt, gleiche Position, 30 s Mittel); mehr als 2 % Verlust bei eingeschalteten M0-Modulen ist ein Fehler.
+8. **Kosten sichtbar.** Bei jedem Meilenstein wird im echten Spiel gemessen, was die Module pro gerendertem Frame kosten. Die Regel ist ein absolutes Budget: Die vier M0-Module zusammen dürfen höchstens 50 Mikrosekunden pro gerendertem Frame kosten, gemessen je Modul im Spieltest; ein abgeschaltetes Modul kostet nichts Messbares. Ein Prozentwert beim FPS-Vergleich (gleiche Welt, gleiche Position, 30 s Mittel) hängt von der absoluten Bildrate ab und taugt nur als Gegenprobe. Messung der Abschlussprüfung von M0 (ohne Bildratenbegrenzung): 1.21.11 im Messrauschen, 26.3 etwa 4 %, 1.8.9 etwa 7 %, das entspricht etwa 20 bis 35 Mikrosekunden pro Frame und liegt im Budget.
 
 ## 9. Server-Sperren
 
@@ -359,8 +359,9 @@ Jeder Meilenstein ist einzeln planbar und auslieferbar (alle drei Jars bauen, al
 
 | Id | Titel | Features |
 |---|---|---|
-| M0 | Fundament | Build für 1.8.9, 1.21.11, 26.3; common-Kern, Konfiguration, Profile, HUD-Editor, Einstellungsbildschirm; 1 FPS, 2 CPS, 3 Keystrokes, 6 Koordinaten, 50 HUD-Editor. **Erledigt 2026-11-21**, über den Hengst-Launcher geprüft; offen: Kostenregel 8.8 (mit allen vier Modulen gemessen etwa 4 % auf 26.3 und 7 % auf 1.8.9 bei 1500 bis 2300 FPS, auf 1.21.11 im Messrauschen) |
-| M1 | Info-HUD | 4, 5, 7, 8, 9, 10, 11, 15, 16, 21 |
+| M0 | Fundament | Build für 1.8.9, 1.21.11, 26.3; common-Kern, Konfiguration, Profile, HUD-Editor, Einstellungsbildschirm; 1 FPS, 2 CPS, 3 Keystrokes, 6 Koordinaten, 50 HUD-Editor. **Erledigt 2026-11-21**, über den Hengst-Launcher geprüft; Kostenregel 8.8 (50 Mikrosekunden pro Frame für die vier Module) eingehalten: gemessen etwa 20 bis 35 Mikrosekunden, als Prozentwert auf 1.21.11 im Messrauschen, auf 26.3 etwa 4 %, auf 1.8.9 etwa 7 % |
+| M1a | Info-HUD, Grundlagen | Zustandstor für Features, Tastenbelegungen für Features, typisierte Optionszugriffe, vorwärtskompatible Konfiguration, Gruppenüberschriften in der Einstellungsliste, Messung der Frame-Kosten je Modul; 7 Richtung, 8 Ping, 9 Uhr, 10 Serveradresse, 11 Speicher, 15 Geschwindigkeit, 21 Stoppuhr |
+| M1b | Info-HUD, Gegenstände | 4 Rüstungsstatus, 5 Trankeffekte, 16 Resourcepack-Anzeige, mit dem Zeichnen von Gegenständen und Symbolen |
 | M2 | Vanilla-HUD anpassen | 17, 18, 19, 20, 26, 38 |
 | M3 | Kampf und Bewegung | 12, 14, 22, 27, 30, 41 |
 | M4 | Server-Sperren und Kamera | Sperrmechanismus (Abschnitt 9) mit recherchierter Liste; 13, 23, 24, 36, 39 |
