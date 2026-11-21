@@ -18,6 +18,7 @@ import net.minecraft.network.chat.Component;
 public final class ModernScreenHost extends Screen {
     private final UiScreen ui;
     private final ModernCanvas canvas = new ModernCanvas();
+    private final ModernInput.ScrollNotches scroll = new ModernInput.ScrollNotches();
     private boolean removed;
 
     public ModernScreenHost(UiScreen ui) {
@@ -38,10 +39,18 @@ public final class ModernScreenHost extends Screen {
     public void render(GuiGraphics graphics, int mouseX, int mouseY, float a) {
     *///?}
         canvas.begin(graphics);
+        // a is DeltaTracker.getGameTimeDeltaTicks() on both nodes (game ticks since the last frame), not a partial
+        // tick; it is passed on as the partialTick argument, which the core ignores.
         ui.render(canvas, mouseX, mouseY, a);
     }
 
-    /** No vanilla background (blur, menu texture): the host draws only what the core's screen draws. */
+    /**
+     * No vanilla background (blur, menu texture): the host draws only what the core's screen draws. Skipping the
+     * super call also skips its deferred-subtitle flush; nothing is lost: the host is not an in-game UI screen, so
+     * the game draws subtitles in the HUD pass instead of deferring them (1.21.11 Gui.render, 26.3
+     * Hud.extractRenderState), and it flushes deferred subtitles again after the screen (1.21.11
+     * GameRenderer.render, 26.3 Gui.extractRenderState). The mod's HUD is never deferred.
+     */
     //? if >=26.1 {
     @Override
     public void extractBackground(GuiGraphicsExtractor graphics, int mouseX, int mouseY, float a) {
@@ -73,10 +82,23 @@ public final class ModernScreenHost extends Screen {
                 && ui.mouseDragged(ModernInput.guiPixel(event.x()), ModernInput.guiPixel(event.y()), button);
     }
 
-    /** Vertical wheel as the game delivers it: positive away from the user, one notch is 1 at default sensitivity. */
+    /**
+     * Vertical wheel as whole notches (+1 or -1 per call, positive away from the user): the game's sensitivity-scaled
+     * and possibly fractional value is accumulated, so a touchpad does not scroll once per tiny event.
+     */
     @Override
     public boolean mouseScrolled(double x, double y, double scrollX, double scrollY) {
-        return ui.mouseScrolled(ModernInput.guiPixel(x), ModernInput.guiPixel(y), scrollY);
+        int notches = scroll.add(scrollY);
+        int mx = ModernInput.guiPixel(x);
+        int my = ModernInput.guiPixel(y);
+        boolean handled = false;
+        for (; notches > 0; notches--) {
+            handled |= ui.mouseScrolled(mx, my, 1.0);
+        }
+        for (; notches < 0; notches++) {
+            handled |= ui.mouseScrolled(mx, my, -1.0);
+        }
+        return handled;
     }
 
     /** Presses and key repeats (the game routes both here); Escape goes to the core's screen like any other key. */
@@ -97,6 +119,7 @@ public final class ModernScreenHost extends Screen {
             return;
         }
         removed = true;
+        scroll.reset();
         ui.closed();
     }
 }

@@ -31,7 +31,10 @@ dependencies {
 }
 
 processResources {
-    def props = [version: project.version, minecraft_version: project.minecraft_version, java_release: project.java_release]
+    // Minimum Fabric API: the version this node is built against, without its "+<mc>" build metadata.
+    def fabricApiMin = project.fabric_api_version.split('\\+')[0]
+    def props = [version: project.version, minecraft_version: project.minecraft_version, java_release: project.java_release,
+                 fabric_api_min: fabricApiMin]
     inputs.properties props
 
     filesMatching(['fabric.mod.json', 'hengst.mixins.json']) {
@@ -41,6 +44,62 @@ processResources {
 
 test {
     useJUnitPlatform()
+    // The game's log4j config on the test classpath writes logs/ into the working directory: keep that in build/.
+    def testRunDir = layout.buildDirectory.dir('test-run').get().asFile
+    workingDir = testRunDir
+    doFirst { testRunDir.mkdirs() }
+}
+
+// In-game test (Fabric client gametest, source set src/gametest). Not part of build, check or test, not in the jar.
+//   runClientGameTest         fresh run directory (build/run/clientGameTest), the full check list
+//   runClientGameTestRestart  same run directory kept, checks that the layout saved by the first run is loaded
+//   clientGameTests           both, in that order
+// Screenshots: build/run/clientGameTest/screenshots. A failed assertion crashes the client and fails the task.
+fabricApi {
+    configureTests {
+        createSourceSet = true
+        modId = 'hengst-gametest'
+        enableGameTests = false
+        enableClientGameTests = true
+        eula = false
+    }
+}
+
+loom {
+    runs {
+        clientGameTestRestart {
+            inherit clientGameTest
+            // inherit does not copy the run directory
+            runDir 'build/run/clientGameTest'
+            property 'hengst.gametest.phase', 'restart'
+        }
+    }
+}
+
+def gameTestRunDir = file('build/run/clientGameTest')
+def muteGameTestSound = tasks.register('muteGameTestSound') {
+    description = 'Sets the master volume to 0 in the client gametest run directory before the game starts.'
+    mustRunAfter 'deleteGameTestRunDir'
+    outputs.upToDateWhen { false }
+    doLast {
+        gameTestRunDir.mkdirs()
+        def options = new File(gameTestRunDir, 'options.txt')
+        def lines = options.exists() ? options.readLines('UTF-8').findAll { !it.startsWith('soundCategory_master:') } : []
+        lines << 'soundCategory_master:0.0'
+        options.write(lines.join('\n') + '\n', 'UTF-8')
+    }
+}
+tasks.named('runClientGameTest') {
+    dependsOn muteGameTestSound
+}
+tasks.named('runClientGameTestRestart') {
+    dependsOn muteGameTestSound
+    mustRunAfter 'runClientGameTest'
+}
+tasks.register('clientGameTests') {
+    group = 'verification'
+    description = 'Runs the in-game test twice: fresh run directory, then a restart with the saved layout.'
+    dependsOn 'runClientGameTest', 'runClientGameTestRestart'
 }
 
 tasks.withType(JavaCompile).configureEach {

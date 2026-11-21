@@ -56,6 +56,33 @@ final class ModernInput {
         }
     }
 
+    /**
+     * Turns the game's scroll values (sensitivity-scaled, fractional on touchpads) into whole wheel notches, positive
+     * when the wheel is rolled away from the user (the sign the game delivers). One instance per open screen.
+     */
+    static final class ScrollNotches {
+        // Ten events of 0.1 sum to 0.9999999999999999 in double: count that as a full notch.
+        private static final double EPSILON = 1e-9;
+        private static final double MAX_EVENT = 1_000_000.0;
+        private double remainder;
+
+        /** Adds one scroll event and returns the signed number of whole notches it completes (often 0). */
+        int add(double amount) {
+            if (!(amount > -MAX_EVENT && amount < MAX_EVENT)) {
+                return 0; // NaN, infinite or absurd
+            }
+            remainder += amount;
+            int notches = (int) (remainder + (remainder > 0 ? EPSILON : -EPSILON));
+            remainder -= notches;
+            return notches;
+        }
+
+        /** Forgets a partial notch, for example when the screen closes. */
+        void reset() {
+            remainder = 0.0;
+        }
+    }
+
     /** A scaled GUI position as the integer pixel it lies in (floor, so -0.5 is -1, not 0). */
     static int guiPixel(double position) {
         return (int) Math.floor(position);

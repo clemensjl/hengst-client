@@ -29,9 +29,10 @@ public final class ModernPlatform implements Platform {
 
     @Override
     public GameVersion version() {
-        //? if >=26.1 {
+        // One branch per node: a new node gets no return here and fails to compile until it is mapped.
+        //? if =26.3 {
         return GameVersion.V26_3;
-        //?} else {
+        //?} else if =1.21.11 {
         /*return GameVersion.V1_21_11;
         *///?}
     }

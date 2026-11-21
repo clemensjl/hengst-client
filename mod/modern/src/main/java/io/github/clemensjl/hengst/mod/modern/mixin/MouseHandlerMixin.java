@@ -19,7 +19,8 @@ abstract class MouseHandlerMixin {
         if (!HengstModernMod.ENABLED) {
             return;
         }
-        // action: 1 press, 0 release (SDLEventHandler.handleMouseButtonEvent).
+        // action: 1 press, 0 release (26.3 SDLEventHandler.handleMouseButtonEvent, 1.21.11 GLFW_PRESS/GLFW_RELEASE
+        // through MouseHandler.setup). The button code is mapped through the node's InputConstants.
         HengstModernMod.onMouseButton(rawButtonInfo.button(), action == 1);
     }
 }
