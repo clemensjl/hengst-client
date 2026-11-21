@@ -19,6 +19,8 @@
 - Befehle laufen aus `mod/` mit `export JAVA_HOME="C:/Users/jelec/.jdks/openjdk-25.0.1"`. Einheitstests `./gradlew -p common test` (startet danach `interpretedTest` mit `-Xint`), Adapter `./gradlew -p legacy test`, `./gradlew -p modern :1.21.11:test`, `./gradlew -p modern :26.3:test`, Jars `./gradlew buildAll`, Spieltests `./gradlew -p modern :26.3:clientGameTests`, `./gradlew -p modern :1.21.11:clientGameTests`, `./gradlew -p legacy gameTests`, Quellen `./gradlew -p modern :26.3:genSources`, `./gradlew -p modern :1.21.11:genSources`, `./gradlew -p legacy genSources`. Am Ende jedes Tasks `./gradlew --stop`. Regeln aus `C:/Users/jelec/Documents/Projekte/hengst-client/.superpowers/sdd/mod-implementer-rules.md` gelten.
 - Jeder Task, der Hauptcode von `common` oder einem Adapter ändert, endet mit grünem `./gradlew buildAll`; Tasks, die Adapter oder deren Spieltests ändern, zusätzlich mit allen drei Spieltests.
 - Jeder Commit endet mit der Zeile `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`. Dateien einzeln stagen, nie `git add -A`.
+- Bekanntes Windows-Ärgernis: `buildAll` oder ein Test-Task kann mit "Unable to delete directory ... test-results ... binary" scheitern. Dann die leeren `binary`-Verzeichnisse unter den betroffenen `build/test-results` löschen und den Lauf wiederholen; das ist kein Fehler des Codes.
+- Bevor der Branch gepusht wird, bekommt jedes der drei ausgelieferten Jars (`mod/dist/`) einen Launcher-Rauchstart (Spiel startet, `[hengst] loaded on <version>` im Log). Das deckt Task 19; ein Push vor Task 19 braucht die Rauchstarts trotzdem.
 
 Verbindliche Regeln aus den M0-Lehren (gelten für jeden Task):
 1. **Hooks am echten Spiel prüfen.** Jeder Spiel-Name (Klasse, Methode, Feld, Deskriptor) wird vor der Verwendung in den erzeugten Quellen der jeweiligen Version (`genSources`) oder per `javap` auf dem Minecraft-Jar im Loom-Cache nachgeschlagen, nie nur aus der Spec-Tabelle oder diesem Plan übernommen. [B] in diesem Plan heißt: beim Planen am 2026-11-21 in den Quellen gesehen (Signatur), [K] heißt: noch zu prüfen. Das Ergebnis steht mit Datum im Task-Report.
@@ -31,7 +33,8 @@ Verbindliche Regeln aus den M0-Lehren (gelten für jeden Task):
 8. **Sprachdateien vollständig.** `en_us.json` und `de_de.json` haben dieselbe Schlüsselmenge (Test `both_language_files_have_the_same_keys`), Deutsch mit echten Umlauten; dasselbe gilt für die Tastennamen in den Adapter-Sprachdateien (Test aus Task 8).
 9. **Beschriftungsschlüssel** folgen dem Schema des M0-Fixes F7 (Commit be18b1b, `SettingsScreen` über `I18n.first`): Optionen `hengst.option.<feature>.<option>` (Rückfall `hengst.option.<option>`), Auswahlwerte `hengst.choice.<feature>.<value>` (Rückfall `hengst.choice.<value>`, dann der Rohwert). Wo dieser Plan "Werte `x` Text" unter einer Option nennt, ist der Schlüssel `hengst.choice.<feature>.x`.
 10. **Neue Module sind beim ersten Start aus.** Der erste Start schaltet weiter nur die vier M0-Module ein; die bestehenden Spieltests behalten ihre Vier-Modul-Prüfungen.
-11. Gemeinsame Test-Helfer liegen in `common/src/test/java/io/github/clemensjl/hengst/mod/common/testutil/` (`FakeTime`, `TestFeature`, `FakeCanvas` 320 x 240 mit 6 px je Zeichen und Schrifthöhe 9, `CountingCanvas`, `FakePlatform`, `FixedSizeModule`); neu: `FakeWallClock` (Task 6).
+11. Gemeinsame Test-Helfer liegen in `common/src/test/java/io/github/clemensjl/hengst/mod/common/testutil/` (`FakeTime`, `TestFeature`, `FakeCanvas` 320 x 240 mit 6 px je Zeichen und Schrifthöhe 9, `CountingCanvas`, `FakePlatform`, `FixedSizeModule`; `FakePlatform` und `FixedSizeModule` sind `final` und bleiben es); neu: `FakeWallClock` (Task 6), `GroupFeature` (Task 9), `TimedModule` (Task 16).
+12. **Neue persistierte Daten nur dort, wo ein M0-Build sie erhält.** Ein bereits ausgelieferter M0-Build verwirft beim Zurückschreiben unbekannte Wurzelschlüssel eines Profils, unbekannte Schlüssel innerhalb der Einträge der vier M0-Module und unbekannte Schlüssel in `settings.json`; das lässt sich nachträglich nicht beheben. Behalten werden unbekannte Module (ganze Einträge) und unbekannte Schlüssel in `options`. Deshalb gilt ab M1a: neue persistierte Daten stehen nur als Moduleintrag oder in `options` eines Moduls; nichts Neues an der Wurzel eines Profils, nichts Neues direkt in einem Moduleintrag, nichts Neues in `settings.json`, dessen Verlust ein Spieler nach einem M0-Lauf bemerken würde. M1a hält das ein: die Stoppuhr speichert nichts (Zustand nur für die Sitzung), die Tastenbelegungen liegen in der `options.txt` des Spiels (nicht in `settings.json`), neue Module und Optionen sind Moduleinträge und `options`. Bekannte Einschränkung: nach einem M0-Lauf verwirft das Spiel selbst unbekannte Tastenzeilen (`key_key.hengst.stopwatch.*`) aus der `options.txt`; die Stoppuhr-Tasten sind dann neu zu belegen (steht in der README, Task 18).
 
 ## Festgelegte Bezeichner (persistiert in Dateien der Spieler)
 
@@ -53,7 +56,7 @@ Tastenbelegungen (Namen in `options.txt`, Kategorie "Hengst"): `key.hengst.setti
 
 ## Review Focus
 
-1. **Ein M1a-Profil wird von einer M0-Version gelesen und zurückgeschrieben, oder eine spätere Version schreibt Schlüssel, die M1a nicht kennt:** nichts geht verloren. M1a schreibt nur Schlüssel, die M0 erhält (neue Module als eigene Einträge, neue Optionen in `options`), und erhält selbst unbekannte Schlüssel auf allen drei Ebenen. Tests in Task 2 (`unknown_keys_survive_at_all_three_levels`, `m1a_profile_uses_only_keys_an_m0_build_preserves`, `unknown_settings_keys_survive_a_save`).
+1. **Ein M1a-Profil wird von einer M0-Version gelesen und zurückgeschrieben, oder eine spätere Version schreibt Schlüssel, die M1a nicht kennt:** M1a und spätere Versionen erhalten unbekannte Schlüssel auf allen drei Ebenen. Ein schon ausgelieferter M0-Build verwirft unbekannte Wurzelschlüssel, unbekannte Schlüssel in Einträgen der vier M0-Module und unbekannte Schlüssel in `settings.json`; das ist nicht mehr zu ändern. Darum schreibt M1a nur, was M0 erhält (neue Module als eigene Einträge, neue Optionen in `options`), und der Test mit dem eingefrorenen M0-Leseverhalten belegt, was nach einem M0-Lauf übrig bleibt. Tests in Task 2 (`unknown_keys_survive_at_all_three_levels`, `m1a_profile_uses_only_keys_an_m0_build_preserves`, `unknown_settings_keys_survive_a_save`, `an_m0_round_trip_keeps_everything_m1a_wrote`, `an_m0_round_trip_loses_future_root_and_entry_keys_and_the_m1a_reader_sees_that`).
 2. **Die Spielsprache wird umgestellt, während eine Welt offen ist:** spätestens nach einer Sekunde zeigen Module und neu geöffnete Bildschirme die neue Sprache, ohne Neustart; ohne Wechsel wird nichts neu geladen. Tests in Task 6 (`a_language_switch_is_picked_up_within_a_second`) und Task 10 (`direction_letters_follow_the_language`).
 3. **Ping und Server-Adresse auf einem Server, der keine Latenz meldet, im Einzelspieler, beim Verbinden:** Einzelspieler und ohne Adresse unsichtbar (leerer Text, Größe 0), fehlende oder negative Latenz als `? ms`, 0 als `0 ms`, sehr lange Adressen gekürzt. Tests in Task 12 (`ping_is_hidden_without_a_server`, `ping_unknown_or_negative_shows_a_question_mark`, `ping_zero_is_shown`, `server_address_is_hidden_without_a_server`, `a_long_server_address_is_cut_in_the_middle`).
 4. **Die Stoppuhr-Taste wird gehalten (Tastenwiederholung) oder bei offenem Bildschirm (Chat, Inventar) gedrückt:** ein Drücken schaltet genau einmal; bei offenem Bildschirm oder außerhalb einer Welt nichts; eine über das Schließen gehaltene Taste schaltet erst nach Loslassen und neuem Drücken. Tests in Task 7 (`a_repeated_press_while_held_counts_once`, `a_press_while_a_screen_is_open_is_ignored_and_needs_a_release`, `opening_a_screen_releases_a_held_hold_key`) und Task 13 (`one_press_through_the_core_toggles_once`, `the_stopwatch_key_with_a_screen_open_does_nothing`).
@@ -88,7 +91,7 @@ mod/legacy/src/main/java/.../legacy/  LegacyKeys (generisch), LegacyPlatform, He
 **Interfaces:**
 - Consumes: `OptionSpec`, `ModuleConfig.option(OptionSpec)` (M0).
 - Produces:
-  - `OptionSpec`: `public boolean coerceBool(Object raw)`, `public int coerceInt(Object raw)`, `public float coerceFloat(Object raw)`, `public int coerceChoice(Object raw)` (Index in den Werten), `public String value(int index)` (ohne Kopie des Arrays), `public int defaultIndex()`. Jede wirft `IllegalArgumentException` bei falscher Art. `coerce(Object)` liefert weiter dieselben Werte und ist auf diese Methoden umgebaut (eine Regel, zwei Ausgaben).
+  - `OptionSpec`: `public boolean coerceBool(Object raw)`, `public int coerceInt(Object raw)`, `public float coerceFloat(Object raw)`, `public int coerceChoice(Object raw)` (Index in den Werten), `public String value(int index)` (ohne Kopie des Arrays), `public int defaultIndex()`. Jede wirft `IllegalArgumentException` bei falscher Art. `coerce(Object)` liefert weiter dieselben Werte und ist auf diese Methoden umgebaut (eine Regel, zwei Ausgaben), behält aber die Identitätsabkürzung von heute (`OptionSpec.java`, Fall `FLOAT_RANGE`: ein `Float`, der schon auf dem Raster liegt, wird als dieselbe Referenz zurückgegeben): `coerce` boxt nichts, was nicht neu berechnet werden muss. Die typisierten Zugriffe geben Primitive zurück und boxen beim Lesen nie, auch nicht für einen `Double` aus der Datei.
   - `ModuleConfig`: `public boolean bool(OptionSpec spec)`, `public int integer(OptionSpec spec)`, `public float decimal(OptionSpec spec)`, `public int choice(OptionSpec spec)`; lesen den Rohwert aus der Map und rufen die `coerce*`-Methode; keine Allokation. `option(OptionSpec)` bleibt für die Einstellungs-UI.
 
 - [ ] **Step 1: Write the failing tests**
@@ -125,6 +128,12 @@ mod/legacy/src/main/java/.../legacy/  LegacyKeys (generisch), LegacyPlatform, He
     assertEquals(2, m.choice(c));
     assertSame(c.value(2), c.value(2));
 }
+@Test void coerce_keeps_the_identity_shortcut_for_a_float_on_the_grid() {
+    OptionSpec f = OptionSpec.floatRange("f", 1f, 0.5f, 3f, 0.1f);
+    Object onGrid = f.coerce(1.79);               // 1.8f, boxed once
+    assertSame(onGrid, f.coerce(onGrid));
+    assertEquals(1.8f, (Float) onGrid, 0f);
+}
 ```
 
 In `OptionReadAllocationTest` (bleibt `@Tag("interpreted")`):
@@ -155,7 +164,7 @@ Expected: FAIL, Methoden fehlen.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `./gradlew -p common test`, dann `./gradlew buildAll`
+Run: `./gradlew -p common test` (darin ausdrücklich `OptionReadAllocationTest.a_float_option_stored_on_the_grid_is_read_without_allocation`, der weiter 0 Bytes verlangt), dann `./gradlew buildAll`
 Expected: PASS, alle bisherigen Tests grün; `BUILD SUCCESSFUL`.
 
 - [ ] **Step 5: Commit**
@@ -173,11 +182,12 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/config/Profile.java`, `ModuleConfig.java`, `Settings.java`, `SettingsStore.java`; `docs/begleitmod-spec.md` (Abschnitt 5, Absatz "Konfiguration")
-- Test: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/config/ProfileStoreTest.java`, `SettingsStoreTest.java`
+- Test: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/config/ProfileStoreTest.java`, `SettingsStoreTest.java`, `M0CompatibilityTest.java` (neu)
+- Test-Ressourcen (neu): `mod/common/src/test/resources/config/m1a-profile.json`, `m1a-settings.json` (Dateien, wie M1a sie schreibt)
 
 **Interfaces:**
 - Consumes: `Json`, `JsonObjects`, `AtomicFiles.SCHEMA` (M0).
-- Produces: keine neue öffentliche API. Verhalten: `Profile` erhält alle Wurzelschlüssel außer `schema` und `modules` (Reihenfolge wie gelesen, nach `modules` geschrieben); `ModuleConfig` erhält Schlüssel eines Moduleintrags, die es nicht kennt (bekannt: `enabled`, `anchor`, `x`, `y`, `scale`, `background`, `shadow`, `textColor`, `options`), und schreibt sie nach den bekannten; `Settings` erhält Schlüssel außer `schema` und `activeProfile`. `copy()` von Profil und Modul kopiert sie tief mit. Ein bekannter Schlüssel mit falschem Typ fällt wie bisher auf den Standard zurück und wird damit überschrieben. Der Schutz vor Dateien mit höherem Schema bleibt unverändert.
+- Produces: keine neue öffentliche API. Verhalten: `Profile` erhält alle Wurzelschlüssel außer `schema` und `modules` (Reihenfolge wie gelesen, nach `modules` geschrieben); `ModuleConfig` erhält Schlüssel eines Moduleintrags, die es nicht kennt (bekannt: `enabled`, `anchor`, `x`, `y`, `scale`, `background`, `shadow`, `textColor`, `options`), und schreibt sie nach den bekannten; `Settings` erhält Schlüssel außer `schema` und `activeProfile`. `copy()` von Profil und Modul kopiert sie tief mit. Ein bekannter Schlüssel mit falschem Typ fällt wie bisher auf den Standard zurück und wird damit überschrieben. Der Schutz vor Dateien mit höherem Schema bleibt unverändert. Ehrlich zur Rückwärtsrichtung: der schon ausgelieferte M0-Build tut das alles nicht; er verwirft unbekannte Wurzelschlüssel, unbekannte Schlüssel in Einträgen seiner vier Module und unbekannte Schlüssel in `settings.json`, und behält unbekannte Module und unbekannte Schlüssel in `options`. Das ist nicht rückwirkend zu ändern. Was M1a schreibt, liegt deshalb nur an Stellen, die M0 erhält (Global Constraints Regel 12); der Test `M0CompatibilityTest` belegt das mit einer eingefrorenen Kopie des M0-Lese- und Schreibverhaltens.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -234,6 +244,101 @@ In `SettingsStoreTest`:
 
 (`store()` und `file` wie in den bestehenden Tests der Klasse; das Ausgabeformat `"key": value` mit Leerzeichen ist das von `Json.write`.)
 
+Ressource `config/m1a-profile.json` (so schreibt M1a ein Profil mit je einem neuen Modul und je einer Option):
+
+```json
+{
+  "schema": 1,
+  "modules": {
+    "fps": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 2, "scale": 1.0, "background": true, "shadow": true, "textColor": 4294967295, "options": {}},
+    "direction": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 44, "scale": 1.0, "background": true, "shadow": true, "textColor": 4294967295, "options": {"style": "degrees"}},
+    "clock": {"enabled": false, "anchor": "TOP_RIGHT", "x": -2, "y": 66, "scale": 1.5, "background": false, "shadow": true, "textColor": 4294967040, "options": {"format": "12h", "seconds": true}},
+    "stopwatch": {"enabled": true, "anchor": "TOP_LEFT", "x": 2, "y": 72, "scale": 1.0, "background": true, "shadow": false, "textColor": 4294967295, "options": {"tenths": false}}
+  }
+}
+```
+
+Ressource `config/m1a-settings.json`: `{"schema": 1, "activeProfile": "Profil 2"}`.
+
+```java
+// M0CompatibilityTest. m0RewriteProfile und m0RewriteSettings sind die eingefrorene Kopie dessen, was der ausgelieferte
+// M0-Build beim Laden und Speichern tut (nur Test-Code, nie in main): Profile.fromJson behält nur "modules"; der Eintrag
+// eines der vier M0-Module wird von ModuleConfig neu aufgebaut (nur die bekannten Eintragsschlüssel, alle Schlüssel
+// in "options"); Einträge anderer Module bleiben roh; SettingsStore.save schreibt nur "schema" und "activeProfile".
+private static final Set<String> M0_MODULES = new HashSet<>(Arrays.asList("fps", "cps", "keystrokes", "coordinates"));
+private static final Set<String> M0_ENTRY_KEYS = new HashSet<>(Arrays.asList(
+        "enabled", "anchor", "x", "y", "scale", "background", "shadow", "textColor", "options"));
+
+static Map<String, Object> m0RewriteProfile(Map<String, Object> root) {
+    Map<String, Object> modules = new LinkedHashMap<>();
+    for (Map.Entry<String, Object> e : JsonObjects.object(root.get("modules")).entrySet()) {
+        if (!M0_MODULES.contains(e.getKey()) || !(e.getValue() instanceof Map)) { modules.put(e.getKey(), e.getValue()); continue; }
+        Map<String, Object> kept = new LinkedHashMap<>();
+        for (Map.Entry<String, Object> k : JsonObjects.object(e.getValue()).entrySet()) {
+            if (M0_ENTRY_KEYS.contains(k.getKey())) { kept.put(k.getKey(), k.getValue()); }
+        }
+        modules.put(e.getKey(), kept);
+    }
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("schema", 1L); out.put("modules", modules);
+    return out;
+}
+static Map<String, Object> m0RewriteSettings(Map<String, Object> root) {
+    Map<String, Object> out = new LinkedHashMap<>();
+    out.put("schema", 1L); out.put("activeProfile", root.get("activeProfile"));
+    return out;
+}
+private String resource(String name) throws IOException {
+    try (InputStream in = M0CompatibilityTest.class.getResourceAsStream(name)) { return new String(in.readAllBytes(), UTF_8); }
+}
+
+@Test void an_m0_round_trip_keeps_everything_m1a_wrote() throws Exception {
+    Map<String, Object> original = JsonObjects.object(Json.parse(resource("/config/m1a-profile.json")));
+    Map<String, Object> afterM0 = m0RewriteProfile(original);
+    assertEquals(original, afterM0);                                   // nothing dropped, nothing changed
+    Files.write(dir.resolve("default.json"), Json.write(afterM0).getBytes(UTF_8));
+    Profile p = new ProfileStore(dir, clock, w -> { }).load("default");
+    OptionSpec style = OptionSpec.choice("style", "cardinal_degrees", "cardinal", "cardinal_degrees", "degrees");
+    OptionSpec format = OptionSpec.choice("format", "24h", "24h", "12h");
+    assertTrue(p.module("direction").enabled());
+    assertEquals("degrees", p.module("direction").option(style));
+    assertFalse(p.module("clock").enabled());
+    assertEquals(Anchor.TOP_RIGHT, p.module("clock").anchor());
+    assertEquals("12h", p.module("clock").option(format));
+    assertEquals(Boolean.TRUE, p.module("clock").option(OptionSpec.toggle("seconds", false)));
+    assertEquals(1.5f, p.module("clock").scale(), 0f);
+    assertEquals(Boolean.FALSE, p.module("stopwatch").option(OptionSpec.toggle("tenths", true)));
+    assertFalse(p.module("stopwatch").shadow());
+    Map<String, Object> settings = JsonObjects.object(Json.parse(resource("/config/m1a-settings.json")));
+    assertEquals(settings, m0RewriteSettings(settings));
+    Files.write(dir.resolve("settings.json"), Json.write(m0RewriteSettings(settings)).getBytes(UTF_8));
+    assertEquals("Profil 2", new SettingsStore(dir.resolve("settings.json"), clock, w -> { }).load().activeProfile());
+}
+@Test void an_m0_round_trip_loses_future_root_and_entry_keys_and_the_m1a_reader_sees_that() throws Exception {
+    // Not a promise but the recorded limit: what a later version adds outside the M0-safe places is gone after an M0 run.
+    String future = "{\"schema\":1,\"layoutVersion\":3,\"modules\":{\"fps\":{\"enabled\":true,\"zIndex\":7,"
+            + "\"options\":{\"future_opt\":[1,2]}},\"waypoints\":{\"enabled\":true,\"zIndex\":9,\"options\":{\"n\":1}}},"
+            + "\"servers\":{\"a.net\":{\"deny\":[\"x\"]}}}";
+    Map<String, Object> afterM0 = m0RewriteProfile(JsonObjects.object(Json.parse(future)));
+    assertEquals(Arrays.asList("schema", "modules"), new ArrayList<>(afterM0.keySet()));           // layoutVersion, servers: gone
+    Map<String, Object> modules = JsonObjects.object(afterM0.get("modules"));
+    Map<String, Object> fps = JsonObjects.object(modules.get("fps"));
+    assertFalse(fps.containsKey("zIndex"));                                                         // entry key of an M0 module: gone
+    assertEquals(Arrays.asList(1L, 2L), JsonObjects.object(fps.get("options")).get("future_opt"));  // option key: kept
+    assertEquals(9L, JsonObjects.object(modules.get("waypoints")).get("zIndex"));                   // unknown module: kept whole
+    Files.write(dir.resolve("default.json"), Json.write(afterM0).getBytes(UTF_8));
+    ProfileStore store = new ProfileStore(dir, clock, w -> { });
+    store.save("default", store.load("default"));
+    Map<String, Object> back = JsonObjects.object(Json.parse(new String(Files.readAllBytes(dir.resolve("default.json")), UTF_8)));
+    assertEquals(new HashSet<>(Arrays.asList("schema", "modules")), back.keySet());
+    assertEquals(9L, JsonObjects.object(JsonObjects.object(back.get("modules")).get("waypoints")).get("zIndex"));
+    Map<String, Object> futureSettings = JsonObjects.object(Json.parse("{\"schema\":1,\"activeProfile\":\"default\",\"servers\":{\"a\":1}}"));
+    assertEquals(new HashSet<>(Arrays.asList("schema", "activeProfile")), m0RewriteSettings(futureSettings).keySet());
+}
+```
+
+(Importe: `java.io.InputStream`, `java.util.*`, `Anchor`, `OptionSpec`, `Json`, `JsonObjects`. `m0Rewrite*` rufen keinen Konfigurationscode aus `main`. Weicht das tatsächliche M0-Verhalten von dieser Kopie ab, korrigiert der Implementierer die Kopie nach `git show begleitmod-m0:mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/config/Profile.java`, `ModuleConfig.java` und `SettingsStore.java`, nicht den Test.)
+
 - [ ] **Step 2: Run tests to verify they fail**
 
 Run: `./gradlew -p common test --tests '*ProfileStoreTest' --tests '*SettingsStoreTest'`
@@ -241,7 +346,7 @@ Expected: FAIL, unbekannte Schlüssel fehlen nach dem Speichern.
 
 - [ ] **Step 3: Implement**
 
-Je eine `LinkedHashMap<String, Object> extras` in `Profile`, `ModuleConfig` und `Settings` (package-private Zugriff für `SettingsStore`); `ModuleConfig.deepCopy` für Lesen, Kopieren und Schreiben. Spec 5, nach dem Satz "Unbekannte Module bleiben beim Speichern erhalten.": "Unbekannte Schlüssel bleiben auf allen drei Ebenen erhalten (Wurzel eines Profils, Moduleintrag, `settings.json`), damit eine ältere Version nie löscht, was eine neuere geschrieben hat. Die Schemanummer bleibt 1 bei additiven Änderungen (neue Module, Optionen, Felder) und steigt nur bei inkompatiblen (ein bestehendes Feld ändert Bedeutung oder Namen); Dateien mit höherem Schema werden weiter nie überschrieben."
+Je eine `LinkedHashMap<String, Object> extras` in `Profile`, `ModuleConfig` und `Settings` (package-private Zugriff für `SettingsStore`); `ModuleConfig.deepCopy` für Lesen, Kopieren und Schreiben. Spec 5, nach dem Satz "Unbekannte Module bleiben beim Speichern erhalten.": "Ab M1a bleiben unbekannte Schlüssel auf allen drei Ebenen erhalten (Wurzel eines Profils, Moduleintrag, `settings.json`), damit eine neuere Version nichts verliert, was eine noch neuere schrieb. Ein schon ausgelieferter M0-Build tut das nicht: er verwirft unbekannte Wurzelschlüssel, unbekannte Schlüssel in den Einträgen seiner vier Module und unbekannte Schlüssel in `settings.json` und behält nur unbekannte Module und unbekannte Schlüssel in `options`; das lässt sich nicht nachträglich beheben. Darum gilt für neue persistierte Daten, solange M0-Builds in Gebrauch sind: nur als eigener Moduleintrag oder innerhalb von `options` eines Moduls, nichts Neues an der Wurzel eines Profils, nichts Neues direkt in einem Moduleintrag, nichts Neues in `settings.json`, dessen Verlust ein Spieler bemerken würde. Tastenbelegungen liegen in der `options.txt` des Spiels; das Spiel selbst verwirft nach einem M0-Lauf unbekannte Tastenzeilen (bekannte Einschränkung). Die Schemanummer bleibt 1 bei additiven Änderungen (neue Module, Optionen, Felder) und steigt nur bei inkompatiblen (ein bestehendes Feld ändert Bedeutung oder Namen); Dateien mit höherem Schema werden weiter nie überschrieben."
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -252,7 +357,7 @@ Expected: PASS; `BUILD SUCCESSFUL`.
 
 ```bash
 git add mod/common/src docs/begleitmod-spec.md
-git commit -m "feat(mod-common): keep unknown config keys at every level, schema rule in the spec
+git commit -m "feat(mod-common): keep unknown config keys at every level, m0 round-trip test, schema rule in the spec
 
 Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ```
@@ -332,7 +437,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
   - `public final class AdapterGuard { public interface Log { void info(String message); void error(String message, Throwable error); } public static final int MAX_KINDS = 4; public AdapterGuard(String[] siteNames, Log log); public HengstCore start(Supplier<? extends Platform> platformFactory, TimeSource time); public boolean hookFailed(int site, Throwable error); }`
     - `start`: fängt `RuntimeException | LinkageError` beim Erzeugen der Plattform und beim Start des Kerns; Logzeilen wörtlich wie heute: `info("[hengst] loaded on " + version.id())`, bei Fehler `error("[hengst] core failed to start; the mod stays inactive and its key bindings do nothing", e)` und Rückgabe `null`.
     - `hookFailed`: bei `LinkageError` Rückgabe `true` (der Aufrufer setzt sein `ENABLED` auf false), geloggt nur beim ersten Mal: `"[hengst] the <site> hook does not match this game; the mod is disabled"`. Sonst `false`, geloggt einmal je Stelle und Ausnahmeklasse, höchstens `MAX_KINDS` Klassen je Stelle: `"[hengst] the <site> hook failed; further <SimpleName> there are not logged"`. Kalter Pfad.
-  - `public final class ScrollAccumulator { public static final int MAX_NOTCHES = 100; public ScrollAccumulator(double unitsPerNotch); public int add(double amount); public void reset(); }`: summiert Rohwerte und gibt ganze Rasten mit Vorzeichen zurück (Richtung zum Nutzer hin negativ, wie geliefert); `1e-9` Toleranz, damit zehnmal 0,1 eine Raste ergibt; NaN, unendlich oder Betrag ab `1e6 * unitsPerNotch` ergeben 0; mehr als 100 Rasten je Ereignis werden auf ±100 gekappt und der Rest verworfen. Modern `new ScrollAccumulator(1.0)`, 1.8.9 `new ScrollAccumulator(120.0)`.
+  - `public final class ScrollAccumulator { public static final int MAX_NOTCHES = 100; public ScrollAccumulator(double unitsPerNotch); public int add(double amount); public void reset(); }`: summiert Rohwerte und gibt ganze Rasten mit Vorzeichen zurück (Richtung zum Nutzer hin negativ, wie geliefert); `1e-9` Toleranz, damit zehnmal 0,1 eine Raste ergibt; NaN und unendlich ergeben 0 und verändern den Rest nicht; jeder endliche Wert wird verarbeitet, und mehr als 100 Rasten je Ereignis werden auf ±100 gekappt, der Rest und der Überschuss verworfen (genau wie beide Adapter heute: `LegacyInput.ScrollNotches.add(int)` kappt `Integer.MAX_VALUE`/`Integer.MIN_VALUE` auf ±100, `ModernInput.ScrollNotches.add(double)` kappt 500,25 und -1e5 auf ±100). Es gibt keine eigene Obergrenze für das Roh-Ereignis mehr; der einzige Unterschied zu heute: ein endlicher Wert ab 1e6 liefert auf den modernen Versionen jetzt ±100 statt 0 (kein bestehender Test deckt das ab, beides ist eine verworfene Müll-Eingabe). Die bestehenden Adapter-Tests `LegacyInputTest.notchesPerEventAreCapped` und `ModernInputTest.oneEventEmitsAtMostOneHundredNotches` bleiben inhaltlich gültig und wandern mit denselben Werten nach `ScrollAccumulatorTest`. Modern `new ScrollAccumulator(1.0)`, 1.8.9 `new ScrollAccumulator(120.0)`.
   - Die Mod-Klassen behalten `public static boolean ENABLED`, `core()`, ihre Hook-Methoden und `SITE_*`-Konstanten; `static final AdapterGuard GUARD`; jede Fangstelle ruft `if (GUARD.hookFailed(SITE_X, e)) { ENABLED = false; }`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -369,11 +474,21 @@ AdapterGuard guard = new AdapterGuard(new String[] {"HUD", "client tick"}, new A
     int sum = 0; for (int k = 0; k < 10; k++) { sum += modern.add(0.1); }
     assertEquals(1, sum);
 }
-@Test void garbage_is_dropped_and_large_values_capped() {
+@Test void nan_and_infinity_are_dropped_and_large_values_capped_at_100_notches() {
     ScrollAccumulator a = new ScrollAccumulator(1.0);
-    assertEquals(0, a.add(Double.NaN)); assertEquals(0, a.add(Double.POSITIVE_INFINITY)); assertEquals(0, a.add(2e6));
-    assertEquals(100, a.add(500)); assertEquals(0, a.add(0.5));
+    assertEquals(0, a.add(Double.NaN)); assertEquals(0, a.add(Double.POSITIVE_INFINITY)); assertEquals(0, a.add(Double.NEGATIVE_INFINITY));
+    assertEquals(100, a.add(500.25)); assertEquals(0, a.add(0.0));          // the remainder .25 is dropped with the excess
+    assertEquals(-100, a.add(-1e5)); assertEquals(0, a.add(0.0));
+    assertEquals(100, a.add(2e6));                                          // finite and absurd: capped, not dropped
+    assertEquals(1, a.add(1.0));
     a.reset(); assertEquals(0, a.add(0.6)); assertEquals(1, a.add(0.4));
+}
+@Test void legacy_int_deltas_at_the_extremes_are_capped_like_today() {
+    ScrollAccumulator legacy = new ScrollAccumulator(120.0);
+    assertEquals(100, legacy.add(Integer.MAX_VALUE));
+    assertEquals(-100, legacy.add(Integer.MIN_VALUE));
+    assertEquals(1, legacy.add(120));                                       // excess and remainder were dropped
+    assertEquals(0, legacy.add(100)); legacy.reset(); assertEquals(0, legacy.add(100)); assertEquals(1, legacy.add(20));
 }
 ```
 
@@ -451,7 +566,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 }
 @Test void on_config_changed_reaches_each_supported_feature_with_its_own_config() throws Exception {
     core = start(); platform.inWorld = true;
-    RecordingFeature rec = new RecordingFeature("rec", 48);   // TestFeature, zählt Aufrufe, merkt sich die letzte Konfiguration
+    RecordingFeature rec = new RecordingFeature("rec", 48);   // private static Klasse im Test: extends TestFeature, onConfigChanged zählt `calls` und merkt sich `last`
     core.registerForTest(rec);
     assertEquals(1, rec.calls);
     core.onOpenSettingsKey();
@@ -470,15 +585,28 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 }
 // ScreenCloseTest
 @Test void save_rebuild_close_in_this_order_and_close_even_after_failures() {
+    // FakePlatform is final: the order is recorded by the save and rebuild lambdas, the close is seen through closeCount.
     List<String> order = new ArrayList<>();
-    FakePlatform p = new FakePlatform(null) { @Override public void closeScreen() { order.add("close"); } };
-    new ScreenClose(() -> { order.add("save"); throw new IOException("disk"); }, () -> { order.add("rebuild"); throw new IllegalStateException(); },
+    FakePlatform p = new FakePlatform(null);
+    new ScreenClose(() -> { order.add("save closeCount=" + p.closeCount); throw new IOException("disk"); },
+            () -> { order.add("rebuild closeCount=" + p.closeCount); throw new IllegalStateException(); },
             p, "the settings").run();
-    assertEquals(Arrays.asList("save", "rebuild", "close"), order);
+    assertEquals(Arrays.asList("save closeCount=0", "rebuild closeCount=0"), order);
+    assertEquals(1, p.closeCount);                                    // closed last, in the finally block
     assertEquals(Arrays.asList("Could not save the settings: java.io.IOException: disk",
             "Could not rebuild the HUD after closing the settings: java.lang.IllegalStateException"), p.warnings);
 }
+@Test void a_clean_close_saves_rebuilds_and_closes_without_warnings() {
+    List<String> order = new ArrayList<>();
+    FakePlatform p = new FakePlatform(null);
+    new ScreenClose(() -> order.add("save closeCount=" + p.closeCount), () -> order.add("rebuild closeCount=" + p.closeCount),
+            p, "the HUD editor (profile default)").run();
+    assertEquals(Arrays.asList("save closeCount=0", "rebuild closeCount=0"), order);
+    assertEquals(1, p.closeCount); assertTrue(p.warnings.isEmpty());
+}
 ```
+
+(`FakePlatform.closeScreen()` zählt `closeCount`, solange kein Bildschirm als vom Spiel entfernt markiert ist; `FakePlatform` bleibt `final` und unverändert.)
 
 `FeatureStateTest`: `rewrite` mit einer Liste aus `TestFeature`s der Nummern 1, 7 und 900 setzt genau die aktiven; ein zweites `rewrite` mit FPS aus setzt `on(1)` zurück auf false.
 
@@ -519,8 +647,8 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 - Produces:
   - `public interface WallClock { long currentTimeMillis(); int offsetMillis(long utcMillis); WallClock SYSTEM = SystemWallClock.INSTANCE; }`; `SystemWallClock` liest `System.currentTimeMillis()` und `TimeZone.getOffset(long)` einer beim Laden der Klasse einmal geholten `TimeZone.getDefault()` (eine Änderung der Zeitzone des Betriebssystems während des Spiels wird nicht gesehen; die JVM hält die Standardzone ohnehin fest).
   - `HudContext`: neuer Konstruktor `HudContext(Platform platform, TimeSource time, WallClock wallClock, FrameCounter frames, CpsCounter cps)`; der alte Vier-Parameter-Konstruktor bleibt (`WallClock.SYSTEM`); `public WallClock wallClock()`, `public I18n i18n()` (anfangs `I18n.load(platform.languageCode())`), `public int languageGeneration()` (beginnt bei 0), `public void setI18n(I18n i18n)` (nur der Kern; erhöht die Generation).
-  - `HengstCore`: im Tick höchstens einmal je Sekunde `platform.languageCode()` lesen und mit dem zuletzt geladenen Code vergleichen (erst Referenz, dann `equals`); bei Änderung `ctx.setI18n(I18n.load(code))` vor `renderer.tick`. Einstellungen und Editor nehmen `ctx.i18n()` statt eines eigenen `I18n.load`. In jedem Tick `game.serverAddress()` gegen den letzten Wert (Referenz, dann `equals`); bei Änderung `gate.setServer(server)` und `applyConfig()`. Neu: `static HengstCore start(Platform, TimeSource, Clock, WallClock, RestrictionPolicy)` (package-private); die anderen Überladungen nutzen `WallClock.SYSTEM` und `RestrictionPolicy.NONE`.
-  - `testutil/FakeWallClock implements WallClock { public long utcMillis; public int offset; public long switchAtUtc = Long.MAX_VALUE; public int offsetAfterSwitch; public int offsetCalls; }` (Versatz `offset` vor `switchAtUtc`, sonst `offsetAfterSwitch`; zählt Aufrufe).
+  - `HengstCore`: im Tick höchstens einmal je Sekunde `platform.languageCode()` lesen und mit dem zuletzt geladenen Code vergleichen (erst Referenz, dann `equals`); bei Änderung `ctx.setI18n(I18n.load(code))` vor `renderer.tick`. Das ist die eine erlaubte Ausnahme von Spec 8.6 (kein Dateizugriff im Tick): `I18n.load` liest die Sprachdatei aus dem Klassenpfad, einmal je Sprachwechsel, und nur im Tick, nie im Frame-Pfad (`onHudRender` und `HudRenderer.render` laden nichts nach, auch wenn `languageCode()` sich geändert hat). Ohne Wechsel kein Lesen. Einstellungen und Editor nehmen `ctx.i18n()` statt eines eigenen `I18n.load`. In jedem Tick `game.serverAddress()` gegen den letzten Wert (Referenz, dann `equals`); bei Änderung `gate.setServer(server)` und `applyConfig()`. Neu: `static HengstCore start(Platform, TimeSource, Clock, WallClock, RestrictionPolicy)` (package-private); die anderen Überladungen nutzen `WallClock.SYSTEM` und `RestrictionPolicy.NONE`.
+  - `testutil/FakeWallClock implements WallClock { public long utcMillis; public int offset; public long switchAtUtc = Long.MAX_VALUE; public int offsetAfterSwitch; public int currentCalls; public int offsetCalls; }` (`currentTimeMillis()` liefert `utcMillis` und zählt `currentCalls`; `offsetMillis(utc)` liefert `offset` vor `switchAtUtc`, sonst `offsetAfterSwitch`, und zählt `offsetCalls`).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -534,6 +662,15 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
     assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
     assertEquals(gen + 1, core.context().languageGeneration());
     for (int i = 0; i < 100; i++) { time.advanceMillis(50); core.onClientTick(); }
+    assertEquals(gen + 1, core.context().languageGeneration());      // loaded once per switch, not once per second
+}
+@Test void a_frame_never_reloads_the_language() {
+    core = start(); platform.inWorld = true;
+    int gen = core.context().languageGeneration();
+    platform.languageCode = "de_de";
+    time.advanceMillis(5000); core.onHudRender(canvas, 0f);          // frames only, no tick
+    assertEquals(gen, core.context().languageGeneration());
+    core.onClientTick();
     assertEquals(gen + 1, core.context().languageGeneration());
 }
 @Test void the_settings_opened_after_a_switch_are_german() {
@@ -609,12 +746,15 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 // KeyFeature: TestFeature "keys", Nummer 47, Tasten "test.hold" (NONE, HOLD) und "test.press" (NONE, PRESS),
 // protokolliert onKey als "<key> down"/"<key> up" in eine Liste.
 KeyFeature f;
+int HOLD, PRESS;   // Indizes der Testtasten: hinter allen Tasten, die der Katalog schon besitzt (Kern-Tasten, ab Task 13 auch die Stoppuhr)
 void startWithKeys() {
     core = start(); platform.inWorld = true; f = new KeyFeature();
     core.activeProfile().module("keys").setEnabled(true);
+    int base = core.keySpecs().size();           // vor registerForTest: ändert sich nicht, wenn der Katalog Tasten dazubekommt
     core.registerForTest(f);
+    assertEquals(base + 2, core.keySpecs().size());
+    HOLD = base; PRESS = base + 1;
 }
-static final int HOLD = 2, PRESS = 3;
 
 @Test void core_keys_come_first_with_their_persisted_names() {
     List<KeySpec> keys = FeatureCatalog.keys(GameVersion.V1_8_9);
@@ -672,7 +812,7 @@ static final int HOLD = 2, PRESS = 3;
 }
 @Test void out_of_range_indexes_and_bad_ids() {
     startWithKeys();
-    core.onFeatureKey(-1, true); core.onFeatureKey(99, true);
+    core.onFeatureKey(-1, true); core.onFeatureKey(core.keySpecs().size(), true); core.onFeatureKey(99, true);
     assertThrows(IllegalArgumentException.class, () -> new KeySpec("Bad Id", DefaultKey.NONE, KeySpec.Mode.PRESS));
     assertThrows(IllegalArgumentException.class, () -> new KeySpec("", DefaultKey.NONE, KeySpec.Mode.PRESS));
 }
@@ -684,7 +824,7 @@ static final int HOLD = 2, PRESS = 3;
 }
 ```
 
-In `HengstCoreAllocationTest` (interpreted): `feature_keys_allocate_nothing`: `KeyFeature` mit Zählern statt Liste, 1000 Paare `onFeatureKey(HOLD, true/false)` und 1000 Ticks: 0 Bytes.
+In `HengstCoreAllocationTest` (interpreted): `feature_keys_allocate_nothing`: `KeyFeature` mit Zählern statt Liste (HOLD-Index = `core.keySpecs().size()` vor `registerForTest`, wie in `startWithKeys`), 1000 Paare `onFeatureKey(HOLD, true/false)` und 1000 Ticks: 0 Bytes.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -693,7 +833,7 @@ Expected: FAIL.
 
 - [ ] **Step 3: Implement**
 
-Der Kern baut beim Start aus `registry.all()` zwei Tabellen `Feature[] keyOwner` (null für die Kern-Tasten) und `int[] keyLocal`, dazu `boolean[] keyDown`, `boolean[] delivered`.
+Der Kern baut beim Start aus `registry.all()` zwei Tabellen `Feature[] keyOwner` (null für die Kern-Tasten) und `int[] keyLocal`, dazu `boolean[] keyDown`, `boolean[] delivered`. `registerForTest` hängt die Tasten der Testfunktion an `keySpecs()` an und lässt alle vier Tabellen mitwachsen (sie werden sonst nur beim Start gebaut); sein Index liegt hinter allen bisherigen.
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -717,16 +857,16 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 - Modify: `mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/platform/GameView.java`, `mod/common/src/test/java/.../testutil/FakePlatform.java`
 - Modify: `mod/modern/src/main/java/io/github/clemensjl/hengst/mod/modern/ModernKeys.java`, `HengstModernMod.java`, `ModernPlatform.java`, `mod/modern/src/main/resources/assets/hengst/lang/en_us.json`, `de_de.json` (unverändert, solange nur die zwei Kern-Tasten existieren)
 - Modify: `mod/legacy/src/main/java/io/github/clemensjl/hengst/mod/legacy/LegacyKeys.java`, `HengstLegacyMod.java`, `LegacyPlatform.java`
-- Test: `mod/modern/src/test/java/io/github/clemensjl/hengst/mod/modern/ModernKeysTest.java` (neu), `mod/legacy/src/test/java/io/github/clemensjl/hengst/mod/legacy/LegacyKeysTest.java` (neu), `mod/modern/src/gametest/.../HengstClientGameTest.java`, `mod/legacy/src/gametest/.../LegacyGameTest.java`
+- Test: `mod/modern/src/test/java/io/github/clemensjl/hengst/mod/modern/ModernKeysTest.java` (neu), `mod/legacy/src/test/java/io/github/clemensjl/hengst/mod/legacy/LegacyKeysTest.java` (neu), `mod/modern/src/test/java/.../HengstModernModTest.java` und `mod/legacy/src/test/java/.../HengstLegacyModTest.java` (die anonyme `new GameView()` in `workingPlatform` bekommt `@Override public int pingMillis() { return -1; }` und `@Override public Object worldIdentity() { return null; }`, sonst kompilieren beide Tests nicht; dazu je ein Allokationstest für `dispatch`), `mod/modern/src/gametest/.../HengstClientGameTest.java`, `mod/legacy/src/gametest/.../LegacyGameTest.java`
 
 **Interfaces:**
 - Consumes: `FeatureCatalog.keys`, `HengstCore.onFeatureKey` (Task 7), `FeatureState.on` (Task 5).
 - Produces:
-  - `GameView`: `int pingMillis()` (vom Server gemeldete Latenz des eigenen Spielers in ms; -1 im Einzelspieler, ohne Verbindung oder ohne eigenen Eintrag in der Spielerliste), `Object worldIdentity()` (die Weltinstanz des Clients, nur per Referenz verglichen; null ohne Welt; neu bei Beitritt und Dimensionswechsel). Beide allokationsfrei. `FakePlatform`: Felder `public int pingMillis = -1`, `public Object worldIdentity`.
+  - `GameView`: `int pingMillis()` (vom Server gemeldete Latenz des eigenen Spielers in ms; -1 im Einzelspieler, ohne Verbindung oder ohne eigenen Eintrag in der Spielerliste), `Object worldIdentity()` (die Weltinstanz des Clients, nur per Referenz verglichen; null ohne Welt; neu bei Beitritt und Dimensionswechsel). Beide allokationsfrei und beide abstrakt (ein Adapter ohne Umsetzung soll nicht kompilieren; deshalb stehen die zwei anonymen `GameView` der beiden Adapter-Tests in der Dateiliste). `FakePlatform`: Felder `public int pingMillis = -1`, `public Object worldIdentity` mit Overrides.
   - Modern: `pingMillis`: `mc.hasSingleplayerServer()` → -1; sonst `mc.getConnection()`, `mc.player`, `ClientPacketListener.getPlayerInfo(UUID)` mit `player.getUUID()`, `PlayerInfo.getLatency()` [B Signaturen per `javap` in 26.3 und 1.21.11; K: `getPlayerInfo(UUID)` ist ein Map-Zugriff ohne Allokation, in `genSources` prüfen]. `worldIdentity`: `mc.level` [B]; [K]: `ClientPacketListener.handleRespawn` legt bei Dimensionswechsel eine neue `ClientLevel` an.
   - 1.8.9: `pingMillis`: `mc.isInSingleplayer()` → -1; sonst `mc.getNetworkHandler().getPlayerListEntry(mc.player.getUuid()).getLatency()` [B in Legacy Yarn build.604 gesehen: `getPlayerListEntry(UUID)` ist `playerListEntries.get(uuid)`, `Entity.getUuid()`, `PlayerListEntry.getLatency()`]. `worldIdentity`: `mc.world` [B: `onPlayerRespawn` legt bei anderer Dimension eine neue `ClientWorld` an].
-  - `ModernKeys`: `static void register(GameVersion version)` registriert für jede `KeySpec` aus `FeatureCatalog.keys(version)` eine `KeyMapping(spec.translationKey(), code(spec.defaultKey()), category)` in der Kategorie `hengst:main`, Index wie in der Liste; `static int code(DefaultKey key)` (NONE → `InputConstants.UNKNOWN.getValue()`, RIGHT_SHIFT → `InputConstants.KEY_RSHIFT`; jeder andere Wert wirft); `static void dispatch(Minecraft client)` meldet je Index nach dem Vertrag aus Task 7 (`consumeClick()` leeren, ein `true` bei mindestens einem Klick, ein `false` wenn `!isDown()`). Registriert wird vor dem Start des Kerns, wie in M0; die Version kommt aus einer statischen `ModernPlatform.gameVersion()` (die `version()` darauf zurückführt).
-  - `LegacyKeys`: dasselbe mit `KeyBinding(String, int, String)` und Kategorie `key.categories.hengst`, `static int code(DefaultKey)` (NONE → `Keyboard.KEY_NONE`, RIGHT_SHIFT → `Keyboard.KEY_RSHIFT`), `wasPressed()` und `isPressed()`.
+  - `ModernKeys`: `static void register(GameVersion version)` registriert für jede `KeySpec` aus `FeatureCatalog.keys(version)` eine `KeyMapping(spec.translationKey(), code(spec.defaultKey()), category)` in der Kategorie `hengst:main`, Index wie in der Liste; `static int code(DefaultKey key)` (NONE → `InputConstants.UNKNOWN.getValue()`, RIGHT_SHIFT → `InputConstants.KEY_RSHIFT`; jeder andere Wert wirft); `static void dispatch(Minecraft client)` ruft `dispatch(HengstModernMod.core(), mappings)` mit dem `KeyMapping[]`, das `register` aufgebaut hat; `static void dispatch(HengstCore core, KeyMapping[] mappings)` meldet je Index nach dem Vertrag aus Task 7 (`consumeClick()` leeren, ein `true` bei mindestens einem Klick, ein `false` wenn `!isDown()`) und läuft mit einer indexierten `for`-Schleife über das Array (kein Iterator, keine `List<KeySpec>`, keine Streams, keine Lambdas). Registriert wird vor dem Start des Kerns, wie in M0; die Version kommt aus einer statischen `ModernPlatform.gameVersion()` (die `version()` darauf zurückführt).
+  - `LegacyKeys`: dasselbe mit `KeyBinding(String, int, String)` und Kategorie `key.categories.hengst`, `static int code(DefaultKey)` (NONE → `Keyboard.KEY_NONE`, RIGHT_SHIFT → `Keyboard.KEY_RSHIFT`), `wasPressed()` und `isPressed()`, `static void dispatch(HengstCore core, KeyBinding[] bindings)` wie oben mit indexierter Schleife.
   - [K] je modernem Knoten: ob eine Tastenwiederholung `KeyMapping.click` auslöst (`KeyboardHandler.keyPress`); der Kern verträgt beides (Task 7), das Ergebnis steht im Report.
 
 - [ ] **Step 1: Namen prüfen**
@@ -752,6 +892,25 @@ Expected: Quellen erzeugt; jede [K]-Stelle dieses Tasks nachgeschlagen, Ergebnis
 }
 ```
 
+In `HengstModernModTest` und `HengstLegacyModTest` je ein Allokationstest, der den Kern mit der dortigen `workingPlatform` startet:
+
+```java
+@Test void key_dispatch_allocates_nothing() {
+    // [K] ob KeyMapping (modern) bzw. KeyBinding (1.8.9) ohne laufendes Spiel gebaut werden kann: in der Quelle prüfen;
+    // geht es nicht, entfällt der Test im Adapter und derselbe Messlauf steht als Schritt im Spieltest.
+    HengstCore core = HengstCore.start(workingPlatform(dir, new UiScreen[1]), TimeSource.SYSTEM);
+    KeyMapping[] maps = new KeyMapping[core.keySpecs().size()];
+    for (int i = 0; i < maps.length; i++) { maps[i] = new KeyMapping(core.keySpecs().get(i).translationKey(), -1, CATEGORY); }
+    for (int i = 0; i < 2000; i++) { ModernKeys.dispatch(core, maps); }                 // einschwingen
+    com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+    long before = mx.getThreadAllocatedBytes(Thread.currentThread().getId());
+    for (int i = 0; i < 2000; i++) { ModernKeys.dispatch(core, maps); }
+    assertTrue(mx.getThreadAllocatedBytes(Thread.currentThread().getId()) - before < 2048);   // ein Iterator je Aufruf wären über 60 KB
+}
+```
+
+(1.8.9 mit `KeyBinding[]` und `LegacyKeys.dispatch`; `CATEGORY` ist die Kategorie, die `register` nutzt; die Konstruktor-Aufrufe sind je Version nach der Quelle anzupassen. Die Messung läuft ohne `-Xint`, deshalb die Schranke 2048 Byte statt 0 wie in den `interpreted`-Tests von common.)
+
 Spieltests, je nach dem ersten HUD-Bild (`hengst-01-hud`): `check(FeatureState.on(1) && FeatureState.on(2) && FeatureState.on(3) && FeatureState.on(6), "M0 modules on in the feature state")`, `check(!FeatureState.on(7), "direction off in the feature state")`, FPS über `core.activeProfile().module("fps").setEnabled(false); core.applyConfigForTest();` aus, `check(!FeatureState.on(1), ...)`, wieder an. Der bestehende Schritt "Rechte Umschalttaste öffnet die Einstellungen" bleibt und belegt den Umzug der Kern-Tasten. Neu: `check(core.context().platform().game().pingMillis() == -1, "no ping in singleplayer")` und `check(core.context().platform().game().worldIdentity() != null, "world identity in a world")`.
 
 - [ ] **Step 3: Run tests to verify they fail**
@@ -761,7 +920,7 @@ Expected: FAIL, `code` und die neue Registrierung fehlen.
 
 - [ ] **Step 4: Implement**
 
-`dispatch` läuft am Tick-Ende vor `core.onClientTick()`, wie in M0. Die zwei alten Felder `settings`/`hudEditor` entfallen; die Prüfung "nur in einer Welt" entfällt im Adapter.
+`dispatch` läuft am Tick-Ende vor `core.onClientTick()`, wie in M0, mit indexierter Schleife über ein einmal gebautes Array (der Allokationstest oben belegt es). Die zwei alten Felder `settings`/`hudEditor` entfallen; die Prüfung "nur in einer Welt" entfällt im Adapter. Die zwei neuen abstrakten `GameView`-Methoden bekommen ihre Umsetzung in `ModernPlatform.Game` und `LegacyPlatform.Game` und in den zwei Test-Doubles der Adapter-Tests.
 
 - [ ] **Step 5: Run tests and the games**
 
@@ -783,36 +942,73 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/ui/SettingsScreen.java`, `.../ui/ScrollList.java`
-- Test: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/ui/SettingsScreenTest.java`, `.../HengstCoreTest.java` (Geometrie-Konstanten)
+- Create: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/testutil/GroupFeature.java`
+- Test: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/ui/SettingsScreenTest.java` (neue Tests, neue Helfer, Literale der Listenzeilen, siehe Geometrie), `.../HengstCoreTest.java` (`FPS_SWITCH_Y` und die Schleife in `an_exception_in_a_screen_input_does_not_escape_and_is_logged_once`)
 
 **Interfaces:**
 - Consumes: `Feature.group()`, Sprachschlüssel `hengst.group.hud|visual|comfort` (M0).
 - Produces:
   - Die Funktionsliste zeigt je Gruppe (Reihenfolge `HUD`, `VISUAL`, `COMFORT`) eine nicht anklickbare Überschriftzeile (20 px hoch wie jede Zeile, Text `hengst.group.<gruppe>` in `0xFFAAAAAA` bei x + 4, keine Füllung), darunter die Funktionen der Gruppe nach Nummer. Gruppen ohne unterstützte Funktion bekommen keine Überschrift. `SettingsModel.features()` bleibt nach Nummer sortiert, die anfängliche Auswahl bleibt FPS.
   - `ScrollList`: `public boolean overflows()` (Zeilen × Zeilenhöhe > Höhe); läuft die Liste über, werden die Zeilen 4 px schmaler und rechts in der Liste ein Schacht `fill(x+w-2, y, x+w, y+h, 0x40FFFFFF)` mit Daumen `fill(x+w-2, ty, x+w, ty+th, 0xC0FFFFFF)` gezeichnet; `th = max(8, h * sichtbareZeilen / Zeilen)`, `ty = y + (h - th) * offset / maxOffset` (bei `maxOffset` 0 oben). Nur Anzeige, kein Ziehen (Mausrad wie bisher). Entscheidung: bei 320 x 240 hat die Liste 7 sichtbare Zeilen, mit M1a 13 Zeilen (11 Funktionen, 2 Überschriften), deshalb braucht es die Anzeige.
-  - Geometrie: jede Konstante in den Tests, die eine Zeile der Funktionsliste adressiert, rückt um eine Zeile (20 px) nach unten (`HengstCoreTest.FPS_SWITCH_Y` 46 → 66); erwartete maximale Bildlaufwerte wachsen um die Überschriftzeilen. Sonst ändert sich keine Erwartung.
+  - Geometrie: eine Zeile der Funktionsliste liegt bei `y = 36 + Zeile * 20` (Höhe 20), ihr Klickpunkt bei `36 + Zeile * 20 + 5`; die Zeilen zählen jetzt die Überschriften mit (Zeile 0 ist die erste Überschrift). Die Zeilen der rechten Seite (Optionsliste, x ab 144) und die Kopfzeile (y 15) bleiben unverändert. Jedes Literal, das eine Listenzeile adressiert, ändert sich nach dieser Regel; vollständig:
+    - `HengstCoreTest`: `FPS_SWITCH_Y` 46 → 66 (Überschrift HUD ist Zeile 0, FPS Zeile 1). In `an_exception_in_a_screen_input_does_not_escape_and_is_logged_once` die Schleife `for (int y = 46; y < 46 + 20 * 5; ...)` → `for (int y = 66; y < 66 + 20 * 5; ...)` (fps, cps, keystrokes, coordinates und `bad` sind jetzt die Zeilen 1 bis 5).
+    - `SettingsScreenTest`, Registry `reg()` oder `allModules()` (alle Gruppe HUD, eine Überschrift): `toggling_feature_marks_changed`, `close_saves_rebuilds_then_closes_in_that_order`, `edit_hud_saves_pending_changes_first`: `mouseClicked(12, 46, 0)` → `mouseClicked(12, 66, 0)`. `slider_option_is_coerced_and_marks_changed`: Zeile von `coordinates` `36 + 3 * 20 + 5` → `36 + 4 * 20 + 5` (121; der Kommentar "4th row" wird "row 4, the header is row 0"); der Klick auf den Schieber `mouseClicked(144 + 84, 36 + 3 * 20 + 5, 0)` bleibt (rechte Seite). `toggle_option_and_text_colour_choice`: `keystrokes` `36 + 2 * 20 + 5` → `36 + 3 * 20 + 5`; alle `mouseClicked(200, ...)` darin bleiben. `german_texts_fit_the_screen_and_their_widgets_at_320_by_240`: `mouseClicked(60, 36 + row * 20 + 5, 0)` → `mouseClicked(60, 36 + (row + 1) * 20 + 5, 0)`. `steady_state_rendering_allocates_nothing_noticeable`: `coordinates` `36 + 3 * 20 + 5` → `36 + 4 * 20 + 5`.
+    - `feature_list_scrolls_with_the_wheel_and_clamps` (12 Funktionen der Gruppe HUD = 13 Zeilen): die obere Schranke `(12 - list.height() / 20) * 20` → `(13 - list.height() / 20) * 20`; nach der letzten Rolle von einer Raste steht Zeile 1 (nicht mehr Zeile 0) am Listenanfang, weil Zeile 0 die Überschrift ist: der Klick `mouseClicked(12, 36 + 5, 0)` trifft `f0`, die Prüfung `config("f1").enabled()` wird `config("f0").enabled()`. Die Erwartungen `list.offset() == 20` nach einer Raste und `0` am Anfang bleiben.
+    - `a_feature_that_is_not_on_the_hud_gets_no_hud_style_rows` (fps HUD, zoom VISUAL: Überschrift HUD 0, fps 1, Überschrift Visual 2, zoom 3): `mouseClicked(60, 36 + 5, 0)` → `mouseClicked(60, 36 + 1 * 20 + 5, 0)` (fps) und `mouseClicked(60, 36 + 20 + 5, 0)` → `mouseClicked(60, 36 + 3 * 20 + 5, 0)` (zoom).
+    - `openZoom` (nur `zoom` in VISUAL: Überschrift Zeile 0, zoom Zeile 1): `mouseClicked(60, 36 + 5, 0)` → `mouseClicked(60, 36 + 20 + 5, 0)`. In `choice_values_are_shown_...` ist `int row = 36 + 20 + 5` die Optionsliste rechts (x 200) und bleibt.
+    - Danach bleibt keine Erwartung der Klasse übrig, die eine Listenzeile ohne diese Regel adressiert (zur Kontrolle `grep -n "mouseClicked(\(12\|60\)," SettingsScreenTest.java HengstCoreTest.java`).
+  - Die Spieltest-Prüfung `LegacyGameTest.settingsWheel` (Offset 20 nach einer Raste) setzt voraus, dass die Liste im Spielfenster überläuft: mit den vier M0-Modulen sind es jetzt 5 Zeilen statt 4; Task 15 prüft das und passt bei Bedarf die Fenstergröße des Harness oder die Erwartung an.
 
 - [ ] **Step 1: Write the failing tests**
 
 ```java
+// Helfer in SettingsScreenTest (neben `texts(...)`), exakte Signaturen:
+static final EnumSet<GameVersion> ALL = EnumSet.allOf(GameVersion.class);
+/** n Funktionen "f0" .. "f<n-1>" mit den Nummern 1 .. n, alle Gruppe HUD. */
+private static FeatureRegistry registryWith(int n) {
+    FeatureRegistry r = new FeatureRegistry();
+    for (int i = 0; i < n; i++) { r.register(new TestFeature("f" + i, i + 1, ALL)); }
+    return r;
+}
+private FeatureRegistry defaultRegistry() { return allModules(); }                       // fps, cps, keystrokes, coordinates
+/** Zeichnet den Bildschirm neu und gibt die Aufrufe dieses Frames zurück. */
+private List<String> drawn() { canvas.calls.clear(); screen.render(canvas, 0, 0, 0f); return canvas.calls; }
+/** Öffnet mit festen englischen Texten, damit Überschriften und Namen der Testfunktionen lesbar sind (die echte Sprachdatei kennt "comfy" und "vis" nicht). */
+private void openNamed(FeatureRegistry reg) {
+    open(reg, "en_us");
+    screen = new SettingsScreen(model, I18n.of(texts("hengst.group.hud", "HUD", "hengst.group.visual", "Visual", "hengst.group.comfort", "Comfort",
+            "hengst.feature.fps", "fps", "hengst.feature.cps", "cps", "hengst.feature.comfy", "comfy", "hengst.feature.vis", "vis"), texts()), () -> closeCount++);
+}
+/** Alle Texte, die der letzte Frame in der Funktionsliste zeichnet (x 8 bis 136, y 36 bis 186), von oben nach unten: Überschriften und Funktionsnamen. */
+private List<String> listTexts() {
+    drawn();
+    List<String> out = new ArrayList<>();
+    for (Drawn d : textCalls(canvas, null)) { if (d.x >= 8 && d.x < 136 && d.y >= 36 && d.y < 186) { out.add(d.text); } }
+    return out;
+}
+// testutil/GroupFeature: public final class GroupFeature extends Feature
+//   public GroupFeature(String id, int number, FeatureGroup group)                                  // alle Versionen
+//   public GroupFeature(String id, int number, FeatureGroup group, EnumSet<GameVersion> versions)   // super(id, number, group, versions)
+
 @Test void features_are_grouped_under_headers_in_group_order() {
     FeatureRegistry reg = new FeatureRegistry();
     reg.register(new TestFeature("fps", 1, ALL)); reg.register(new TestFeature("cps", 2, ALL));
     reg.register(new GroupFeature("comfy", 21, FeatureGroup.COMFORT)); reg.register(new GroupFeature("vis", 25, FeatureGroup.VISUAL));
-    open(reg, "en_us");
-    assertEquals(Arrays.asList("HUD", "fps", "cps", "Visual", "vis", "Comfort", "comfy"), listTexts());   // Texte der Funktionsliste von oben nach unten (fehlende Funktionsnamen zeigen den Schlüssel; listTexts kürzt auf die ID)
+    openNamed(reg);
+    assertEquals(Arrays.asList("HUD", "fps", "cps", "Visual", "vis", "Comfort", "comfy"), listTexts());   // 7 Zeilen, alle sichtbar
 }
 @Test void a_group_without_supported_features_has_no_header() {
     FeatureRegistry reg = new FeatureRegistry();
     reg.register(new TestFeature("fps", 1, ALL));
     reg.register(new GroupFeature("vis", 25, FeatureGroup.VISUAL, EnumSet.of(GameVersion.V26_3)));
-    open(reg, "en_us");   // Version 1.8.9
+    openNamed(reg);   // Version 1.8.9
     assertEquals(Arrays.asList("HUD", "fps"), listTexts());
 }
 @Test void clicking_a_header_selects_and_changes_nothing() {
     open(defaultRegistry(), "en_us");
+    screen.render(canvas, 0, 0, 0f);
     Feature before = model.selected();
-    assertFalse(screen.mouseClicked(60, 46, 0));
+    assertFalse(screen.mouseClicked(60, 46, 0));         // Zeile 0 (y 36 bis 56) ist die Überschrift HUD
     assertSame(before, model.selected());
     assertFalse(model.dirty());
 }
@@ -827,7 +1023,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 }
 ```
 
-(Geometrie aus den bestehenden Konstanten bei 320 x 240: Liste x 8 bis 136, y 36, Höhe 150 = Hinweis in zwei Zeilen über dem Fertig-Knopf; `GroupFeature` ist ein Test-Helfer mit wählbarer Gruppe. Weicht die heutige Listenhöhe ab, rechnet der Implementierer die drei Zahlen nach der Formel oben neu und schreibt den Rechenweg in den Test-Kommentar.)
+(Geometrie aus den bestehenden Konstanten bei 320 x 240: Liste x 8 bis 136, y 36, Höhe 150 = Hinweis in zwei Zeilen über dem Fertig-Knopf; `GroupFeature`, `registryWith`, `defaultRegistry`, `drawn`, `openNamed` und `listTexts` sind oben mit exakter Signatur und Textzuordnung definiert). Weicht die heutige Listenhöhe ab, rechnet der Implementierer die drei Zahlen nach der Formel oben neu und schreibt den Rechenweg in den Test-Kommentar.)
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -922,7 +1118,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 }
 ```
 
-`InfoModulesAllocationTest` (interpreted): Richtung und Geschwindigkeit aktiv im echten `HudRenderer`, 3000 Frames und Ticks zum Einschwingen, dann 20000 Frames und 20000 Ticks bei gleichbleibenden Werten: 0 Bytes; zusätzlich Richtung mit einem Gierwinkel, der sich jeden Tick um 7° dreht: 0 Bytes in 20000 Ticks.
+`InfoModulesAllocationTest` (interpreted): Richtung und Geschwindigkeit aktiv im echten `HudRenderer`, 3000 Frames und Ticks zum Einschwingen, dann 20000 Frames und 20000 Ticks bei gleichbleibenden Werten (Spieler steht): 0 Bytes; zusätzlich `direction_while_turning_allocates_nothing`: Richtung mit einem Gierwinkel, der sich jeden Tick um 7° dreht: 0 Bytes in 20000 Ticks; und `speed_while_moving_allocates_nothing`: `platform.worldIdentity` gesetzt, jeden Tick `platform.playerX += 0.25` (konstant 5,0 m/s, der Ringpuffer wird belegt und überschrieben, der Text bleibt "5.0 m/s"), 3000 Ticks zum Einschwingen, dann 20000 Ticks: 0 Bytes.
 
 - [ ] **Step 2: Run tests to verify they fail**
 
@@ -1103,7 +1299,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
     ServerAddressModule m = new ServerAddressModule(); ModuleConfig cfg = ModuleConfig.defaults();
     platform.serverAddress = "aaaaaaaaaa.bbbbbbbbbb.cccccccccc.dddddddddd.eeeee";
     m.tick(ctx, cfg);
-    assertEquals("aaaaaaaaaa.bbbbbbbb..ccc.dddddddddd.eeeee", m.text());
+    assertEquals("aaaaaaaaaa.bbbbbbbb..cc.dddddddddd.eeeee", m.text());   // 49 Zeichen, Zeichen 0 bis 18 + ".." + Zeichen 30 bis 48
     assertEquals(40, m.text().length());
 }
 @Test void server_address_is_hidden_without_a_server() {
@@ -1119,7 +1315,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 }
 ```
 
-(50 Zeichen, Kürzung: Zeichen 0 bis 18 und 31 bis 49. Der Implementierer prüft die erwartete Zeichenkette gegen diese Regel, bevor er den Test festschreibt.)
+(Die Adresse hat 49 Zeichen, nicht 50: a an 0 bis 9, Punkt an 10, b an 11 bis 20, Punkt an 21, c an 22 bis 31, Punkt an 32, d an 33 bis 42, Punkt an 43, e an 44 bis 48. Kürzung: erste 19 Zeichen (Index 0 bis 18, `aaaaaaaaaa.bbbbbbbb`) + `".."` + letzte 19 Zeichen (Index 30 bis 48, `cc.dddddddddd.eeeee`), zusammen 40. Der Implementierer prüft die erwartete Zeichenkette mit `s.substring(0, 19) + ".." + s.substring(30)`, bevor er den Test festschreibt.)
 
 `InfoModulesAllocationTest`: Ping und Server-Adresse aktiv mit fester Adresse und festem Ping, 20000 Frames und Ticks: 0 Bytes.
 
@@ -1150,14 +1346,15 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 
 **Files:**
 - Create: `mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/hud/modules/StopwatchModule.java`
-- Modify: `.../hud/HudModule.java`, `.../hud/TextHudModule.java` (Konstruktor mit Gruppe), `.../FeatureCatalog.java`, Sprachdateien in common; `mod/modern/src/main/resources/assets/hengst/lang/en_us.json`, `de_de.json`; `mod/legacy/src/main/resources/assets/hengst/lang/en_US.lang`, `de_DE.lang`
-- Test: `.../hud/modules/StopwatchModuleTest.java`, `InfoModulesAllocationTest.java`, `ModulesTest.java`, `.../HengstCoreKeysTest.java`
+- Modify: `.../hud/HudModule.java`, `.../hud/TextHudModule.java` (Konstruktor mit Gruppe), `.../ui/SettingsScreen.java` (HUD-Stilzeilen für jede `HudModule`, siehe unten), `.../FeatureCatalog.java`, Sprachdateien in common; `mod/modern/src/main/resources/assets/hengst/lang/en_us.json`, `de_de.json`; `mod/legacy/src/main/resources/assets/hengst/lang/en_US.lang`, `de_DE.lang`
+- Test: `.../hud/modules/StopwatchModuleTest.java`, `InfoModulesAllocationTest.java`, `ModulesTest.java`, `.../HengstCoreKeysTest.java`, `.../ui/SettingsScreenTest.java`
 
 **Interfaces:**
 - Consumes: `KeySpec`, `Feature.onKey`, `HengstCore.onFeatureKey` (Task 7), Adapter-Registrierung (Task 8).
 - Produces:
   - `HudModule(String id, int number, FeatureGroup group, EnumSet<GameVersion> versions)` und dasselbe für `TextHudModule`; die alten Konstruktoren bleiben (Gruppe HUD).
-  - `StopwatchModule`: ID `stopwatch`, Nummer 21, Gruppe COMFORT (Entscheidung: ein Werkzeug mit eigenen Tasten, bringt die zweite Gruppe in die Liste), Option `tenths` (an), Platz TOP_LEFT 2, 72. Tasten `stopwatch.toggle` (NONE, PRESS) und `stopwatch.reset` (NONE, PRESS), Indizes 2 und 3 in `FeatureCatalog.keys`. Zeit nur aus `TimeSource` (monoton, `nowNanos` von `onKey`, `ctx.time()` im Tick); Start/Stopp addiert die gelaufene Zeit; Zurücksetzen stoppt und setzt auf 0; Loslassen tut nichts; der Zustand gilt für die Sitzung und wird nicht gespeichert. Text je Tick, neu nur bei geänderter angezeigter Zehntelsekunde: unter einer Stunde `"m:ss.t"` (`"0:00.0"`, `"1:05.3"`), ab einer Stunde `"h:mm:ss.t"` (`"1:00:00.0"`); ohne `tenths` ohne `".t"`; Zehntel abgerundet.
+  - `StopwatchModule`: ID `stopwatch`, Nummer 21, Gruppe COMFORT (Entscheidung: ein Werkzeug mit eigenen Tasten, bringt die zweite Gruppe in die Liste; bleibt mit dem Eigentümer offen: Gruppe COMFORT), Option `tenths` (an), Platz TOP_LEFT 2, 72. Tasten `stopwatch.toggle` (NONE, PRESS) und `stopwatch.reset` (NONE, PRESS), Indizes 2 und 3 in `FeatureCatalog.keys`. Zeit nur aus `TimeSource` (monoton, `nowNanos` von `onKey`, `ctx.time()` im Tick); Start/Stopp addiert die gelaufene Zeit; Zurücksetzen stoppt und setzt auf 0; Loslassen tut nichts; der Zustand gilt für die Sitzung und wird nicht gespeichert. Text je Tick, neu nur bei geänderter angezeigter Zehntelsekunde: unter einer Stunde `"m:ss.t"` (`"0:00.0"`, `"1:05.3"`), ab einer Stunde `"h:mm:ss.t"` (`"1:00:00.0"`); ohne `tenths` ohne `".t"`; Zehntel abgerundet.
+  - Einstellungsbildschirm: Hintergrund-, Schatten- und Farbzeile erscheinen für jede Funktion, die ein `HudModule` ist (`f instanceof HudModule`, unabhängig von der Gruppe; bisher `f.group() == FeatureGroup.HUD` in `SettingsScreen.buildOptions`), weil die Stoppuhr in COMFORT liegt und trotzdem mit diesem Stil zeichnet; Funktionen ohne HUD (die anonyme Funktion `zoom` in VISUAL) behalten keine Stilzeilen.
   - Sprachschlüssel common: `hengst.feature.stopwatch` Stopwatch / Stoppuhr; `hengst.option.stopwatch.tenths` Show tenths / Zehntel anzeigen. Adapter (modern JSON, 1.8.9 `.lang` in UTF-8, [B] `TranslationStorage` liest UTF-8): `key.hengst.stopwatch.toggle` Stopwatch start/stop / Stoppuhr Start/Stopp; `key.hengst.stopwatch.reset` Stopwatch reset / Stoppuhr zurücksetzen.
 
 - [ ] **Step 1: Write the failing tests**
@@ -1185,11 +1382,22 @@ StopwatchModule m = new StopwatchModule(); ModuleConfig cfg = ModuleConfig.defau
     m.onKey(0, false, time.now); time.advanceMillis(1_000); m.tick(ctx, cfg); assertEquals("0:00.0", m.text());
 }
 @Test void the_stopwatch_uses_the_monotonic_time_source() {
-    FakeWallClock wall = new FakeWallClock();   // eine verstellte Wanduhr hat keinen Einfluss
+    // Die Wanduhr ist im Kontext verdrahtet; eine verstellte Wanduhr hat keinen Einfluss, und die Stoppuhr fragt sie nie.
+    FakeWallClock wall = new FakeWallClock();
+    HudContext wctx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
     m.onKey(0, true, time.now); time.advanceMillis(2_000); wall.utcMillis -= 3_600_000;
-    m.tick(ctx, cfg); assertEquals("0:02.0", m.text());
+    m.tick(wctx, cfg); assertEquals("0:02.0", m.text());
+    time.advanceMillis(1_000); wall.utcMillis += 7_200_000; m.tick(wctx, cfg); assertEquals("0:03.0", m.text());
+    assertEquals(0, wall.currentCalls); assertEquals(0, wall.offsetCalls);
 }
 // HengstCoreKeysTest
+@Test void the_stopwatch_keys_have_the_persisted_names_at_indices_2_and_3() {
+    core = start();
+    assertEquals("key.hengst.stopwatch.toggle", core.keySpecs().get(2).translationKey());
+    assertEquals("key.hengst.stopwatch.reset", core.keySpecs().get(3).translationKey());
+    assertEquals(DefaultKey.NONE, core.keySpecs().get(2).defaultKey());
+    assertEquals(4, core.keySpecs().size());           // keine weitere Funktion hat Tasten: die Testtasten aus Task 7 liegen ab Index 4
+}
 @Test void one_press_through_the_core_toggles_once() {
     core = start(); platform.inWorld = true;
     core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
@@ -1207,6 +1415,22 @@ StopwatchModule m = new StopwatchModule(); ModuleConfig cfg = ModuleConfig.defau
 ```
 
 (`stopwatch(core)`: das Modul aus `core.registry().byId("stopwatch")`.) Die Adapter-Tests aus Task 8 (`every_key_of_every_version_is_named_in_both_language_files`) schlagen ohne die neuen Adapter-Schlüssel fehl und belegen so deren Vollständigkeit.
+
+In `SettingsScreenTest`:
+
+```java
+@Test void a_hud_module_in_another_group_gets_the_hud_style_rows() {
+    FeatureRegistry r = new FeatureRegistry();
+    r.register(new StopwatchModule());                       // Gruppe COMFORT: Überschrift Zeile 0, Stoppuhr Zeile 1
+    open(r, "en_us");
+    screen.render(canvas, 0, 0, 0f);
+    screen.mouseClicked(60, 36 + 20 + 5, 0);
+    assertEquals("stopwatch", model.selected().id());
+    assertEquals(4, screen.optionList().widgets().size());   // background, shadow, colour, tenths
+}
+```
+
+`a_feature_that_is_not_on_the_hud_gets_no_hud_style_rows` (Task 9) bleibt unverändert grün: die anonyme Funktion `zoom` ist kein `HudModule`.
 
 `InfoModulesAllocationTest`: Stoppuhr angehalten 20000 Frames und Ticks: 0 Bytes.
 
@@ -1246,7 +1470,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
   - `clock`: Text passt auf `\d\d:\d\d` und liegt höchstens eine Minute neben `LocalTime.now()`; gezeichnet.
   - `memory`: Text passt auf `RAM \d+% \d+/\d+ MB`; gezeichnet.
   - `ping` und `server_address` im Einzelspieler: Text leer, kein Rechteck im Layout, Pixel gleich der F1-Basis an ihrem Standardplatz (`checkSame`). [K] Bietet die Fabric-Client-Gametest-API des Knotens einen Dedicated-Server-Kontext (in den Quellen von Fabric API 0.166.2 bzw. 0.141.6 nach `TestDedicatedServerContext` suchen), verbindet der Test zusätzlich dorthin und prüft `"<n> ms"` bzw. die Adresse als Pixel; sonst steht "Mehrspieler nicht geprüft" im Report.
-  - `stopwatch`: die Tasten `key.hengst.stopwatch.toggle` und `.reset` auf K und L binden (`KeyMapping.setKey`, `KeyMapping.resetMapping()` [K]), K drücken, 1,5 s echte Zeit, K drücken: angezeigter Wert zwischen 1,0 und 2,5 s; Chat öffnen, K drücken, schließen: Text unverändert; L: `"0:00.0"`; gezeichnet.
+  - `stopwatch`: die Tasten `key.hengst.stopwatch.toggle` auf K und `key.hengst.stopwatch.reset` auf J binden (`KeyMapping.setKey`, `KeyMapping.resetMapping()` [K]). K und J sind auf beiden Versionen in den Vanilla-Belegungen unbelegt [K: verify in den Quellen der Version: `KeyMapping`-Konstruktoren in `Options`, 1.21.11 und 26.3 belegen unter anderem L mit "Advancements", daher nicht L]; der Test prüft trotzdem vor dem Binden über `options.keyMappings`, dass keine andere Belegung K oder J trägt, und bricht sonst mit der Belegung im Text ab (eine Taste gehört dem Spiel nie zweimal). Die Belegungen werden in einem `finally` zurückgesetzt (`mapping.setKey(mapping.getDefaultKey())` und `KeyMapping.resetMapping()`), auch wenn ein Schritt fehlschlägt. Ablauf: K drücken, 1,5 s echte Zeit, K drücken: angezeigter Wert zwischen 1,0 und 2,5 s; Chat öffnen, K drücken, schließen: Text unverändert; J: `"0:00.0"`; gezeichnet.
   - Danach `check(core.renderer().activeCount() == 4)`: die M0-Prüfungen und die Neustart-Phase laufen unverändert.
 
 - [ ] **Step 1: Namen prüfen**
@@ -1277,7 +1501,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 
 **Interfaces:**
 - Consumes: wie Task 14; Helfer des Harness (`onClient`, `layout()`, `shot`, `f1Baseline`, `checkShown`, `checkSame`, `waitUntil`, `waitRealTime`, `key`, `keyDown`).
-- Produces: `infoModules(HengstCore core)` in `fullPhase` nach den M0-Prüfungen und vor `dragFpsToBottomRight`, mit denselben Erwartungen wie Task 14. Abweichungen: Gierwinkel über das Feld `player.yaw = 180f` [B]; Laufen über `keyDown(Keyboard.KEY_W, ...)`; Stoppuhr-Tasten über `KeyBinding.setCode(int)` und `KeyBinding.updateKeysByCode()` [K Yarn-Namen] auf `Keyboard.KEY_K` und `KEY_L`; Chat über `Keyboard.KEY_T`. Mehrspieler ist im 1.8.9-Harness nicht möglich (zwei Spiele gleichzeitig sind verboten, ein Dedicated Server fehlt): Ping und Server-Adresse werden nur als unsichtbar im Einzelspieler geprüft.
+- Produces: `infoModules(HengstCore core)` in `fullPhase` nach den M0-Prüfungen und vor `dragFpsToBottomRight`, mit denselben Erwartungen wie Task 14. Abweichungen: Gierwinkel über das Feld `player.yaw = 180f` [B]; Laufen über `keyDown(Keyboard.KEY_W, ...)`; Stoppuhr-Tasten über `KeyBinding.setCode(int)` und `KeyBinding.updateKeysByCode()` [K Yarn-Namen] auf `Keyboard.KEY_K` (Start/Stopp) und `KEY_J` (Zurücksetzen); beide sind in den Vanilla-Belegungen von 1.8.9 unbelegt [K: verify in `GameOptions`], der Test prüft das trotzdem über `GameOptions.keysAll` vor dem Binden und setzt beide Belegungen in einem `finally` auf ihren Standard zurück (`setCode(getDefaultKeyCode())`, `updateKeysByCode()`); Chat über `Keyboard.KEY_T`. Die Prüfung `settingsWheel` (Offset 20 nach einer Raste) braucht eine überlaufende Liste: mit den Überschriften sind es 5 Zeilen statt 4 (Task 9); läuft die Liste im Fenster des Harness nicht über, wird die Fenstergröße oder die Erwartung dort angepasst und im Report genannt. Mehrspieler ist im 1.8.9-Harness nicht möglich (zwei Spiele gleichzeitig sind verboten, ein Dedicated Server fehlt): Ping und Server-Adresse werden nur als unsichtbar im Einzelspieler geprüft.
 
 - [ ] **Step 1: Namen prüfen**
 
@@ -1303,20 +1527,30 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 ### Task 16: Kosten je Modul messen (D7)
 
 **Files:**
+- Create: `mod/common/src/test/java/io/github/clemensjl/hengst/mod/common/testutil/TimedModule.java`
 - Modify: `mod/common/src/main/java/io/github/clemensjl/hengst/mod/common/hud/HudRenderer.java`, `mod/modern/src/gametest/.../HengstClientGameTest.java`, `mod/legacy/src/gametest/.../LegacyGameTest.java`, `docs/begleitmod-spec.md` (Abschnitt 8.8)
 - Test: `mod/common/src/test/java/.../hud/HudRendererTest.java`, `.../HengstCoreAllocationTest.java`
 
 **Interfaces:**
 - Produces:
   - `HudRenderer`: `public void setRenderTimes(long[] lastFrameNanos)` (nur Tests, auch die Spieltests; null ist Standard): ist ein Array gesetzt, schreibt `render` je aktivem Modul (Index wie `activeModules()`) die Dauer von `width`/`height`, `resolve`, Transform und `render` dieses Frames in ns über `ctx.time().nanoTime()`; übersprungene Module bekommen 0. Ohne Array kostet es eine Abfrage je Frame.
-  - Messung in beiden Spieltests: 120 Frames einschwingen, dann 600 Frames sammeln, Median. Modern liest die Werte im `ProbeElement` nach `inner`, 1.8.9 im Harness-Rückruf `afterHud()`. Messfälle: die vier M0-Module zusammen (Summe je Frame); jedes der sieben neuen Module allein; alle elf zusammen. Budgets (Entscheidung): vier M0-Module zusammen höchstens 50 µs (Spec 8.8), jedes neue Textmodul allein höchstens 10 µs, alle elf zusammen höchstens 120 µs. Logzeile je Fall `[hengst-gametest] COST <fall> median <ns> ns`. Auf beiden modernen Versionen misst das die CPU-Zeit, mit der das Modul seinen Zeichenauftrag abgibt (das Spiel zeichnet später gesammelt); die Kosten des späteren Zeichnens deckt der FPS-Vergleich in Task 19 ab. Auf 1.8.9 misst es die Aufrufe der festen Pipeline.
-  - Spec 8.8 bekommt den Satz: "Jedes Textmodul ab M1a hat ein eigenes Budget von 10 µs je Frame (Median im Spieltest), alle elf Module von M0 und M1a zusammen 120 µs."
+  - Messung in beiden Spieltests: 120 Frames einschwingen, dann 600 Frames sammeln, Median. Modern liest die Werte im `ProbeElement` nach `inner`, 1.8.9 im Harness-Rückruf `afterHud()`. Messfälle: die vier M0-Module zusammen (Summe je Frame); jedes der sieben neuen Module allein; alle elf zusammen. Budgets (Entscheidung): vier M0-Module zusammen höchstens 50 µs (Spec 8.8), jedes neue Textmodul allein höchstens 10 µs, alle elf zusammen höchstens 120 µs. Logzeile je Fall `[hengst-gametest] COST <fall> median <ns> ns`. Gemessen wird auf allen drei Versionen dieselbe Größe: die Zeit, die der Kern je Modul und Frame im Modul verbringt. Auf den modernen Versionen ist das die CPU-Zeit bis zur Abgabe des Zeichenauftrags (das Spiel zeichnet erst später gesammelt), auf 1.8.9 enthält sie die Aufrufe der festen Pipeline. Die Kosten des späteren Zeichnens erfasst diese Messung nicht; sie deckt der Bildratenvergleich in Task 19 ab. Die 50 µs für die vier M0-Module sind das Budget dieser gemessenen Größe auf allen drei Versionen (sie sind keine Fortschreibung der M0-Zahlen aus dem Bildratenvergleich, 26.3 etwa 26 µs, 1.8.9 etwa 34 µs, 1.21.11 nicht auflösbar).
+  - `testutil/TimedModule` (einmal hier definiert): `public final class TimedModule extends HudModule` mit `public TimedModule(String id, int number, int width, int height, FakeTime time, long renderNanos)`; `width(Canvas, ModuleConfig)` und `height(Canvas, ModuleConfig)` liefern die Maße, `render(Canvas, ModuleConfig, HudContext)` rechnet `time.now += renderNanos` und zeichnet nichts; Gruppe HUD, alle Versionen (`super(id, number, EnumSet.allOf(GameVersion.class))`). `FixedSizeModule` bleibt `final` und unverändert.
+  - Spec 8.8 bekommt den Satz: "Die Messung je Modul im Spieltest erfasst die Zeit, die der Kern je Frame im Modul verbringt: auf 1.21.11 und 26.3 bis zur Abgabe der Zeichenaufträge, weil das Spiel später gesammelt zeichnet, auf 1.8.9 einschließlich der Aufrufe der festen Pipeline. Sie ist nicht der Bildratenvergleich der M0-Abschlussprüfung (26.3 etwa 26, 1.8.9 etwa 34 Mikrosekunden, der die Kosten des späteren Zeichnens mitzählt und je Meilenstein einmal wiederholt wird). Budget der gemessenen Größe (Median im Spieltest, je Version): die vier M0-Module zusammen 50 µs, jedes Textmodul ab M1a allein 10 µs, alle elf Module von M0 und M1a zusammen 120 µs."
 
 - [ ] **Step 1: Write the failing tests**
 
 ```java
 @Test void render_times_are_written_per_module_when_asked() {
-    // FixedSizeModule-Unterklasse, deren render die FakeTime um 7 µs vorstellt; zweites Modul mit Größe 0
+    // TimedModule (testutil), dessen render die FakeTime um 7 µs vorstellt; zweites Modul mit Größe 0
+    FeatureRegistry reg = new FeatureRegistry();
+    reg.register(new TimedModule("t1", 40, 20, 10, time, 7_000));
+    reg.register(new TimedModule("t2", 41, 0, 0, time, 9_000));
+    Profile profile = new Profile();
+    profile.module("t1").setEnabled(true); profile.module("t2").setEnabled(true);
+    HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+    renderer.rebuild(profile);
+    FakeCanvas canvas = new FakeCanvas();
     long[] times = new long[2];
     renderer.setRenderTimes(times);
     renderer.render(canvas, ctx);
@@ -1393,11 +1627,11 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 
 - [ ] **Step 1: Spec**
 
-Abschnitt 4.3: neue Schnittstellen und Einstiegspunkte mit Signatur (`GameView.pingMillis()`, `worldIdentity()`, `memoryUsedBytes()`, `memoryMaxBytes()`; `WallClock`; `HengstCore.onFeatureKey(int, boolean)`, `keySpecs()`; `KeySpec`, `DefaultKey`; `FeatureState.on(int)`; `RestrictionPolicy`), Satz: "Mixins späterer Funktionen prüfen als Erstes `FeatureState.on(<nummer>)`." Abschnitt 6: Gruppen-Überschriften, Bildlaufanzeige, Tasten je Funktion in der Kategorie "Hengst" (Stoppuhr unbelegt). Abschnitt 7: für 7, 8, 10, 15 die in M1a genutzten Hooks mit geprüftem Namen und Datum auf [B] setzen oder korrigieren; Gruppe der Stoppuhr. Abschnitt 9.2: Satz, dass der Kern den Serverwechsel im Tick erkennt und die Sperrliste ab M4 über `RestrictionPolicy` einspeist.
+Abschnitt 4.3: neue Schnittstellen und Einstiegspunkte mit Signatur (`GameView.pingMillis()`, `worldIdentity()`, `memoryUsedBytes()`, `memoryMaxBytes()`; `WallClock`; `HengstCore.onFeatureKey(int, boolean)`, `keySpecs()`; `KeySpec`, `DefaultKey`; `FeatureState.on(int)`; `RestrictionPolicy`), Satz: "Mixins späterer Funktionen prüfen als Erstes `FeatureState.on(<nummer>)`." Abschnitt 6: Gruppen-Überschriften, Bildlaufanzeige, Tasten je Funktion in der Kategorie "Hengst" (Stoppuhr unbelegt). Abschnitt 7: für 7, 8, 10, 15 die in M1a genutzten Hooks mit geprüftem Namen und Datum auf [B] setzen oder korrigieren; Gruppe der Stoppuhr. Abschnitt 9.2: Satz, dass der Kern den Serverwechsel im Tick erkennt und die Sperrliste ab M4 über `RestrictionPolicy` einspeist. Abschnitt 8, Regel 6 ("Kein Dateizugriff im Frame oder Tick"): Satz "Einzige Ausnahme: Beim Wechsel der Spielsprache liest der Tick einmal die Sprachdatei aus dem Klassenpfad (`I18n.load`), höchstens einmal je Wechsel und nie im Frame-Pfad." Abschnitt 5 (Konfiguration) und Abschnitt 8, Regel 8 stehen mit dem Wortlaut aus Task 2 beziehungsweise Task 16 schon im Text; hier nur gegenlesen, dass sie dort ohne Widerspruch zu 4.3 stehen.
 
 - [ ] **Step 2: README**
 
-Abschnitt "Install": Tastennamen der Stoppuhr; neuer Abschnitt "What was verified (M1a)" bleibt leer bis Task 19.
+Abschnitt "Install into an instance": Tastennamen der Stoppuhr; ein Absatz "Known limitations" (englisch, wie die README): (1) nach einem Lauf mit einem M0-Build verwirft das Spiel selbst die unbekannten Tastenzeilen `key_key.hengst.stopwatch.*` aus `options.txt`, die Stoppuhr-Tasten sind dann neu zu belegen; (2) ein M0-Build verwirft beim Zurückschreiben unbekannte Wurzelschlüssel eines Profils, unbekannte Schlüssel in den Einträgen seiner vier Module und unbekannte Schlüssel in `settings.json`; M1a legt deshalb neue Daten nur als Moduleintrag oder in `options` ab, und die Stoppuhr speichert nichts. Neuer Abschnitt "What was verified (M1a)" bleibt leer bis Task 19.
 
 - [ ] **Step 3: Commit**
 
@@ -1421,7 +1655,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 - [ ] **Step 1: Bauen**
 
 Run: `./gradlew clean buildAll`; `unzip -l` der drei Jars
-Expected: `BUILD SUCCESSFUL`; drei Jars; keine Testklassen; `LICENSE_hengst` enthalten.
+Expected: `BUILD SUCCESSFUL`; drei Jars; keine Testklassen; `LICENSE_hengst` enthalten. Scheitert der Lauf mit "Unable to delete directory ... test-results ... binary": die leeren `binary`-Verzeichnisse löschen und wiederholen (Global Constraints).
 
 - [ ] **Step 2: Spielläufe wie in M0**
 
@@ -1430,7 +1664,7 @@ Vorgehen, Instanzen, Laufzeiten und Steuerung genau wie in `.superpowers/sdd/202
 2. Beim ersten Start nur die vier M0-Module; in den Einstellungen die Gruppen "HUD" und "Komfort" (Deutsch) bzw. "Comfort", Bildlaufanzeige bei 320 x 240 GUI-Pixeln.
 3. Jedes der sieben Module einschalten: es erscheint an seinem Standardplatz mit dem Format aus der Tabelle; Ping und Server-Adresse im Einzelspieler unsichtbar.
 4. Stoppuhr: in den Steuerungsoptionen unter "Hengst" mit den zwei Namen; eine Taste binden, starten, stoppen, zurücksetzen.
-5. Sprache im Spiel auf Deutsch stellen, Welt bleibt offen: die Richtung zeigt nach höchstens einer Sekunde "O" statt "E".
+5. Zuerst nach Osten blicken (1.21.11 und 26.3 `/tp @s ~ ~ ~ -90 0`, 1.8.9 `/tp @p ~ ~ ~ -90 0` [K: Selektor und Winkelargumente der Version prüfen]): die Richtung zeigt `E 90°`. Dann die Sprache im Spiel auf Deutsch stellen, Welt bleibt offen: die Richtung zeigt nach höchstens einer Sekunde `O 90°` statt `E 90°` (am Spawn mit Blickwinkel 0 zeigt sie in beiden Sprachen `S`, der Wechsel wäre dort nicht zu sehen).
 6. 26.3: wie in M0 über den eigenen Spieltest im vom Launcher gestarteten Spiel (Schritte 2 bis 5 dort, soweit der Test sie enthält).
 7. FPS-Vergleich nach der Methode aus Abschnitt "D: cost measurement" des Task-14-Reports: ohne Mod, mit den vier M0-Modulen, mit allen elf; Tabelle in den README-Abschnitt.
 
@@ -1454,5 +1688,5 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 1. **Spec-Abdeckung:** D1 Task 5 (+ Nachweis Task 8), D2 Tasks 7, 8, 13, D3 Task 6 (I18n, WallClock) und Tasks 8, 11 (GameView), D4 Task 1, D5 Task 2, D6 Task 6, D7 Tasks 16, 17, F8 Task 5, F9 Task 3, F10 Task 4, Gruppen und Bildlaufanzeige Task 9, Module 7 bis 21 Tasks 10 bis 13, Spielprüfung Tasks 14, 15, 19, Doku Tasks 2, 16, 18, 19. Nicht in M1a: Item- und Sprite-Zeichnen (M1b), echte Sperrliste (M4).
 2. **Schritt-Scan:** jede Test-Stufe nennt Name und Zusicherungen; die Spieltest-Tasks beschreiben Schritte und Erwartungen, weil der Test dort der Code ist; die drei Rechenstellen mit Ableitung (Bildlaufanzeige, Kürzung der Adresse, Geschwindigkeit mit 2 Stellen) stehen mit Rechenweg da.
 3. **Typen:** `applyConfigForTest`, `keySpecs`, `onFeatureKey(int, boolean)`, `FeatureState.on(int)`, `FeatureGate.active(Feature, ModuleConfig)`, `HudContext.setI18n/i18n/languageGeneration/wallClock`, `GameView.pingMillis/worldIdentity/memoryUsedBytes/memoryMaxBytes`, `ScreenClose(Save, Runnable, Platform, String)`, `TextFit.prefix/middle/wrap`, `ScrollAccumulator(double)`, `AdapterGuard(String[], Log)` werden in den späteren Tasks mit genau diesen Namen genutzt.
-4. **Review Focus:** fünf Zeilen, jede mit Tests in Task 2, 6, 10, 11, 12, 13.
+4. **Review Focus:** fünf Zeilen, jede mit Tests in Task 2, 6, 10, 11, 12, 13; die Tests von Zeile 1 prüfen auch, was M0-Builds nach einem Rückschreiben übrig lassen (`M0CompatibilityTest`).
 5. **Umfang:** Code-Blöcke sind Tests und Commits; Körper nur, wo eine Regel sonst offen wäre (Kurs und Sektor, Zeitgrenzen, Port-Regel).
