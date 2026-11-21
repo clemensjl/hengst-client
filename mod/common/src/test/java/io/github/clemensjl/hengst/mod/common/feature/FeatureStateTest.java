@@ -85,6 +85,21 @@ class FeatureStateTest {
         assertFalse(FeatureState.on(1));
     }
 
+    @Test void withdraw_publishes_a_copy_without_the_given_features_and_never_mutates_the_old_array() {
+        List<Feature> features = Arrays.<Feature>asList(new TestFeature("a", 1, all), new TestFeature("b", 2, all));
+        Profile p = new Profile();
+        p.module("a").setEnabled(true);
+        p.module("b").setEnabled(true);
+        FeatureState.rewrite(features, p, new FeatureGate(GameVersion.V1_8_9, RestrictionPolicy.NONE));
+        boolean[] before = FeatureState.published();
+        boolean[] copy = before.clone();
+        FeatureState.withdraw(Arrays.<Feature>asList(features.get(0), new TestFeature("far", 5000, all)));
+        assertNotSame(before, FeatureState.published());
+        assertTrue(Arrays.equals(copy, before));
+        assertFalse(FeatureState.on(1));
+        assertTrue(FeatureState.on(2));
+    }
+
     @Test void a_throw_in_the_middle_of_a_rewrite_leaves_the_published_state_intact() {
         List<Feature> features = Arrays.<Feature>asList(new TestFeature("a", 1, all), new TestFeature("b", 2, all));
         Profile p = new Profile();

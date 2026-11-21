@@ -256,44 +256,91 @@ class HengstCoreTest {
         assertTrue(platform.warnings.get(1).contains("bad2"));
     }
 
-    @Test void a_failing_rebuild_does_not_skip_the_state_rewrite_and_the_notification() {
-        int[] calls = new int[1];
+    /** Flips a flag during the notification, so a policy keyed on the flag fails exactly in the rewrite that follows. */
+    private static final class Flipper extends RecordingFeature {
+        final boolean[] armed;
+        final boolean[] policyThrows;
+        final boolean failItself;
+
+        Flipper(String id, int number, boolean[] armed, boolean[] policyThrows, boolean failItself) {
+            super(id, number);
+            this.armed = armed; this.policyThrows = policyThrows; this.failItself = failItself;
+        }
+
+        @Override public void onConfigChanged(ModuleConfig cfg) {
+            super.onConfigChanged(cfg);
+            if (armed[0]) {
+                policyThrows[0] = true;
+                if (failItself) { throw new IllegalStateException("notify"); }
+            }
+        }
+    }
+
+    @Test void a_failing_rebuild_keeps_the_previous_hud_and_does_not_skip_the_rewrite_and_the_notification() {
         boolean[] armed = new boolean[1];
+        boolean[] first = new boolean[1];
         core = HengstCore.start(platform, time, clock, (f, server) -> {
-            if (armed[0] && calls[0]++ == 0) { throw new IllegalStateException("rebuild"); }
+            if (armed[0] && !first[0]) { first[0] = true; throw new IllegalStateException("rebuild"); }
             return false;
         });
         RecordingFeature rec = new RecordingFeature("rec", 48);
         core.registerForTest(rec);
         int before = rec.calls;
+        assertEquals(4, core.renderer().activeCount());
         core.activeProfile().module("fps").setEnabled(false);
         armed[0] = true;
         core.applyConfigForTest();                       // the first policy call is the renderer's
+        assertEquals(4, core.renderer().activeCount());  // the previous HUD arrays stay: a stale HUD beats an empty one
+        platform.inWorld = true;
+        core.onClientTick();
+        core.onHudRender(canvas, 0f);
+        assertFalse(canvas.calls.isEmpty());
         assertFalse(FeatureState.on(1));
         assertEquals(before + 1, rec.calls);
         assertEquals(1, platform.warnings.size());
         assertTrue(platform.warnings.get(0).contains("rebuilding the HUD"));
+        assertTrue(platform.warnings.get(0).contains("keeping the previous HUD"));
     }
 
     @Test void a_failing_rewrite_keeps_the_previous_state_and_still_notifies() {
-        int[] calls = new int[1];
         boolean[] armed = new boolean[1];
+        boolean[] policyThrows = new boolean[1];
         core = HengstCore.start(platform, time, clock, (f, server) -> {
-            if (armed[0] && ++calls[0] == 4) { throw new IllegalStateException("rewrite"); }   // 3 enabled modules in the rebuild, then the rewrite
+            if (policyThrows[0]) { throw new IllegalStateException("rewrite"); }
             return false;
         });
-        RecordingFeature rec = new RecordingFeature("rec", 48);
-        core.registerForTest(rec);
-        int before = rec.calls;
+        Flipper flip = new Flipper("flip", 49, armed, policyThrows, false);
+        core.registerForTest(flip);
+        int before = flip.calls;
         assertTrue(FeatureState.on(1));
         core.activeProfile().module("fps").setEnabled(false);
         armed[0] = true;
-        calls[0] = 0;
-        core.applyConfigForTest();
+        core.applyConfigForTest();                       // rebuild passes, the notification flips the flag, the rewrite throws
         assertTrue(FeatureState.on(1));                  // the previously published state stays
-        assertEquals(before + 1, rec.calls);
+        assertEquals(before + 1, flip.calls);
         assertEquals(1, platform.warnings.size());
         assertTrue(platform.warnings.get(0).contains("feature state"));
+    }
+
+    @Test void a_failing_notification_and_a_failing_rewrite_switch_that_feature_off_and_keep_the_rest() {
+        boolean[] armed = new boolean[1];
+        boolean[] policyThrows = new boolean[1];
+        core = HengstCore.start(platform, time, clock, (f, server) -> {
+            if (policyThrows[0]) { throw new IllegalStateException("rewrite"); }
+            return false;
+        });
+        core.activeProfile().module("x").setEnabled(true);
+        core.activeProfile().module("rec").setEnabled(true);
+        core.registerForTest(new Flipper("x", 47, armed, policyThrows, true));
+        core.registerForTest(new RecordingFeature("rec", 48));
+        assertTrue(FeatureState.on(47));
+        assertTrue(FeatureState.on(48));
+        core.activeProfile().module("rec").setEnabled(false);   // a successful rewrite would turn rec off
+        armed[0] = true;
+        core.applyConfigForTest();
+        assertFalse(FeatureState.on(47));                // its fields are half updated: off
+        assertTrue(FeatureState.on(48));                 // the previous value stays
+        assertTrue(FeatureState.on(1));
     }
 
     @Test void a_failing_editor_save_goes_through_the_core_wiring_closes_and_stays_dirty() throws Exception {

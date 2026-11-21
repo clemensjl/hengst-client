@@ -27,6 +27,20 @@ public final class FeatureState {
     }
 
     /**
+     * Only the core calls this, on the client thread, when {@link #rewrite} failed: publishes a copy of the current
+     * state with the given features off. A plain array copy, no policy is asked, so it cannot fail.
+     */
+    public static void withdraw(List<Feature> features) {
+        boolean[] next = state.clone();
+        for (Feature f : features) {
+            if (f.number() >= 0 && f.number() < next.length) {
+                next[f.number()] = false;
+            }
+        }
+        state = next;
+    }
+
+    /**
      * Only the core calls this, on the client thread: builds the state of the active features and publishes it.
      * Cold path; allocates one array per call. An exception (a throwing restriction policy) leaves the previous state.
      */

@@ -45,7 +45,8 @@ public abstract class Feature {
      * changes (join, leave, switch). Each pass also rebuilds the HUD and rewrites {@link FeatureState}. Features
      * without a HUD copy their options into primitive fields here; HUD modules keep reading in {@code tick}. An
      * exception or linkage error is logged once and stops nothing, but the feature is off in {@link FeatureState}
-     * until a pass in which this method returns normally.
+     * until a pass in which this method returns normally. During the call {@link FeatureState} still shows the values
+     * from before the change: do not read it here.
      */
     public void onConfigChanged(ModuleConfig cfg) {}
 }

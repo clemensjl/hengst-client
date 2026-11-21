@@ -231,10 +231,11 @@ public final class HengstCore {
             renderer.rebuild(profile);
         } catch (RuntimeException | LinkageError e) {
             failed = true;
-            configFailure("rebuilding the HUD", e);
+            configFailure("rebuilding the HUD (keeping the previous HUD)", e);
         }
         List<Feature> all = registry.all();
         List<Feature> healthy = new ArrayList<Feature>(all.size());
+        List<Feature> broken = new ArrayList<Feature>();
         for (Feature f : all) {
             if (!f.supports(platform.version())) {
                 healthy.add(f);
@@ -245,6 +246,7 @@ public final class HengstCore {
                 healthy.add(f);
             } catch (RuntimeException | LinkageError e) {
                 failed = true;
+                broken.add(f);
                 configFailure("the configuration of " + f.id(), e);
             }
         }
@@ -253,6 +255,10 @@ public final class HengstCore {
         } catch (RuntimeException | LinkageError e) {
             failed = true;
             configFailure("publishing the feature state", e);
+            // The previous state stays, except for features whose fields are half updated.
+            if (!broken.isEmpty()) {
+                FeatureState.withdraw(broken);
+            }
         }
         if (!failed) {
             configLogged.clear();
