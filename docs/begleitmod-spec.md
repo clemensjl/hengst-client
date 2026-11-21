@@ -254,7 +254,7 @@ Gemeinsame Hooks:
 | 5 | Trankeffekte | ja | ja | ja | 1.8.9 `getStatusEffectInstances()` [K]; modern `getActiveEffects()` [K]; Vanilla-Anzeige ausblenden: `VanillaHudElements.STATUS_EFFECTS` (1.21.11) / `MOB_EFFECTS` (26.3) [B]; 1.8.9 hat keine Vanilla-HUD-Anzeige |
 | 6 | Koordinaten | ja | ja | ja | 1.8.9 Felder `Entity.x/y/z` [B]; modern `getX()/getY()/getZ()` [B, geprüft 2026-11-21]; Text im Tick |
 | 7 | Richtung/Kompass | ja | ja | ja | 1.8.9 `Entity.yaw` [B]; modern `getYRot()` [K] |
-| 8 | Ping | ja | ja | ja | vom Server gemeldete Latenz: 1.8.9 `PlayerListEntry.getLatency()` [K]; modern `PlayerInfo.getLatency()` [K] |
+| 8 | Ping | ja | ja | ja | vom Server gemeldete Latenz: 1.8.9 `PlayerListEntry.getLatency()` [K]; modern `PlayerInfo.getLatency()` [K]; ein Wert von 0 gilt als unbekannt und wird als „? ms“ gezeigt, weil ein Server die Latenz des eigenen Eintrags bis zur ersten Messung mit 0 meldet |
 | 9 | Uhr | ja | ja | ja | common |
 | 10 | Server-Adresse | ja | ja | ja | 1.8.9 `MinecraftClient.getCurrentServerEntry()` [B]; modern `Minecraft.getCurrentServer()` [K] |
 | 11 | Speicher | ja | ja | ja | common (`Runtime`), Text einmal pro Sekunde |

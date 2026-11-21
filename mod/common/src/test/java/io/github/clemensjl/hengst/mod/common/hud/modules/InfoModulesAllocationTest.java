@@ -585,4 +585,97 @@ class InfoModulesAllocationTest {
         }
         assertEquals(0, allocated() - before);
     }
+
+    /**
+     * A new address that needs the cut, with a port: the module builds the shown text in one reused builder and makes
+     * exactly one String of 40 Latin-1 chars: 24 + (16 + 40 = 56) = 80 bytes. The bound is that plus 16 bytes of slack
+     * (96); a second String of any size (at least 48 bytes) breaks it, so does a port-free substring (51 chars, 88
+     * bytes) built next to the result.
+     */
+    private static final long CUT_ADDRESS_STRING = 24 + (16 + 40);
+
+    @Test
+    void a_new_address_that_needs_the_cut_allocates_one_string_and_nothing_else() {
+        String[] addresses = new String[64];
+        for (int i = 0; i < addresses.length; i++) {
+            addresses[i] = "aaaaaaaaaa.bbbbbbbbbb.cccccccccc.dddddddddd." + (10 + i) + "eee:25565"; // 55 chars, 49 without the port
+        }
+        startNet(addresses[0], 42);
+        long maxChange = 0;
+        long quiet = 0;
+        int changes = 0;
+        String last = address.text();
+        for (int i = 0; i < 20000; i++) {
+            if (i % 20 == 19) {
+                platform.serverAddress = addresses[(i / 20) % addresses.length];
+            }
+            long before = allocated();
+            netRenderer.tick(ctx);
+            long used = allocated() - before;
+            if (address.text() != last) {
+                last = address.text();
+                changes++;
+                maxChange = Math.max(maxChange, used);
+            } else {
+                quiet += used;
+            }
+        }
+        assertEquals(40, address.text().length());
+        System.out.println("ALLOC cut address bytes per change: max " + maxChange + " (one String of 40 chars = " + CUT_ADDRESS_STRING + ")");
+        assertTrue(changes >= 900, "too few changes to prove anything: " + changes);
+        assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
+        assertTrue(maxChange <= CUT_ADDRESS_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (CUT_ADDRESS_STRING + SLACK));
+    }
+
+    /**
+     * Fitting to the screen: a 40-char address of wide glyphs at scale 3 on a 320 px canvas is cut again at the first
+     * frame after the text, the scale or the canvas changed (that cold step builds a few short temporaries, once);
+     * every further frame draws the cached fitted String and allocates nothing.
+     */
+    @Test
+    void a_fitted_text_allocates_nothing_after_the_first_frame() {
+        platform.serverAddress = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW";
+        ServerAddressModule m = new ServerAddressModule();
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(m);
+        Profile p = new Profile();
+        ModuleConfig c = p.module("server_address");
+        c.setEnabled(true);
+        c.setAnchor(Anchor.TOP_RIGHT);
+        c.setScale(3.0f);
+        c.setBackground(true);
+        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        r.rebuild(p);
+        io.github.clemensjl.hengst.mod.common.testutil.WideGlyphCanvas wide =
+                new io.github.clemensjl.hengst.mod.common.testutil.WideGlyphCanvas(320, 240);
+        r.tick(ctx);
+        long before = allocated();
+        ctx.frames().onFrame();
+        r.render(wide, ctx);
+        long first = allocated() - before;
+        for (int i = 0; i < 3000; i++) {
+            ctx.frames().onFrame();
+            r.tick(ctx);
+            r.render(wide, ctx);
+        }
+        wide.reset();
+        int n = 20000;
+        long frameBytes = 0;
+        long tickBytes = 0;
+        for (int i = 0; i < n; i++) {
+            before = allocated();
+            r.tick(ctx);
+            tickBytes += allocated() - before;
+            before = allocated();
+            ctx.frames().onFrame();
+            r.render(wide, ctx);
+            frameBytes += allocated() - before;
+        }
+        System.out.println("ALLOC fitted text first frame: " + first + " bytes");
+        assertTrue(wide.lastText.contains(".."), wide.lastText);
+        assertTrue(wide.maxRight <= 320 && wide.minLeft >= 0, "text reaches " + wide.minLeft + " to " + wide.maxRight);
+        assertEquals(n, wide.texts);
+        assertEquals(0, frameBytes, "allocated " + frameBytes + " bytes in " + n + " frames");
+        assertEquals(0, tickBytes, "allocated " + tickBytes + " bytes in " + n + " ticks");
+    }
 }

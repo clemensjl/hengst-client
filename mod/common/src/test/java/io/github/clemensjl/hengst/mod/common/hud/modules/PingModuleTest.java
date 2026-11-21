@@ -1,7 +1,6 @@
 package io.github.clemensjl.hengst.mod.common.hud.modules;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertSame;
 
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.hud.CpsCounter;
@@ -81,10 +80,16 @@ class PingModuleTest {
     }
 
     @Test
-    void ping_zero_is_shown() {
+    void ping_zero_is_unknown_because_a_server_reports_zero_before_its_first_measurement() {
         platform.pingMillis = 0;
         m.tick(ctx, cfg);
-        assertEquals("0 ms", m.text());
+        assertEquals("? ms", m.text());
+        platform.pingMillis = 1;
+        ticks(20);
+        assertEquals("1 ms", m.text());
+        platform.pingMillis = 0;
+        ticks(20);
+        assertEquals("? ms", m.text());
     }
 
     @Test
@@ -101,16 +106,13 @@ class PingModuleTest {
     }
 
     @Test
-    void the_value_follows_unknown_and_known_and_keeps_the_reference_while_unchanged() {
+    void the_value_follows_unknown_and_known() {
         platform.pingMillis = -1;
         m.tick(ctx, cfg);
         assertEquals("? ms", m.text());
         platform.pingMillis = 30;
         ticks(20);
         assertEquals("30 ms", m.text());
-        String first = m.text();
-        ticks(100);
-        assertSame(first, m.text());
         platform.pingMillis = -1;
         ticks(20);
         assertEquals("? ms", m.text());
@@ -138,5 +140,20 @@ class PingModuleTest {
         platform.pingMillis = 80;
         m.tick(ctx, cfg);
         assertEquals("80 ms", m.text());
+    }
+
+    @Test
+    void applying_the_config_clears_the_shown_text_until_the_next_tick() {
+        platform.pingMillis = 42;
+        m.tick(ctx, cfg);
+        assertEquals("42 ms", m.text());
+        m.onConfigChanged(cfg);
+        assertEquals("", m.text());
+        m.tick(ctx, cfg);
+        assertEquals("42 ms", m.text());
+        m.onConfigChanged(cfg);
+        platform.serverAddress = null; // left the server while the module was off
+        m.tick(ctx, cfg);
+        assertEquals("", m.text());
     }
 }

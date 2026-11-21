@@ -2,7 +2,6 @@ package io.github.clemensjl.hengst.mod.common.hud.modules;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
@@ -94,31 +93,72 @@ class ServerAddressModuleTest {
 
     @Test
     void the_cut_never_splits_a_surrogate_pair() {
-        String pair = "😀";
-        StringBuilder in = new StringBuilder();
-        for (int i = 0; i < 18; i++) {
-            in.append('a');
-        }
-        in.append(pair); // high surrogate at index 18, low at 19: a cut after 19 chars would split it
-        while (in.length() < 30) {
-            in.append('b');
-        }
-        in.append(pair); // high at 30, low at 31: a tail of 19 chars would start inside it
-        while (in.length() < 55) {
-            in.append('c');
-        }
-        String result = shown(in.toString(), false);
-        assertTrue(result.length() <= 40, "length " + result.length());
-        assertTrue(result.contains(".."));
-        for (int i = 0; i < result.length(); i++) {
-            char c = result.charAt(i);
+        // 55 chars: a pair at 18/19 (a head of 19 chars would end inside it) and a pair at 35/36 (index len - 20: a
+        // tail of 19 chars would start at 36, inside it)
+        char[] in = new char[55];
+        java.util.Arrays.fill(in, 'c');
+        in[18] = '\uD83D';
+        in[19] = '\uDE00';
+        in[35] = '\uD83D';
+        in[36] = '\uDE00';
+        String result = shown(new String(in), false);
+        assertEquals(18 + 2 + 18, result.length(), "both pairs are dropped from the cut: 18 + .. + 18");
+        assertTrue(result.startsWith("cccccccccccccccccc..") && result.endsWith("cccccccccccccccccc"), result);
+        assertNoLoneSurrogate(result);
+        // pairs on the kept side stay whole: one at 17/18 and one at 37/38
+        java.util.Arrays.fill(in, 'c');
+        in[17] = '\uD83D';
+        in[18] = '\uDE00';
+        in[37] = '\uD83D';
+        in[38] = '\uDE00';
+        result = shown(new String(in), false);
+        assertEquals(19 + 2 + 19, result.length());
+        assertNoLoneSurrogate(result);
+    }
+
+    private static void assertNoLoneSurrogate(String s) {
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
             if (Character.isHighSurrogate(c)) {
-                assertTrue(i + 1 < result.length() && Character.isLowSurrogate(result.charAt(i + 1)), "lone high at " + i);
+                assertTrue(i + 1 < s.length() && Character.isLowSurrogate(s.charAt(i + 1)), "lone high at " + i);
                 i++;
             } else {
                 assertFalse(Character.isLowSurrogate(c), "lone low at " + i);
             }
         }
+    }
+
+    @Test
+    void the_section_sign_is_never_shown() {
+        assertEquals("cRed.example", shown("§cRed.example:25565", false));
+        assertEquals("cRed.example:25565", shown("§cRed.example:25565", true));
+        assertEquals("a.example", shown("a.§§example", false));
+        assertEquals("", shown("§", false));
+        // the cut counts what is shown: 41 chars with one sign are 40 shown chars and stay whole
+        String forty = "abcdefghijklmnopqrstuvwxyzabcdefghijklmn";
+        assertEquals(40, forty.length());
+        assertEquals(forty, shown(forty.substring(0, 20) + "§" + forty.substring(20), false));
+    }
+
+    @Test
+    void applying_the_config_clears_the_text_and_the_remembered_address() {
+        ServerAddressModule m = new ServerAddressModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.serverAddress = "a.example.net";
+        m.tick(ctx, cfg);
+        assertEquals("a.example.net", m.text());
+        m.onConfigChanged(cfg);
+        assertEquals("", m.text());
+        platform.serverAddress = "a.example.net"; // the same address again must be drawn again
+        m.tick(ctx, cfg);
+        assertEquals("a.example.net", m.text());
+        m.onConfigChanged(cfg);
+        platform.serverAddress = null; // left the server while the module was off
+        m.tick(ctx, cfg);
+        assertEquals("", m.text());
+        platform.serverAddress = "b.example.net";
+        m.tick(ctx, cfg);
+        assertEquals("b.example.net", m.text());
     }
 
     @Test
@@ -151,20 +191,6 @@ class ServerAddressModuleTest {
         m.tick(ctx, cfg);
         assertEquals("", m.text());
         assertEquals(0, m.width(new FakeCanvas(), cfg));
-    }
-
-    @Test
-    void server_address_keeps_its_text_while_the_address_is_unchanged() {
-        ServerAddressModule m = new ServerAddressModule();
-        ModuleConfig cfg = ModuleConfig.defaults();
-        platform.serverAddress = "mc.example.net:25570";
-        m.tick(ctx, cfg);
-        String first = m.text();
-        for (int i = 0; i < 40; i++) {
-            platform.serverAddress = new String("mc.example.net:25570");
-            m.tick(ctx, cfg);
-        }
-        assertSame(first, m.text());
     }
 
     @Test

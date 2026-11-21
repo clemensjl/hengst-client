@@ -11,8 +11,9 @@ import java.util.EnumSet;
 /**
  * Shows the own latency to the server as "42 ms", the same figure the player list (Tab) shows. Visible only in a world
  * with a server address (checked every tick, empty text otherwise). The value is read when the module becomes visible
- * and then every 20 ticks; {@link GameView#pingMillis()} below 0 (unknown: not reported yet, hidden by the server) is
- * shown as "? ms", never as a number, and a value above 9999 is shown as 9999. The text is rebuilt only when the
+ * and then every 20 ticks; {@link GameView#pingMillis()} of 0 or below (unknown: not reported yet, hidden by the
+ * server; a server reports 0 for the own entry until its first latency update, so 0 is not a measurement) is shown
+ * as "? ms", never as a number, and a value above 9999 is shown as 9999. The text is rebuilt only when the
  * shown value changed. There is no colour by threshold: the number is the only carrier.
  */
 public final class PingModule extends TextHudModule {
@@ -44,10 +45,12 @@ public final class PingModule extends TextHudModule {
         return 52;
     }
 
-    /** The module is not ticked while off: after every apply the next tick reads the ping again. */
+    /** The module is not ticked while off: after every apply the text is cleared (no stale value is drawn) and the next tick reads the ping again. */
     @Override
     public void onConfigChanged(ModuleConfig cfg) {
         untilSample = 0;
+        shownValue = NOTHING_SHOWN;
+        setText("");
     }
 
     @Override
@@ -65,7 +68,7 @@ public final class PingModule extends TextHudModule {
         }
         untilSample = INTERVAL_TICKS - 1;
         int ping = game.pingMillis();
-        int value = ping < 0 ? UNKNOWN : Math.min(ping, MAX_SHOWN);
+        int value = ping <= 0 ? UNKNOWN : Math.min(ping, MAX_SHOWN);
         if (value == shownValue) {
             return;
         }
