@@ -27,6 +27,8 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public String serverAddress;
     public int pingMillis = -1;
     public Object worldIdentity;
+    public long memoryUsed;
+    public long memoryMax;
     public String languageCode = "en_us";
     public Set<GameKey> down = EnumSet.noneOf(GameKey.class);
     public Map<GameKey, String> labels = new EnumMap<GameKey, String>(GameKey.class);
@@ -167,6 +169,16 @@ public final class FakePlatform implements Platform, GameView, InputView {
     @Override
     public Object worldIdentity() {
         return worldIdentity;
+    }
+
+    @Override
+    public long memoryUsedBytes() {
+        return memoryUsed;
+    }
+
+    @Override
+    public long memoryMaxBytes() {
+        return memoryMax;
     }
 
     @Override

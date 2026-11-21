@@ -57,6 +57,8 @@ class ModulesTest {
         assertIdentity(new CoordinatesModule(), "coordinates", 6);
         assertIdentity(new DirectionModule(), "direction", 7);
         assertIdentity(new SpeedModule(), "speed", 15);
+        assertIdentity(new ClockModule(), "clock", 9);
+        assertIdentity(new MemoryModule(), "memory", 11);
     }
 
     private static void assertIdentity(io.github.clemensjl.hengst.mod.common.feature.Feature f, String id, int nr) {
@@ -560,7 +562,29 @@ class ModulesTest {
     }
 
     @Test
-    void default_places_of_the_six_modules_do_not_overlap_at_320_by_240() {
+    void clock_and_memory_options_defaults_and_places() {
+        List<OptionSpec> clock = new ClockModule().options();
+        assertEquals(2, clock.size());
+        assertEquals("format", clock.get(0).key());
+        assertEquals(OptionSpec.Kind.CHOICE, clock.get(0).kind());
+        assertEquals("24h", clock.get(0).defaultValue());
+        assertEquals("seconds", clock.get(1).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, clock.get(1).kind());
+        assertEquals(Boolean.FALSE, clock.get(1).defaultValue());
+        List<OptionSpec> memory = new MemoryModule().options();
+        assertEquals(1, memory.size());
+        assertEquals("style", memory.get(0).key());
+        assertEquals("both", memory.get(0).defaultValue());
+        for (io.github.clemensjl.hengst.mod.common.hud.HudModule m : new io.github.clemensjl.hengst.mod.common.hud.HudModule[] {new ClockModule(), new MemoryModule()}) {
+            assertEquals(io.github.clemensjl.hengst.mod.common.layout.Anchor.TOP_RIGHT, m.defaultAnchor());
+            assertEquals(-2, m.defaultOffsetX());
+        }
+        assertEquals(66, new ClockModule().defaultOffsetY());
+        assertEquals(94, new MemoryModule().defaultOffsetY());
+    }
+
+    @Test
+    void default_places_of_the_eight_modules_do_not_overlap_at_320_by_240() {
         platform.inWorld = true;
         platform.worldIdentity = new Object();
         platform.playerYaw = -135f;
@@ -568,9 +592,16 @@ class ModulesTest {
         platform.playerX = 12345.6789;
         platform.playerY = 120.5;
         platform.playerZ = -12345.6789;
+        platform.memoryUsed = 16384L << 20; // worst case: "RAM 100% 16384/16384 MB"
+        platform.memoryMax = 16384L << 20;
+        io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock wall =
+                new io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock();
+        wall.utcMillis = java.time.Instant.parse("2026-11-21T23:58:58Z").toEpochMilli(); // "11:58:58 PM"
+        HudContext wallCtx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
         cfg.setOption("decimals", 0);
         io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
-            new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule()};
+            new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),
+            new ClockModule(), new MemoryModule()};
         FakeCanvas canvas = new FakeCanvas();
         io.github.clemensjl.hengst.mod.common.layout.MutableRect[] rects =
                 new io.github.clemensjl.hengst.mod.common.layout.MutableRect[all.length];
@@ -579,7 +610,9 @@ class ModulesTest {
             c.setAnchor(all[i].defaultAnchor());
             c.setOffsetX(all[i].defaultOffsetX());
             c.setOffsetY(all[i].defaultOffsetY());
-            all[i].tick(ctx, c);
+            c.setOption("seconds", true);
+            c.setOption("format", "12h");
+            all[i].tick(wallCtx, c);
             rects[i] = new io.github.clemensjl.hengst.mod.common.layout.MutableRect();
             io.github.clemensjl.hengst.mod.common.layout.LayoutMath.resolve(c, all[i].width(canvas, c),
                     all[i].height(canvas, c), canvas.width(), canvas.height(), rects[i]);

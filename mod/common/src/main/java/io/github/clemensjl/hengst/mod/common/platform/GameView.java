@@ -36,4 +36,18 @@ public interface GameView {
      * value every tick; they must not keep it beyond the world's life (it references the world object).
      */
     Object worldIdentity();
+
+    /**
+     * The JVM's used heap in bytes (total minus free). The default asks {@link Runtime}, which does not allocate; no
+     * adapter work. The F3 screen shows the same figure.
+     */
+    default long memoryUsedBytes() {
+        Runtime r = Runtime.getRuntime();
+        return r.totalMemory() - r.freeMemory();
+    }
+
+    /** The JVM's maximum heap in bytes; {@link Long#MAX_VALUE} without a limit. Does not allocate. */
+    default long memoryMaxBytes() {
+        return Runtime.getRuntime().maxMemory();
+    }
 }
