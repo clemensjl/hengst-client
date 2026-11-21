@@ -962,6 +962,20 @@ async fn prepares_legacy_format_forge() {
         "the universal jar comes from the installer: {seen:?}"
     );
 
+    {
+        // A running game holds the correct jar open without delete sharing: relaunching works
+        // and does not try to replace it.
+        use std::os::windows::fs::OpenOptionsExt;
+        let _game = std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1)
+            .open(&universal)
+            .unwrap();
+        prepare_with_runner(&paths, &o, &ep, Arc::new(NoStart))
+            .await
+            .unwrap();
+    }
+
     // A foreign file at the universal jar's path never reaches the classpath.
     std::fs::write(&universal, b"foreign").unwrap();
     prepare_with_runner(&paths, &o, &ep, Arc::new(NoStart))

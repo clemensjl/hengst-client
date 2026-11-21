@@ -417,8 +417,9 @@ fn provided_artifacts(
 /// the cache shared with other loaders. A provided artifact without a valid declared SHA-1 is
 /// refused (all seven real installers declare one). Legacy: the universal jar goes to its Maven
 /// path and the matching library in `contents.version` is rewritten to point at it (empty `url`,
-/// real SHA-1 and size). That jar is rewritten on every install, which fails with an error while a
-/// running game holds it open.
+/// SHA-1 of the installer entry and its size). The jar on disk is verified against the entry
+/// first and only replaced when it differs, so a game holding a correct jar open does not block
+/// the next launch.
 pub fn extract_embedded(
     installer: &Path,
     contents: &mut InstallerContents,
@@ -474,12 +475,22 @@ fn extract_embedded_with(
             let rel = maven_path(path).ok_or_else(|| Error::UnsafePath(path.clone()))?;
             let dest = join_relative(libraries, &rel)?;
             let (path, file_path) = (path.clone(), file_path.clone());
-            // Always rewritten: the SHA-1 recorded below must be that of this installer jar.
-            let size = extract_entry(&mut zip, &file_path, &dest, &mut budget, limits, None)?;
+            // The recorded SHA-1 is that of this (verified) installer's entry, never of the disk.
+            let (sha1, size) = entry_sha1(&mut zip, &file_path, limits)?;
+            if !(dest.is_file() && sha1_file(&dest).is_ok_and(|h| h == sha1)) {
+                extract_entry(
+                    &mut zip,
+                    &file_path,
+                    &dest,
+                    &mut budget,
+                    limits,
+                    Some(&sha1),
+                )?;
+            }
             let artifact = Artifact {
                 path: rel,
                 url: String::new(),
-                sha1: sha1_file(&dest)?,
+                sha1,
                 size,
             };
             let slot = contents
@@ -496,6 +507,27 @@ fn extract_embedded_with(
         }
     }
     Ok(())
+}
+
+/// SHA-1 and size of an entry, streamed under the per-entry limit without writing anything.
+fn entry_sha1<R: Read + Seek>(
+    zip: &mut zip::ZipArchive<R>,
+    name: &str,
+    limits: Limits,
+) -> Result<(String, u64)> {
+    use sha1::{Digest, Sha1};
+    let entry = zip
+        .by_name(name)
+        .map_err(|_| bad(format!("installer has no entry {name}")))?;
+    if entry.size() > limits.entry {
+        return Err(too_large(name));
+    }
+    let mut hasher = Sha1::new();
+    let n = std::io::copy(&mut entry.take(limits.entry + 1), &mut hasher)?;
+    if n > limits.entry {
+        return Err(too_large(name));
+    }
+    Ok((hex::encode(hasher.finalize()), n))
 }
 
 /// Extracts single named entries to explicit destinations, sharing one total budget and the usual
@@ -1469,6 +1501,59 @@ mod tests {
                 (UNIVERSAL_189, b"universal"),
             ],
         )
+    }
+
+    /// Opens `path` for reading without delete sharing, as a running game holds its jars: the
+    /// file can then be neither replaced nor removed.
+    fn hold_open(path: &Path) -> File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new()
+            .read(true)
+            .share_mode(1) // FILE_SHARE_READ only
+            .open(path)
+            .unwrap()
+    }
+
+    #[test]
+    fn legacy_universal_jar_is_verified_first_and_replaced_only_on_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let libs = tmp.path().join("libs");
+        let jar = legacy_jar(
+            tmp.path(),
+            "net.minecraftforge:forge:1.8.9-11.15.1.2318-1.8.9",
+        );
+        let dest = libs.join(
+            "net/minecraftforge/forge/1.8.9-11.15.1.2318-1.8.9/forge-1.8.9-11.15.1.2318-1.8.9.jar",
+        );
+        let mut c = read_installer(&jar).unwrap();
+        extract_embedded(&jar, &mut c, &libs, FORGE, LEGACY_189_MAVEN).unwrap();
+        {
+            // A correct jar held open (a running game) does not block the next extraction.
+            let _game = hold_open(&dest);
+            let mut again = read_installer(&jar).unwrap();
+            extract_embedded(&jar, &mut again, &libs, FORGE, LEGACY_189_MAVEN).unwrap();
+            let forge = again
+                .version
+                .libraries
+                .iter()
+                .find(|l| l.name.starts_with("net.minecraftforge:forge:"))
+                .unwrap();
+            let a = forge.downloads.as_ref().unwrap().artifact.as_ref().unwrap();
+            assert_eq!(a.sha1, sha1_hex(b"universal"));
+        }
+        // Wrong bytes on disk are replaced by the installer's.
+        std::fs::write(&dest, b"foreign").unwrap();
+        let mut c = read_installer(&jar).unwrap();
+        extract_embedded(&jar, &mut c, &libs, FORGE, LEGACY_189_MAVEN).unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), b"universal");
+        let a = c.version.libraries[0]
+            .downloads
+            .as_ref()
+            .unwrap()
+            .artifact
+            .clone()
+            .unwrap();
+        assert_eq!((a.sha1, a.size), (sha1_hex(b"universal"), 9));
     }
 
     #[test]
