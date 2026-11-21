@@ -72,6 +72,32 @@ class HengstCoreAllocationTest {
         assertTrue(counting.texts > 0);
     }
 
+    @Test void ticks_with_a_constant_server_and_language_allocate_nothing() {
+        core = start(); platform.inWorld = true;
+        platform.serverAddress = "mc.example.net"; platform.languageCode = "de_de";
+        CountingCanvas counting = new CountingCanvas();
+        for (int i = 0; i < 200; i++) { time.advanceMillis(50); core.onClientTick(); frame(counting); }
+        int generation = core.context().languageGeneration();
+        assertEquals(1, generation);                                     // the switch was seen while settling
+        long before = allocated();
+        for (int i = 0; i < 2000; i++) { time.advanceMillis(50); core.onClientTick(); frame(counting); }
+        long bytes = allocated() - before;
+        System.out.println("HengstCore server/language steady state, 2000 ticks with frames: " + bytes + " bytes");
+        assertEquals(0, bytes);
+        assertEquals(generation, core.context().languageGeneration());
+    }
+
+    @Test void ticks_with_an_equal_server_name_in_a_new_object_allocate_nothing() {
+        core = start(); platform.inWorld = true;
+        String a = "mc.example.net";
+        String b = new String("mc.example.net");
+        platform.serverAddress = a;
+        for (int i = 0; i < 200; i++) { time.advanceMillis(50); core.onClientTick(); }
+        long before = allocated();
+        for (int i = 0; i < 2000; i++) { platform.serverAddress = (i & 1) == 0 ? b : a; time.advanceMillis(50); core.onClientTick(); }
+        assertEquals(0, allocated() - before);
+    }
+
     /** A disabled feature costs nothing: no module in the arrays, no allocation, and the state read allocates nothing. */
     @Test void disabled_features_cost_nothing_and_a_toggle_applies_without_a_restart() {
         core = start(); platform.inWorld = true;

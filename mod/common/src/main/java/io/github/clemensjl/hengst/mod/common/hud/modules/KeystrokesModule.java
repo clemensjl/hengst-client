@@ -91,6 +91,12 @@ public final class KeystrokesModule extends HudModule {
     }
 
     @Override
+    public void onLanguageChanged() {
+        Arrays.fill(labelWidths, -1);
+        refreshIn = 0;
+    }
+
+    @Override
     public int width(Canvas c, ModuleConfig cfg) {
         return WIDTH;
     }

@@ -30,6 +30,12 @@ public abstract class HudModule extends Feature {
     /** Called at 20 Hz while the module is active, also outside a world: tolerate that. Rebuild cached text here. */
     public void tick(HudContext ctx, ModuleConfig cfg) {}
 
+    /**
+     * The language changed, which in the game comes with a resource reload: drop everything cached from a text
+     * measurement (widths, cut text), the next draw measures again. Runs in the tick, also for modules that are off.
+     */
+    public void onLanguageChanged() {}
+
     /** Unscaled width in GUI pixels. */
     public abstract int width(Canvas c, ModuleConfig cfg);
 

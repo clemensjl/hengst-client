@@ -4,6 +4,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -13,13 +14,18 @@ import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
+import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
+import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
+import io.github.clemensjl.hengst.mod.common.platform.GameKey;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
+import io.github.clemensjl.hengst.mod.common.platform.WallClock;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
+import io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock;
 import io.github.clemensjl.hengst.mod.common.testutil.FixedSizeModule;
 import io.github.clemensjl.hengst.mod.common.testutil.TestFeature;
 import java.nio.file.Files;
@@ -735,6 +741,150 @@ class HengstCoreTest {
         platform.screenOpenFailure = kinds[4];
         core.onClientTick();
         assertEquals(5, platform.warnings.size());
+    }
+
+    // ---- language, wall clock and server change ----
+
+    @Test void a_language_switch_is_picked_up_within_a_second() {
+        core = start(); platform.inWorld = true;
+        assertEquals("Done", core.context().i18n().get("hengst.button.done"));
+        int gen = core.context().languageGeneration();
+        platform.languageCode = "de_de";
+        time.advanceMillis(1000); core.onClientTick();
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+        assertEquals(gen + 1, core.context().languageGeneration());
+        for (int i = 0; i < 100; i++) { time.advanceMillis(50); core.onClientTick(); }
+        assertEquals(gen + 1, core.context().languageGeneration());      // loaded once per switch, not once per second
+    }
+
+    @Test void a_frame_never_reloads_the_language() {
+        core = start(); platform.inWorld = true;
+        int gen = core.context().languageGeneration();
+        platform.languageCode = "de_de";
+        time.advanceMillis(5000); core.onHudRender(canvas, 0f);          // frames only, no tick
+        assertEquals(gen, core.context().languageGeneration());
+        core.onClientTick();
+        assertEquals(gen + 1, core.context().languageGeneration());
+    }
+
+    @Test void the_language_is_read_at_most_once_a_second() {
+        core = start(); platform.inWorld = true;
+        platform.languageCode = "de_de";
+        time.advanceMillis(900); core.onClientTick();
+        assertEquals(0, core.context().languageGeneration());            // not yet a second
+        time.advanceMillis(100); core.onClientTick();
+        assertEquals(1, core.context().languageGeneration());
+    }
+
+    @Test void the_settings_opened_after_a_switch_are_german() {
+        core = start(); platform.inWorld = true;
+        platform.languageCode = "de_DE"; time.advanceMillis(1000); core.onClientTick();
+        core.onOpenSettingsKey();
+        FakeCanvas c = new FakeCanvas(); platform.openedScreen.render(c, 0, 0, 0f);
+        assertTrue(c.calls.stream().anyMatch(s -> s.startsWith("text Fertig ")));
+    }
+
+    @Test void a_screen_opened_after_a_switch_is_a_new_object_with_new_widgets_and_text_fits() {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        UiScreen english = platform.openedScreen;
+        english.render(new FakeCanvas(), 0, 0, 0f);
+        platform.removeScreenFromGame();
+        platform.languageCode = "de_de"; time.advanceMillis(1000); core.onClientTick();
+        core.onOpenSettingsKey();
+        assertNotSame(english, platform.openedScreen);
+        FakeCanvas c = new FakeCanvas(); platform.openedScreen.render(c, 0, 0, 0f);
+        assertTrue(c.calls.stream().anyMatch(s -> s.startsWith("text Fertig ")));
+        assertFalse(c.calls.stream().anyMatch(s -> s.startsWith("text Done ")));
+    }
+
+    /** A canvas whose glyph width can change, as it does after a font or language reload. */
+    private static final class WidthCanvas extends FakeCanvas {
+        int charWidth = 6;
+
+        @Override public int textWidth(String text) { return charWidth * text.length(); }
+    }
+
+    @Test void a_language_switch_drops_every_cached_text_fit_of_the_hud_modules() {
+        platform.labels.put(GameKey.FORWARD, "W");
+        core = start(); platform.inWorld = true;
+        HudModule fps = (HudModule) core.registry().byId("fps");
+        ModuleConfig fpsCfg = core.activeProfile().module("fps");
+        WidthCanvas c = new WidthCanvas();
+        core.onClientTick();
+        core.onHudRender(c, 0f);
+        assertTrue(c.calls.contains("text W 26 4 ffffffff true"), c.calls.toString());   // cell at x 20, centred: 20 + (18 - 6) / 2
+        int fpsWidthBefore = fps.width(c, fpsCfg);
+        c.charWidth = 10;                                                // the glyphs got wider; nothing reloaded yet
+        assertEquals(fpsWidthBefore, fps.width(c, fpsCfg));              // the cached width is what a reload must drop
+        platform.languageCode = "de_de"; time.advanceMillis(1000); core.onClientTick();
+        c.calls.clear();
+        core.onHudRender(c, 0f);
+        assertTrue(c.calls.contains("text W 24 4 ffffffff true"), c.calls.toString());   // 20 + (18 - 10) / 2
+        assertEquals((fpsWidthBefore - 4) / 6 * 10 + 4, fps.width(c, fpsCfg));
+    }
+
+    @Test void the_context_carries_the_injected_wall_clock_and_system_by_default() {
+        FakeWallClock wall = new FakeWallClock();
+        core = HengstCore.start(platform, time, clock, wall, RestrictionPolicy.NONE);
+        assertSame(wall, core.context().wallClock());
+        core.onClientTick(); core.onFrame(); core.onHudRender(canvas, 0f);
+        assertEquals(0, wall.currentCalls);                              // the core itself never reads the wall clock
+        assertEquals(0, wall.offsetCalls);
+        assertSame(WallClock.SYSTEM, start().context().wallClock());
+    }
+
+    @Test void a_server_change_rewrites_the_state_with_the_restriction() {
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> "mc.example.net".equals(s) && f.id().equals("fps"));
+        platform.inWorld = true; core.onClientTick();
+        assertTrue(FeatureState.on(1)); assertEquals(4, core.renderer().activeCount());
+        platform.serverAddress = "mc.example.net"; core.onClientTick();
+        assertFalse(FeatureState.on(1)); assertEquals(3, core.renderer().activeCount());
+        platform.serverAddress = null; core.onClientTick();
+        assertTrue(FeatureState.on(1)); assertEquals(4, core.renderer().activeCount());
+    }
+
+    @Test void switching_directly_from_one_server_to_another_applies_the_new_restriction_once() {
+        int[] asked = {0};
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> {
+            if (f.id().equals("fps")) { asked[0]++; }
+            return "b.net".equals(s) && f.id().equals("fps");
+        });
+        platform.inWorld = true;
+        platform.serverAddress = "a.net"; core.onClientTick();
+        assertTrue(FeatureState.on(1));
+        platform.serverAddress = "b.net"; core.onClientTick();           // no null in between
+        assertFalse(FeatureState.on(1));
+        int after = asked[0];
+        core.onClientTick(); core.onClientTick();
+        assertEquals(after, asked[0]);                                   // exactly once per change
+        platform.serverAddress = "a.net"; core.onClientTick();
+        assertTrue(FeatureState.on(1));
+    }
+
+    @Test void a_server_already_set_at_the_first_tick_counts_as_joining() {
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> "mc.example.net".equals(s) && f.id().equals("fps"));
+        platform.serverAddress = "mc.example.net"; platform.inWorld = true;
+        core.onClientTick();
+        assertFalse(FeatureState.on(1));
+    }
+
+    @Test void single_player_is_no_change() {
+        int[] asked = {0};
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> { asked[0]++; return false; });
+        platform.inWorld = true; platform.serverAddress = null;
+        int afterStart = asked[0];
+        for (int i = 0; i < 50; i++) { core.onClientTick(); }
+        assertEquals(afterStart, asked[0]);
+    }
+
+    @Test void an_equal_server_string_is_not_a_change() {
+        int[] asked = {0};
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> { asked[0]++; return false; });
+        platform.inWorld = true; platform.serverAddress = "a.net"; core.onClientTick();
+        int after = asked[0];
+        for (int i = 0; i < 100; i++) { platform.serverAddress = new String("a.net"); core.onClientTick(); }
+        assertEquals(after, asked[0]);
     }
 
     // ---- registry ----

@@ -27,6 +27,7 @@ import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
+import io.github.clemensjl.hengst.mod.common.platform.WallClock;
 import io.github.clemensjl.hengst.mod.common.ui.ScreenClose;
 import io.github.clemensjl.hengst.mod.common.ui.SettingsModel;
 import io.github.clemensjl.hengst.mod.common.ui.SettingsScreen;
@@ -45,7 +46,8 @@ import java.util.Set;
  * <li>All methods, including {@link #start} and {@link #shutdown}, run on the client thread. Never call
  * {@link #shutdown} from a JVM shutdown hook.</li>
  * <li>{@link #start} may be called from the client mod initializer. It uses only the platform's version, config
- * directory and {@code logWarning}, and reads files synchronously. No hook may fire before it returned. If it
+ * directory, {@code logWarning} and {@code languageCode} (a failing read counts as English until the first tick
+ * check), and reads files synchronously. No hook may fire before it returned. If it
  * throws, the adapter keeps no core and treats every hook as a no-op.</li>
  * <li>Hooks are safe after {@link #shutdown}; a change made later is saved again by the tick.</li>
  * <li>{@link Platform#game()} and {@link Platform#input()} return long-lived objects and must not allocate.</li>
@@ -63,6 +65,9 @@ import java.util.Set;
  */
 public final class HengstCore {
     private static final long SAVE_INTERVAL_NANOS = 2_000_000_000L;
+    private static final long LANGUAGE_INTERVAL_NANOS = 1_000_000_000L;
+    // The language code before the first successful read; equal to no code the platform returns.
+    private static final String UNREAD = new String("unread");
 
     // Failure sites. Each logs once per distinct exception class and is re-armed by the next success of that site.
     private static final int SITE_RENDER = 0;
@@ -102,8 +107,13 @@ public final class HengstCore {
     private boolean settingsDirty;
     private long lastSaveNanos;
     private Session current;
+    // Change detection in the tick: the language code the texts were loaded for, when it was last read, and the server
+    // the gate knows. Compared by reference first, then equals; nothing is built per tick.
+    private String loadedLanguage;
+    private long lastLanguageCheckNanos;
+    private String lastServer;
 
-    private HengstCore(Platform platform, TimeSource time, Clock clock, RestrictionPolicy policy) {
+    private HengstCore(Platform platform, TimeSource time, Clock clock, WallClock wallClock, RestrictionPolicy policy) {
         this.platform = platform;
         this.time = time;
         gate = new FeatureGate(platform.version(), policy);
@@ -128,10 +138,12 @@ public final class HengstCore {
         }
         frames = new FrameCounter(time);
         cps = new CpsCounter(time);
-        ctx = new HudContext(platform, time, frames, cps);
+        ctx = new HudContext(platform, time, wallClock, frames, cps);
+        loadedLanguage = readLanguage();
         renderer = new HudRenderer(registry, gate);
         applyConfig();
         lastSaveNanos = time.nanoTime();
+        lastLanguageCheckNanos = lastSaveNanos;
         registry.seal();
     }
 
@@ -145,7 +157,20 @@ public final class HengstCore {
     }
 
     static HengstCore start(Platform platform, TimeSource time, Clock clock, RestrictionPolicy policy) {
-        return new HengstCore(platform, time, clock, policy);
+        return start(platform, time, clock, WallClock.SYSTEM, policy);
+    }
+
+    static HengstCore start(Platform platform, TimeSource time, Clock clock, WallClock wallClock,
+            RestrictionPolicy policy) {
+        return new HengstCore(platform, time, clock, wallClock, policy);
+    }
+
+    private String readLanguage() {
+        try {
+            return platform.languageCode();
+        } catch (RuntimeException e) {
+            return UNREAD;
+        }
     }
 
     /** The four M0 modules, on (their places come from {@link #addDefaultEntries}). Memory only: nothing is written until the first change. */
@@ -246,6 +271,8 @@ public final class HengstCore {
                 s.run();
                 s = null;
             }
+            checkServer(game);
+            checkLanguage();
             renderer.tick(ctx);
             if (s != null && s.editorModel != null && s.editorModel.dirty()) {
                 dirty = true;
@@ -256,6 +283,46 @@ public final class HengstCore {
             ok(SITE_TICK);
         } catch (RuntimeException e) {
             failure(SITE_TICK, "client tick", e);
+        }
+    }
+
+    /**
+     * A join, a leave or a switch from one server to another (single player is "no server"): feeds the gate and
+     * follows with the one configuration path. Same string, even another object: nothing happens, nothing is built.
+     */
+    private void checkServer(GameView game) {
+        String server = game.serverAddress();
+        String last = lastServer;
+        if (server == last || (server != null && server.equals(last))) {
+            return;
+        }
+        lastServer = server;
+        gate.setServer(server);
+        applyConfig();
+    }
+
+    /**
+     * At most once a second: reads the language code and, only if it differs from the one the texts were loaded for,
+     * loads the new language file. The one allowed file read in the tick (spec 8.6): once per language change, never
+     * from a frame hook. Every module then drops what it cached from text measurements.
+     */
+    private void checkLanguage() {
+        long now = time.nanoTime();
+        if (now - lastLanguageCheckNanos < LANGUAGE_INTERVAL_NANOS) {
+            return;
+        }
+        lastLanguageCheckNanos = now;
+        String code = platform.languageCode();
+        String loaded = loadedLanguage;
+        if (code == loaded || (code != null && code.equals(loaded))) {
+            return;
+        }
+        loadedLanguage = code;
+        ctx.setI18n(I18n.load(code));
+        for (Feature f : registry.supportedOn(platform.version())) {
+            if (f instanceof HudModule) {
+                ((HudModule) f).onLanguageChanged();
+            }
         }
     }
 
@@ -407,7 +474,7 @@ public final class HengstCore {
         model.setSettingsLoadFailedCheck(settingsStore::settingsLoadFailed);
         Session session = new Session(null);
         session.delegate = new ScreenClose(model::saveIfDirty, this::applyConfig, platform, "the settings");
-        show(session, new SettingsScreen(model, I18n.load(platform.languageCode()), session));
+        show(session, new SettingsScreen(model, ctx.i18n(), session));
     }
 
     private void openEditor() {
@@ -421,7 +488,7 @@ public final class HengstCore {
                 model.markSaved();
             }
         }, this::applyConfig, platform, "the HUD editor (profile " + name + ")");
-        show(session, new HudEditorScreen(model, ctx, I18n.load(platform.languageCode()), session));
+        show(session, new HudEditorScreen(model, ctx, ctx.i18n(), session));
     }
 
     /** The editor replaces the settings screen: the settings session ends without closing anything. */

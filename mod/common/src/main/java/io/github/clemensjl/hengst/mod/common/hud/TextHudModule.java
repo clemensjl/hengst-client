@@ -26,6 +26,11 @@ public abstract class TextHudModule extends HudModule {
         }
     }
 
+    @Override
+    public void onLanguageChanged() {
+        textWidth = -1;
+    }
+
     public final String text() {
         return text;
     }
