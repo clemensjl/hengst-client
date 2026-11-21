@@ -33,6 +33,37 @@ impl LoaderKind {
             LoaderKind::Forge => "forge",
         }
     }
+
+    /// The name a user sees; the source for every loader name in a UI or a message.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LoaderKind::Fabric => "Fabric",
+            LoaderKind::Quilt => "Quilt",
+            LoaderKind::LegacyFabric => "Legacy Fabric",
+            LoaderKind::NeoForge => "NeoForge",
+            LoaderKind::Forge => "Forge",
+        }
+    }
+}
+
+/// A likely reason for "no loader versions", decided without any request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoaderHint {
+    NeoForgeStartsAt1201,
+    FabricStartsAt114,
+    LegacyFabricServesOld,
+}
+
+impl fmt::Display for LoaderHint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LoaderHint::NeoForgeStartsAt1201 => "NeoForge starts at 1.20.1",
+            LoaderHint::FabricStartsAt114 => "Fabric starts at 1.14; try --loader legacy-fabric",
+            LoaderHint::LegacyFabricServesOld => {
+                "Legacy Fabric serves 1.13.2 and older; try --loader fabric"
+            }
+        })
+    }
 }
 
 impl fmt::Display for LoaderKind {
@@ -163,13 +194,13 @@ fn older_than(game: &str, minor: u64, patch: u64) -> Option<bool> {
 pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
     let hint = match kind {
         LoaderKind::NeoForge if older_than(game, 20, 1) == Some(true) => {
-            Some("NeoForge starts at 1.20.1")
+            Some(LoaderHint::NeoForgeStartsAt1201)
         }
         LoaderKind::Fabric if older_than(game, 14, 0) == Some(true) => {
-            Some("Fabric starts at 1.14; try --loader legacy-fabric")
+            Some(LoaderHint::FabricStartsAt114)
         }
         LoaderKind::LegacyFabric if older_than(game, 14, 0) == Some(false) => {
-            Some("Legacy Fabric serves 1.13.2 and older; try --loader fabric")
+            Some(LoaderHint::LegacyFabricServesOld)
         }
         _ => None,
     };
@@ -568,6 +599,49 @@ mod tests {
             pick_version(&[], None, LoaderKind::Fabric, "1.8.9"),
             Err(Error::NoLoaderVersions { .. })
         ));
+    }
+
+    #[test]
+    fn display_names_are_the_user_facing_names() {
+        assert_eq!(LoaderKind::Fabric.display_name(), "Fabric");
+        assert_eq!(LoaderKind::Quilt.display_name(), "Quilt");
+        assert_eq!(LoaderKind::LegacyFabric.display_name(), "Legacy Fabric");
+        assert_eq!(LoaderKind::NeoForge.display_name(), "NeoForge");
+        assert_eq!(LoaderKind::Forge.display_name(), "Forge");
+    }
+
+    #[test]
+    fn hints_are_typed_and_keep_their_text() {
+        let e = no_versions(LoaderKind::Fabric, "1.8.9");
+        assert!(matches!(
+            e,
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::FabricStartsAt114),
+                ..
+            }
+        ));
+        assert_eq!(
+            e.to_string(),
+            "no fabric versions available for Minecraft 1.8.9 (Fabric starts at 1.14; try --loader legacy-fabric)"
+        );
+        assert!(matches!(
+            no_versions(LoaderKind::NeoForge, "1.19.4"),
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::NeoForgeStartsAt1201),
+                ..
+            }
+        ));
+        assert!(matches!(
+            no_versions(LoaderKind::LegacyFabric, "1.21.11"),
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::LegacyFabricServesOld),
+                ..
+            }
+        ));
+        assert_eq!(
+            no_versions(LoaderKind::LegacyFabric, "1.21.11").to_string(),
+            "no legacy-fabric versions available for Minecraft 1.21.11 (Legacy Fabric serves 1.13.2 and older; try --loader fabric)"
+        );
     }
 
     #[test]

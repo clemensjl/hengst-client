@@ -385,14 +385,11 @@ fn lock_file(
         }
         let waited = start.elapsed();
         if waited >= timing.limit {
-            return Err(Error::Io(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!(
-                    "another install of {label} is still running after {} s (lock {}); try again later",
-                    timing.limit.as_secs(),
-                    path.display()
-                ),
-            )));
+            return Err(Error::LockTimeout {
+                label: label.to_string(),
+                waited_secs: timing.limit.as_secs(),
+                lock: path.to_path_buf(),
+            });
         }
         if !told && waited >= timing.notice_after {
             notice(&format!(
@@ -1493,7 +1490,11 @@ mod tests {
         .unwrap_err();
         let m = err.to_string();
         assert!(
-            m.contains("another install of forge for Minecraft 1.20.1 is still running"),
+            matches!(&err, Error::LockTimeout { waited_secs, .. } if *waited_secs == timing.limit.as_secs()),
+            "{err:?}"
+        );
+        assert!(
+            m.contains("another install of forge for Minecraft 1.20.1 is still running after"),
             "{m}"
         );
         assert_eq!(

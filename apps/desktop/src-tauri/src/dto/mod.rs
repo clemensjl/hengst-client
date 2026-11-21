@@ -19,6 +19,7 @@ pub const ALL_TYPES: &[Export] = &[
     versions::GameVersionsDto::export_all,
     error::ErrorCode::export_all,
     error::ErrorAction::export_all,
+    error::UrlTarget::export_all,
     error::ErrorDto::export_all,
     crate::events::DataScope::export_all,
     crate::events::NoticeKind::export_all,

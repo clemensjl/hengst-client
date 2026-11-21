@@ -24,6 +24,14 @@ Requires Rust 1.89 or newer.
     target/release/hengst launch 1.21.11 --loader fabric --offline Dev --dry-run
     target/release/hengst launch 1.20.1 --loader forge --offline Dev --dry-run
 
+### Microsoft client id
+
+Sign-in uses the application (client) id of an Azure app registration. It is not a secret. The id of Hengst Client's own app is built into the core as the constant `CLIENT_ID` in `crates/hengst-core/src/auth/mod.rs`, so a build from this repository can sign in as it is.
+
+To use your own id, set the environment variable `HENGST_MS_CLIENT_ID` to it before you start the app or the CLI. The variable is read at run time, not at build time, and when it is set and not empty it wins over the built-in id. To bake an id into your own build instead, change `CLIENT_ID` in `crates/hengst-core/src/auth/mod.rs` (`Some("<your id>")`). A build whose `CLIENT_ID` is `None` and that runs without the variable cannot sign in and says so.
+
+The Azure app must allow personal Microsoft accounts and public client flows, and Mojang has to approve the id before the Minecraft services accept it (see Status above).
+
 ## Usage
 
     hengst login                              # device code sign-in, saves the account

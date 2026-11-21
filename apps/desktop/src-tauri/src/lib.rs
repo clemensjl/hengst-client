@@ -29,6 +29,7 @@ pub mod commands;
 pub mod dto;
 pub mod error;
 pub mod events;
+pub mod open;
 pub mod settings;
 pub mod startup;
 pub mod state;

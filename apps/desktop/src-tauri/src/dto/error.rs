@@ -2,21 +2,73 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use ts_rs::TS;
 
-/// Task 4 completes this list.
+/// What went wrong, as a stable code the web view translates. Later tasks add the codes of their
+/// own commands (browser login, instances, busy states).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub enum ErrorCode {
     Internal,
-    Network,
     /// A value the user or the web view sent is not acceptable; `params.field` names it.
     InvalidInput,
+    Network,
+    Offline,
+    ServerError,
+    ChecksumMismatch,
+    UnsafeData,
+    UnknownVersion,
+    NoJavaRuntime,
+    OfflineAccountBlocked,
+    NoLoaderVersions,
+    UnknownLoaderVersion,
+    LoaderUnsupported,
+    InstallerInvalid,
+    InstallFailed,
+    InstallStepFailed,
+    NativesInUse,
+    LockTimeout,
+    CredentialStore,
+    MissingClientId,
+    AppMisconfigured,
+    AppNotApproved,
+    LoginDeclined,
+    LoginExpired,
+    DeviceCodeExpired,
+    NoXboxAccount,
+    XboxRegionBlocked,
+    XboxAdultVerification,
+    XboxChildAccount,
+    XboxRefused,
+    GameNotOwned,
+    NoProfile,
+    AccountNotFound,
+    NoAccount,
+    Cancelled,
+    FileSystem,
+    /// The system refused to open a link in the browser (`open_url`).
+    OpenFailed,
 }
 
-/// Task 4 completes this list.
+/// A page the web view may ask the app to open. The addresses are fixed in Rust (`open::resolve_url`);
+/// JavaScript never supplies a URL.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum UrlTarget {
+    Repository,
+    SignInHelp,
+    XboxSignup,
+    MinecraftProfile,
+    DeviceLogin,
+    BuildHelp,
+}
+
+/// The one thing the user can do about an error, besides trying again on their own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ErrorAction {
     Retry,
+    SignIn,
+    OpenUrl { target: UrlTarget },
+    OpenSettings,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
@@ -25,6 +77,7 @@ pub struct ErrorDto {
     pub code: ErrorCode,
     pub params: BTreeMap<String, String>,
     pub action: Option<ErrorAction>,
-    /// English core text for the "Details" disclosure, without URL query parts.
+    /// English core text for the "Details" disclosure. No tokens, authorization headers or URL
+    /// query parts; local paths may appear.
     pub detail: String,
 }

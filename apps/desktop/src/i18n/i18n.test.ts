@@ -65,7 +65,11 @@ describe("translations", () => {
     expect(de["about.legal"]).toBe("Not an official Minecraft product.");
     expect(en["about.legal"]).toBe("Not an official Minecraft product.");
     for (const [k, v] of both) {
-      if (k !== "about.legal") expect(v, k).not.toMatch(/minecraft/i);
+      // The factual references to the game's name (DESIGN.md 12, 11.5): the product the account
+      // must own and the name of Mojang's profile page.
+      if (!["about.legal", "errors.gameNotOwned.title", "errors.noProfile.body"].includes(k)) {
+        expect(v, k).not.toMatch(/minecraft/i);
+      }
     }
   });
 });

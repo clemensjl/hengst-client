@@ -4,6 +4,7 @@ import type { ErrorDto } from "./bindings/ErrorDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
 import type { SettingsDto } from "./bindings/SettingsDto";
 import type { SettingsPatch } from "./bindings/SettingsPatch";
+import type { UrlTarget } from "./bindings/UrlTarget";
 import type { VersionFilter } from "./bindings/VersionFilter";
 
 export class IpcError extends Error {
@@ -43,6 +44,8 @@ export const api = {
   appInfo: (): Promise<AppInfo> => guard(invoke<AppInfo>("app_info")),
   gameVersions: (filter: VersionFilter): Promise<GameVersionsDto> =>
     guard(invoke<GameVersionsDto>("game_versions", { filter })),
+  /** Opens a fixed page in the browser. The address is chosen in Rust; only the name travels. */
+  openUrl: (target: UrlTarget): Promise<void> => guard(invoke<void>("open_url", { target })),
   settingsGet: (): Promise<SettingsDto> => guard(invoke<SettingsDto>("settings_get")),
   settingsUpdate: (change: Partial<SettingsPatch>): Promise<SettingsDto> =>
     guard(invoke<SettingsDto>("settings_update", { patch: { ...KEEP, ...change } })),

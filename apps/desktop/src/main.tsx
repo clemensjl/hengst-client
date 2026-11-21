@@ -8,8 +8,22 @@ import "@/styles/index.css";
 installInputMode();
 installWebviewDefaults();
 
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <Boot />
-  </StrictMode>,
-);
+const root = createRoot(document.getElementById("root")!);
+
+// Dev server only: a page of sample error panels for the visual check. `import.meta.env.DEV` is
+// false in a production build, so the branch and the page are removed from the bundle.
+if (import.meta.env.DEV && location.hash === "#error-gallery") {
+  void import("@/dev/ErrorGallery").then(({ ErrorGallery }) =>
+    root.render(
+      <StrictMode>
+        <ErrorGallery />
+      </StrictMode>,
+    ),
+  );
+} else {
+  root.render(
+    <StrictMode>
+      <Boot />
+    </StrictMode>,
+  );
+}

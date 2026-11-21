@@ -6,6 +6,7 @@ macro_rules! with_commands {
             app::app_info,
             app::subscribe_events,
             versions::game_versions,
+            open::open_url,
             settings::settings_get,
             settings::settings_update
         )

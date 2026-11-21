@@ -4,6 +4,7 @@ import type { ErrorCode } from "./ErrorCode";
 
 export type ErrorDto = { code: ErrorCode, params: { [key in string]: string }, action: ErrorAction | null, 
 /**
- * English core text for the "Details" disclosure, without URL query parts.
+ * English core text for the "Details" disclosure. No tokens, authorization headers or URL
+ * query parts; local paths may appear.
  */
 detail: string, };

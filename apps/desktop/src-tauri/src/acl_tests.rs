@@ -20,6 +20,15 @@ fn call(
     window: &str,
     cmd: &str,
 ) -> Result<serde_json::Value, serde_json::Value> {
+    call_with(app, window, cmd, InvokeBody::default())
+}
+
+fn call_with(
+    app: &tauri::App<tauri::test::MockRuntime>,
+    window: &str,
+    cmd: &str,
+    body: InvokeBody,
+) -> Result<serde_json::Value, serde_json::Value> {
     let webview = app.get_webview_window(window).unwrap();
     get_ipc_response(
         &webview,
@@ -28,7 +37,7 @@ fn call(
             callback: CallbackFn(0),
             error: CallbackFn(1),
             url: "http://tauri.localhost".parse().unwrap(),
-            body: InvokeBody::default(),
+            body,
             headers: Default::default(),
             invoke_key: INVOKE_KEY.to_string(),
         },
@@ -46,6 +55,7 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
+            crate::commands::open::open_url,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -84,5 +94,18 @@ fn plugin_commands_are_not_granted_to_the_main_window() {
     for cmd in ["plugin:opener|open_url", "plugin:window|inner_size"] {
         let err = call(&app, "main", cmd).unwrap_err();
         assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+}
+
+#[test]
+fn open_url_refuses_a_free_url_from_the_web_view() {
+    let (app, _dir) = app();
+    for body in [
+        serde_json::json!({ "target": "https://evil.example/" }),
+        serde_json::json!({ "url": "https://evil.example/" }),
+    ] {
+        let err = call_with(&app, "main", "open_url", InvokeBody::Json(body)).unwrap_err();
+        // Granted to the window, but the argument is not a `UrlTarget`: nothing is opened.
+        assert!(!err.to_string().contains("not allowed"), "{err}");
     }
 }

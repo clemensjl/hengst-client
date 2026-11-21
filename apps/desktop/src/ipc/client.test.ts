@@ -16,6 +16,15 @@ describe("ipc client", () => {
     expect(seen).toEqual(["game_versions", { filter }]);
   });
 
+  it("opens a page by target name only, never by URL", async () => {
+    let seen: [string, unknown] | undefined;
+    mockIPC((cmd, args) => {
+      seen = [cmd, args];
+    });
+    await api.openUrl("buildHelp");
+    expect(seen).toEqual(["open_url", { target: "buildHelp" }]);
+  });
+
   it("turns a rejected ErrorDto into IpcError", async () => {
     mockIPC(() => {
       throw { code: "network", params: {}, action: { kind: "retry" }, detail: "x" };

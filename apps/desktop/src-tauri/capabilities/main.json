@@ -3,5 +3,5 @@
   "identifier": "main",
   "description": "The main window may call the app commands and nothing else.",
   "windows": ["main"],
-  "permissions": ["allow-app-info", "allow-subscribe-events", "allow-game-versions", "allow-settings-get", "allow-settings-update"]
+  "permissions": ["allow-app-info", "allow-subscribe-events", "allow-game-versions", "allow-settings-get", "allow-settings-update", "allow-open-url"]
 }

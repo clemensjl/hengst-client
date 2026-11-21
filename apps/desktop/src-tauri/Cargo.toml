@@ -41,3 +41,4 @@ ts-rs = "=12.0.1"
 tauri = { version = "=2.12.7", features = ["test"] }
 tempfile.workspace = true
 wiremock.workspace = true
+zip.workspace = true
