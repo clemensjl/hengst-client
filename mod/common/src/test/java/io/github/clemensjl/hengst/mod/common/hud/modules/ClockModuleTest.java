@@ -1,6 +1,7 @@
 package io.github.clemensjl.hengst.mod.common.hud.modules;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.clemensjl.hengst.mod.common.I18n;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
@@ -192,5 +193,50 @@ class ClockModuleTest {
                 Collections.<String, Object>emptyMap()));
         m.tick(ctx, cfg);
         assertEquals("3:00 nachm.", m.text());
+    }
+
+    @Test
+    void extreme_instants_do_not_crash_and_stay_in_range() {
+        ModuleConfig cfg = ModuleConfig.defaults();
+        cfg.setOption("seconds", true);
+        for (long utc : new long[] {Long.MIN_VALUE, Long.MAX_VALUE}) {
+            ClockModule m = new ClockModule();
+            wall.utcMillis = utc;
+            wall.offset = 0;
+            m.tick(ctx, cfg);
+            m.tick(ctx, cfg);
+            String t = m.text();
+            assertEquals(8, t.length(), "utc " + utc + " shows " + t);
+            int h = Integer.parseInt(t.substring(0, 2));
+            int min = Integer.parseInt(t.substring(3, 5));
+            int s = Integer.parseInt(t.substring(6, 8));
+            assertTrue(h < 24 && min < 60 && s < 60, "utc " + utc + " shows " + t);
+        }
+    }
+
+    @Test
+    void offsets_with_half_and_quarter_hours_and_negative_offsets() {
+        Object[][] cases = {{19_800_000, "05:30"}, {20_700_000, "05:45"}, {45_900_000, "12:45"},
+            {-43_200_000, "12:00"}};
+        for (Object[] c : cases) {
+            ClockModule m = new ClockModule();
+            wall.utcMillis = 0;
+            wall.offset = (Integer) c[0];
+            m.tick(ctx, ModuleConfig.defaults());
+            assertEquals(c[1], m.text(), "offset " + c[0]);
+        }
+    }
+
+    @Test
+    void one_tick_reads_the_instant_exactly_once() {
+        ClockModule m = new ClockModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        wall.utcMillis = utc("2026-11-21T08:05:07Z");
+        int before = wall.currentCalls;
+        m.tick(ctx, cfg);
+        assertEquals(1, wall.currentCalls - before);
+        before = wall.currentCalls;
+        m.tick(ctx, cfg); // unchanged: the early return path
+        assertEquals(1, wall.currentCalls - before);
     }
 }

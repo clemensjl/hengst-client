@@ -107,4 +107,45 @@ class MemoryModuleTest {
         m.tick(ctx, cfg);
         assertEquals("RAM 50% 2048/4096 MB", m.text());
     }
+
+    @Test
+    void a_config_apply_makes_the_next_tick_sample_again() {
+        MemoryModule m = new MemoryModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.memoryUsed = 1024L << 20;
+        platform.memoryMax = 4096L << 20;
+        m.tick(ctx, cfg); // sampled; the next 19 ticks would not sample
+        assertEquals("RAM 25% 1024/4096 MB", m.text());
+        platform.memoryUsed = 2048L << 20; // while the module is off
+        m.tick(ctx, cfg);
+        assertEquals("RAM 25% 1024/4096 MB", m.text());
+        m.onConfigChanged(cfg);
+        m.tick(ctx, cfg);
+        assertEquals("RAM 50% 2048/4096 MB", m.text());
+    }
+
+    @Test
+    void used_above_the_maximum_shows_100_percent() {
+        MemoryModule m = new MemoryModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.memoryUsed = 2000L << 20;
+        platform.memoryMax = 1000L << 20;
+        m.tick(ctx, cfg);
+        assertEquals("RAM 100% 2000/1000 MB", m.text());
+    }
+
+    @Test
+    void the_percent_guard_holds_exactly_at_a_hundredth_of_the_long_range() {
+        MemoryModule m = new MemoryModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        long limit = Long.MAX_VALUE / 100;
+        platform.memoryUsed = limit;
+        platform.memoryMax = limit;
+        m.tick(ctx, cfg);
+        assertEquals("RAM 100% " + (limit >> 20) + "/" + (limit >> 20) + " MB", m.text());
+        platform.memoryMax = limit + 1;
+        m.onConfigChanged(cfg);
+        m.tick(ctx, cfg);
+        assertEquals("RAM " + (limit >> 20) + " MB", m.text());
+    }
 }

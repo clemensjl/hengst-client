@@ -58,6 +58,12 @@ public final class MemoryModule extends TextHudModule {
         return OPTIONS;
     }
 
+    /** The module is not ticked while off: after every apply the next tick reads the memory again, with the new style. */
+    @Override
+    public void onConfigChanged(ModuleConfig cfg) {
+        untilSample = 0;
+    }
+
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
         if (untilSample > 0) {
