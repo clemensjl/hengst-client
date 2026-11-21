@@ -109,7 +109,8 @@ pub struct Plan {
 const MAX_MANIFEST_BYTES: u64 = 1024 * 1024;
 /// Largest install marker we read; a real one is a few hundred bytes.
 const MAX_MARKER_BYTES: u64 = 64 * 1024;
-const MARKER_MAGIC: &str = "hengst-loader-marker 1";
+/// Version 2 added the vanilla jar; markers of version 1 are not valid.
+const MARKER_MAGIC: &str = "hengst-loader-marker 2";
 
 fn bad(msg: impl std::fmt::Display) -> Error {
     Error::Installer(msg.to_string())
@@ -548,9 +549,15 @@ fn patched_ok(plan: &Plan) -> Option<(PathBuf, String)> {
     }
 }
 
-/// Records a finished installation: the installer's SHA-1, the actual SHA-1 of the patched jar
-/// and of every produced file without a declared hash (each must exist). Declared outputs and
-/// `PATCHED_SHA` are verified first; any mismatch is an error and no marker is written.
+/// SHA-1 of the vanilla jar the processors read (`MINECRAFT_JAR`).
+fn minecraft_sha1(plan: &Plan) -> Option<String> {
+    sha1_file(Path::new(plan.data.get("MINECRAFT_JAR")?)).ok()
+}
+
+/// Records a finished installation: the installer's SHA-1, the SHA-1 of the vanilla jar used as
+/// input, the actual SHA-1 of the patched jar and of every produced file without a declared hash
+/// (each must exist). Declared outputs and `PATCHED_SHA` are verified first; any mismatch is an
+/// error and no marker is written.
 pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<()> {
     validate_sha1(installer_sha1)?;
     for c in &plan.commands {
@@ -558,7 +565,10 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
     }
     let (_, patched_sha) = patched_ok(plan)
         .ok_or_else(|| bad("the patched client jar is missing or does not match PATCHED_SHA"))?;
-    let mut text = format!("{MARKER_MAGIC}\ninstaller {installer_sha1}\npatched {patched_sha}\n");
+    let minecraft = minecraft_sha1(plan).ok_or_else(|| bad("the vanilla jar is missing"))?;
+    let mut text = format!(
+        "{MARKER_MAGIC}\ninstaller {installer_sha1}\nminecraft {minecraft}\npatched {patched_sha}\n"
+    );
     for path in &plan.produced {
         let sha = sha1_file(path).map_err(|_| {
             bad(format!(
@@ -585,6 +595,7 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
 
 struct Marker {
     installer: String,
+    minecraft: String,
     patched: String,
     outputs: Vec<(String, String)>,
 }
@@ -607,6 +618,7 @@ fn read_marker(path: &Path) -> Option<Marker> {
     }
     let hash = |s: &str| validate_sha1(s).is_ok().then(|| s.to_ascii_lowercase());
     let installer = hash(lines.next()?.strip_prefix("installer ")?)?;
+    let minecraft = hash(lines.next()?.strip_prefix("minecraft ")?)?;
     let patched = hash(lines.next()?.strip_prefix("patched ")?)?;
     let mut outputs = Vec::new();
     for line in lines {
@@ -615,15 +627,16 @@ fn read_marker(path: &Path) -> Option<Marker> {
     }
     Some(Marker {
         installer,
+        minecraft,
         patched,
         outputs,
     })
 }
 
-/// True only when all of this holds: the marker (written by `write_marker`) names this installer;
-/// the patched client jar (`PATCHED`, required) exists, matches `PATCHED_SHA` when the profile
-/// has one and the SHA-1 the marker recorded; every declared output has its SHA-1; every file
-/// the marker recorded still has the recorded SHA-1 and is one the plan produces; and every
+/// True only when all of this holds: the marker (written by `write_marker`) names this installer
+/// and the current vanilla jar; the patched client jar (`PATCHED`, required) exists, matches `PATCHED_SHA` when the profile
+/// has one and the SHA-1 the marker recorded; every declared output has its SHA-1; the marker
+/// records exactly the files the plan produces, each still with the recorded SHA-1; and every
 /// installer-provided library of `version` (empty `url`) matches its SHA-1. A marker alone is
 /// never trusted, and an unreadable or malformed marker just means "not valid".
 pub fn install_state_valid(
@@ -636,7 +649,9 @@ pub fn install_state_valid(
     let Some(m) = read_marker(marker) else {
         return Ok(false);
     };
-    if !m.installer.eq_ignore_ascii_case(installer_sha1) {
+    if !m.installer.eq_ignore_ascii_case(installer_sha1)
+        || minecraft_sha1(plan).as_deref() != Some(m.minecraft.as_str())
+    {
         return Ok(false);
     }
     match patched_ok(plan) {
@@ -657,6 +672,10 @@ pub fn install_state_valid(
         if !produced.contains(p) || !seen.insert(p) || !has_sha1(Path::new(p), sha) {
             return Ok(false);
         }
+    }
+    // Unique and all produced: equal sets only if none is missing.
+    if seen.len() != produced.len() {
+        return Ok(false);
     }
     for artifact in version
         .libraries
@@ -846,9 +865,11 @@ mod tests {
             &installer,
             &[("data/client.lzma", b"lzma"), ("data/server.lzma", b"lzma")],
         );
+        let minecraft_jar = root.join("versions").join(game).join(format!("{game}.jar"));
+        write(&minecraft_jar, b"vanilla");
         InstallEnv {
             libraries: root.join("libraries"),
-            minecraft_jar: root.join("versions").join(game).join(format!("{game}.jar")),
+            minecraft_jar,
             game: game.to_string(),
             installer,
             work: root.join("work"),
@@ -2113,8 +2134,8 @@ mod tests {
             ("empty", vec![]),
             ("binary", vec![0xff, 0xfe, 0, 1, 2]),
             (
-                "wrong magic",
-                good.replacen("marker 1", "marker 2", 1).into_bytes(),
+                "older format",
+                good.replacen("marker 2", "marker 1", 1).into_bytes(),
             ),
             ("truncated", good.as_bytes()[..good.len() / 3].to_vec()),
             ("unknown line", format!("{good}surprise\n").into_bytes()),
@@ -2142,6 +2163,37 @@ mod tests {
         std::fs::remove_file(&i.marker).unwrap();
         std::fs::create_dir(&i.marker).unwrap();
         assert!(!i.valid());
+    }
+
+    #[test]
+    fn install_state_records_and_checks_the_vanilla_jar() {
+        let i = install();
+        let marker = std::fs::read_to_string(&i.marker).unwrap();
+        assert!(
+            marker.contains(&format!("minecraft {}", sha1_hex(b"vanilla"))),
+            "{marker}"
+        );
+        write(&i.env.minecraft_jar, b"another vanilla jar");
+        assert!(!i.valid());
+        write(&i.env.minecraft_jar, b"vanilla");
+        assert!(i.valid());
+    }
+
+    #[test]
+    fn install_state_marker_must_record_exactly_the_produced_files() {
+        let i = install();
+        let good = std::fs::read_to_string(&i.marker).unwrap();
+        // A marker without the produced file (as an older launcher would have written it).
+        let fewer: String = good
+            .lines()
+            .filter(|l| !l.starts_with("output "))
+            .map(|l| format!("{l}\n"))
+            .collect();
+        assert_ne!(fewer, good);
+        write(&i.marker, fewer.as_bytes());
+        assert!(!i.valid());
+        write(&i.marker, good.as_bytes());
+        assert!(i.valid());
     }
 
     #[test]
