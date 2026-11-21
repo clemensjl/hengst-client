@@ -292,4 +292,22 @@ class StopwatchModuleTest {
         m.tick(ctx, cfg);
         assertEquals(4 + 6 * 6, m.width(new io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas(), cfg));
     }
+
+    @Test
+    void a_start_and_a_disable_before_the_first_tick_bank_nothing_with_a_negative_time_origin() {
+        time.now = -5_000_000_000L; // System.nanoTime() has an arbitrary origin, also a negative one
+        cfg.setEnabled(false);
+        m.onKey(0, true, time.now);
+        m.onConfigChanged(cfg);
+        cfg.setEnabled(true);
+        m.onConfigChanged(cfg);
+        time.advanceMillis(100_000);
+        m.tick(ctx, cfg);
+        assertEquals("0:00.0", m.text());
+    }
+
+    @Test
+    void the_stopwatch_has_a_hint_for_its_keys() {
+        assertEquals("hengst.hint.stopwatch", m.hintKey());
+    }
 }

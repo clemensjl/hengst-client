@@ -12,7 +12,10 @@ import java.io.BufferedReader;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.lwjgl.input.Keyboard;
@@ -33,7 +36,11 @@ class LegacyKeysTest {
         for (KeySpec k : FeatureCatalog.keys(GameVersion.V1_8_9)) {
             LegacyKeys.code(k.defaultKey());
         }
-        assertTrue(FeatureCatalog.keys(GameVersion.V1_8_9).size() >= 4); // the two core keys and the stopwatch keys
+        List<String> ids = new ArrayList<>();
+        for (KeySpec k : FeatureCatalog.keys(GameVersion.V1_8_9)) {
+            ids.add(k.id());
+        }
+        assertEquals(Arrays.asList("settings", "hud_editor", "stopwatch.toggle", "stopwatch.reset"), ids);
     }
 
     @Test

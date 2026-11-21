@@ -24,6 +24,9 @@ import java.util.List;
  * system clock does not move it. It is real time: the single-player pause menu and leaving or switching a world do
  * not stop a running stopwatch. The module is ticked at 20 Hz while on, also outside a world.
  *
+ * <p>Both keys on the same physical key: on the modern versions both bindings fire in the same tick in catalog order
+ * (toggle, then reset), so the stopwatch ends stopped at zero; the settings hint asks for two different keys.
+ *
  * <p>Text: under one hour {@code m:ss.t} ("0:00.0", "1:05.3", "59:59.9"), from one hour {@code h:mm:ss.t}
  * ("1:00:00.0", "24:00:00.0", "10000:00:00.0"; the hours are not capped and are computed in {@code long}, so a run
  * of years does not overflow); without the option {@code tenths} the {@code .t} is left out. Tenths are floored. The
@@ -82,6 +85,12 @@ public final class StopwatchModule extends TextHudModule {
         return OPTIONS;
     }
 
+    /** The keys are unbound by default, so the settings tell the player where to bind them. */
+    @Override
+    public String hintKey() {
+        return "hengst.hint.stopwatch";
+    }
+
     @Override
     public List<KeySpec> keys() {
         return KEYS;
@@ -98,6 +107,8 @@ public final class StopwatchModule extends TextHudModule {
                 running = false;
             } else {
                 startNanos = nowNanos;
+                // The tick time has an arbitrary origin (nanoTime): before the first tick it is not comparable.
+                lastTickNanos = nowNanos;
                 running = true;
             }
         } else if (key == KEY_RESET) {

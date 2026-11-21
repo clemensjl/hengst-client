@@ -13,7 +13,10 @@ import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 import org.junit.jupiter.api.Test;
 
@@ -41,7 +44,11 @@ class ModernKeysTest {
             for (KeySpec k : FeatureCatalog.keys(v)) {
                 ModernKeys.code(k.defaultKey());
             }
-            assertTrue(FeatureCatalog.keys(v).size() >= 4, v.toString()); // the two core keys and the stopwatch keys
+            List<String> ids = new ArrayList<>();
+            for (KeySpec k : FeatureCatalog.keys(v)) {
+                ids.add(k.id());
+            }
+            assertEquals(Arrays.asList("settings", "hud_editor", "stopwatch.toggle", "stopwatch.reset"), ids, v.toString());
         }
     }
 

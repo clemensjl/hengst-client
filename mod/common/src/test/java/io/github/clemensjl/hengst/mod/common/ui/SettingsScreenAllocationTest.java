@@ -41,12 +41,13 @@ class SettingsScreenAllocationTest {
         Profile[] active = { new Profile() };
         SettingsModel model = new SettingsModel(reg, GameVersion.V1_8_9, store, settings, () -> active[0],
                 name -> {}, () -> {}, () -> {}, () -> {}, s -> {});
-        // Group names far too long for their 128 px row: the cut text is cached, not rebuilt every frame (the notice and
-        // the feature names fall back to their keys, which also need a cut in part).
-        java.util.Map<String, Object> texts = new java.util.HashMap<>();
-        texts.put("hengst.group.hud", "A very long group name that cannot fit into its row at all");
-        texts.put("hengst.group.visual", "Another very long group name that cannot fit into its row");
-        texts.put("hengst.group.comfort", "A third very long group name that cannot fit either");
+        // Every text is short ("ok") except the three group names, which are far too long for their 128 px row: only the
+        // headers need a cut, so only their fit cache is under test.
+        java.util.Map<String, Object> texts = new java.util.HashMap<String, Object>() {
+            @Override public Object get(Object key) {
+                return ((String) key).startsWith("hengst.group.") ? "A very long group name that cannot fit into its row at all" : "ok";
+            }
+        };
         SettingsScreen screen = new SettingsScreen(model, I18n.of(texts, new java.util.HashMap<String, Object>()), () -> {});
         CountingCanvas canvas = new CountingCanvas();
         screen.render(canvas, 50, 80, 0f);                 // first frame: layout and text fitting
@@ -60,5 +61,30 @@ class SettingsScreenAllocationTest {
         long bytes = MX.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
         System.out.println("SettingsScreen allocation over " + frames + " steady frames: " + bytes + " bytes");
         assertEquals(0, bytes, "the screen allocated " + bytes + " bytes in " + frames + " steady frames");
+    }
+
+    /** The hint of the stopwatch, wrapped, with the option rows below it: steady frames allocate nothing. */
+    @Test void frames_with_a_visible_hint_allocate_nothing_after_the_first() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule());
+        Settings settings = new Settings();
+        ProfileStore store = new ProfileStore(dir, Clock.fixed(Instant.parse("2026-11-20T10:15:30Z"), ZoneOffset.UTC), s -> {});
+        Profile[] active = { new Profile() };
+        SettingsModel model = new SettingsModel(reg, GameVersion.V1_8_9, store, settings, () -> active[0],
+                name -> {}, () -> {}, () -> {}, () -> {}, s -> {});
+        SettingsScreen screen = new SettingsScreen(model, I18n.load("de_de"), () -> {});
+        io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas fake = new io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas();
+        screen.render(fake, 50, 80, 0f);
+        screen.mouseClicked(60, 36 + 20 + 5, 0);           // the stopwatch (row 0 is the Comfort header)
+        CountingCanvas canvas = new CountingCanvas();
+        screen.render(canvas, 50, 80, 0f);                 // the hint is wrapped on this frame
+        screen.render(canvas, 50, 80, 0f);
+        int textsPerFrame = canvas.texts;
+        int frames = 5000;
+        long before = MX.getThreadAllocatedBytes(Thread.currentThread().getId());
+        for (int i = 0; i < frames; i++) { screen.render(canvas, 50, 80, 0f); }
+        long bytes = MX.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
+        assertTrue(textsPerFrame > 0);
+        assertEquals(0, bytes, "the screen allocated " + bytes + " bytes in " + frames + " steady frames with a hint");
     }
 }

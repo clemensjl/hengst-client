@@ -52,6 +52,7 @@
   "hengst.option.clock.seconds": "Sekunden anzeigen",
   "hengst.option.server_address.show_port": "Port anzeigen",
   "hengst.option.stopwatch.tenths": "Zehntel anzeigen",
+  "hengst.hint.stopwatch": "Tasten unter Optionen > Steuerung belegen",
   "hengst.option.memory.style": "Anzeige",
   "hengst.choice.memory.percent": "Prozent",
   "hengst.choice.memory.used_max": "Belegt / max.",

@@ -414,4 +414,17 @@ class HengstCoreKeysTest {
         time.advanceMillis(60_000); core.onClientTick();
         assertEquals("0:03.0", stopwatch().text());
     }
+
+    @Test void both_stopwatch_keys_on_the_same_physical_key_fire_in_catalog_order_in_one_tick() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        int toggle = keyIndex("stopwatch.toggle"); int reset = keyIndex("stopwatch.reset");
+        // The adapters deliver the presses of one tick in index order: toggle starts, reset stops and zeroes.
+        core.onFeatureKey(toggle, true); core.onFeatureKey(reset, true);
+        core.onFeatureKey(toggle, false); core.onFeatureKey(reset, false);
+        time.advanceMillis(2_000); core.onClientTick();
+        assertEquals("0:00.0", stopwatch().text());
+        time.advanceMillis(5_000); core.onClientTick();
+        assertEquals("0:00.0", stopwatch().text()); // stopped, not running
+    }
 }

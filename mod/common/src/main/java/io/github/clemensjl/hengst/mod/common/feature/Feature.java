@@ -39,6 +39,14 @@ public abstract class Feature {
         return Collections.emptyList();
     }
 
+    /**
+     * A translation key of a short hint the settings show, muted and wrapped, above the options of this feature
+     * (for example how to bind its keys); null for none.
+     */
+    public String hintKey() {
+        return null;
+    }
+
     /** The key bindings of this feature; the index in this list is the {@code key} of {@link #onKey}. */
     public List<KeySpec> keys() {
         return Collections.emptyList();

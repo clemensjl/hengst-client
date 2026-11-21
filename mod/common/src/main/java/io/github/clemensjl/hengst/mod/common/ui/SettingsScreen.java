@@ -72,6 +72,12 @@ public final class SettingsScreen implements UiScreen {
     private int lineHeight;
     private int noticeY;
     private int warnY;
+    // The selected feature's hint above its options: wrapped to the option panel, rebuilt on selection and layout.
+    private String[] hintLines = NO_LINES;
+    private boolean hintDirty = true;
+    private int optX;
+    private int optW;
+    private int listH;
 
     public SettingsScreen(SettingsModel model, I18n i18n, Runnable onClose) {
         this.model = model;
@@ -183,6 +189,7 @@ public final class SettingsScreen implements UiScreen {
     }
 
     private void buildOptions() {
+        hintDirty = true;
         List<Widget> out = new ArrayList<Widget>();
         final Feature f = model.selected();
         if (f != null) {
@@ -345,11 +352,24 @@ public final class SettingsScreen implements UiScreen {
         // Bottom up: Done button, the failure sentence above it, the legal notice above that, then the lists.
         warnY = done.y - 2 - warnLines.length * lineHeight;
         noticeY = warnY - noticeLines.length * lineHeight;
-        int listH = Math.max(ROW, noticeY - GAP - LIST_Y);
+        listH = Math.max(ROW, noticeY - GAP - LIST_Y);
         featureList.setBounds(MARGIN, LIST_Y, leftW, listH);
         int rightX = MARGIN + leftW + MARGIN;
-        optionList.setBounds(rightX, LIST_Y, sw - MARGIN - rightX, listH);
+        optX = rightX;
+        optW = sw - MARGIN - rightX;
         positionHeader();
+        layoutHint(c);
+    }
+
+    /** Wraps the selected feature's hint and moves the option list down by its height. */
+    private void layoutHint(Canvas c) {
+        hintDirty = false;
+        Feature f = model.selected();
+        String key = f == null ? null : f.hintKey();
+        hintLines = key == null ? NO_LINES : TextFit.wrap(c, i18n.get(key), optW);
+        int hintH = hintLines.length == 0 ? 0 : hintLines.length * lineHeight + GAP;
+        int h = Math.max(ROW, listH - hintH);
+        optionList.setBounds(optX, LIST_Y + hintH, optW, h);
     }
 
     private void positionHeader() {
@@ -375,6 +395,8 @@ public final class SettingsScreen implements UiScreen {
     public void render(Canvas c, int mx, int my, float partialTick) {
         if (c.width() != sw || c.height() != sh || model.failureKey() != shownFailure) {
             layout(c);
+        } else if (hintDirty) {
+            layoutHint(c);
         }
         c.fill(0, 0, sw, sh, DIM);
         for (int i = 0; i < header.size(); i++) {
@@ -382,6 +404,9 @@ public final class SettingsScreen implements UiScreen {
         }
         featureList.render(c, mx, my);
         optionList.render(c, mx, my);
+        for (int k = 0; k < hintLines.length; k++) {
+            c.text(hintLines[k], optX, LIST_Y + k * lineHeight, NOTICE, true);
+        }
         for (int k = 0; k < noticeLines.length; k++) {
             c.text(noticeLines[k], MARGIN, noticeY + k * lineHeight, NOTICE, true);
         }

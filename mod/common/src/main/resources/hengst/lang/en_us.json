@@ -52,6 +52,7 @@
   "hengst.option.clock.seconds": "Show seconds",
   "hengst.option.server_address.show_port": "Show port",
   "hengst.option.stopwatch.tenths": "Show tenths",
+  "hengst.hint.stopwatch": "Bind the keys under Options > Controls",
   "hengst.option.memory.style": "Display",
   "hengst.choice.memory.percent": "Percent",
   "hengst.choice.memory.used_max": "Used / max",

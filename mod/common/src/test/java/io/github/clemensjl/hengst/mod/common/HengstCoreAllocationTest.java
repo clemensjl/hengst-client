@@ -383,4 +383,41 @@ class HengstCoreAllocationTest {
         assertEquals(1000, on.ups - upsBefore);
         assertEquals(0, off.downs + off.ups);
     }
+
+    private int keyIndex(String id) {
+        for (int i = 0; i < core.keySpecs().size(); i++) {
+            if (core.keySpecs().get(i).id().equals(id)) { return i; }
+        }
+        throw new AssertionError(id);
+    }
+
+    @Test void the_stopwatch_key_path_through_the_core_allocates_nothing_with_the_feature_on_and_off() {
+        core = start(); platform.inWorld = true;
+        int toggle = keyIndex("stopwatch.toggle"); int reset = keyIndex("stopwatch.reset");
+        // on: the handler really runs (a press, a release, a reset press), 20000 rounds
+        core.activeProfile().module("stopwatch").setEnabled(true); core.applyConfigForTest();
+        CountingCanvas counting = new CountingCanvas();
+        for (int i = 0; i < 3000; i++) { core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false); core.onFeatureKey(reset, true); core.onFeatureKey(reset, false); }
+        core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+        time.advanceMillis(1_500); core.onClientTick();
+        assertEquals("0:01.5", ((io.github.clemensjl.hengst.mod.common.hud.modules.StopwatchModule) core.registry().byId("stopwatch")).text());
+        long before = allocated();
+        for (int i = 0; i < 20000; i++) {
+            core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+            core.onFeatureKey(reset, true); core.onFeatureKey(reset, false);
+        }
+        long onBytes = allocated() - before;
+        // off: the core gates the press
+        core.activeProfile().module("stopwatch").setEnabled(false); core.applyConfigForTest();
+        before = allocated();
+        for (int i = 0; i < 20000; i++) {
+            core.onFeatureKey(toggle, true); core.onFeatureKey(toggle, false);
+            core.onFeatureKey(reset, true); core.onFeatureKey(reset, false);
+        }
+        long offBytes = allocated() - before;
+        System.out.println("stopwatch keys through the core: on " + onBytes + " bytes, off " + offBytes + " bytes in 20000 rounds");
+        assertEquals(0, onBytes);
+        assertEquals(0, offBytes);
+        assertTrue(counting.texts == 0);
+    }
 }

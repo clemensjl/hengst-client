@@ -669,6 +669,56 @@ class SettingsScreenTest {
         assertEquals(4, screen.optionList().widgets().size());   // background, shadow, colour, tenths
     }
 
+    /** The hint lines of the last drawn frame: muted text in the option panel (x 144) above the option rows. */
+    private List<Drawn> hintLines() {
+        return textCalls(canvas, "ffaaaaaa").stream().filter(d -> d.x == 144 && d.y < screen.featureList().bottom()).collect(java.util.stream.Collectors.toList());
+    }
+
+    @Test void the_hint_is_drawn_for_the_stopwatch_and_not_for_a_feature_without_one() {
+        FeatureRegistry r = new FeatureRegistry();
+        r.register(new FpsModule());
+        r.register(new StopwatchModule());                       // rows: HUD header, fps, Comfort header, stopwatch
+        open(r, "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(60, 36 + 20 + 5, 0);                 // fps
+        canvas.calls.clear(); screen.render(canvas, 0, 0, 0f);
+        assertTrue(hintLines().isEmpty());
+        assertEquals(36, screen.optionList().widgets().get(0).y);
+        screen.mouseClicked(60, 36 + 3 * 20 + 5, 0);             // stopwatch
+        assertEquals("stopwatch", model.selected().id());
+        canvas.calls.clear(); screen.render(canvas, 0, 0, 0f);
+        List<Drawn> lines = hintLines();
+        assertFalse(lines.isEmpty());
+        assertEquals("Bind the keys under Options > Controls", joined(lines));
+        screen.mouseClicked(60, 36 + 20 + 5, 0);                 // back to fps: the hint is gone
+        canvas.calls.clear(); screen.render(canvas, 0, 0, 0f);
+        assertTrue(hintLines().isEmpty());
+    }
+
+    @Test void the_german_hint_wraps_at_the_panel_width_and_pushes_the_option_rows_down() {
+        FeatureRegistry r = new FeatureRegistry();
+        r.register(new StopwatchModule());
+        open(r, "de_de");
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(60, 36 + 20 + 5, 0);
+        canvas.calls.clear(); screen.render(canvas, 0, 0, 0f);
+        List<Drawn> lines = hintLines();
+        assertTrue(lines.size() >= 2, "the 41 characters (246 px) do not fit the 168 px panel");
+        assertEquals("Tasten unter Optionen > Steuerung belegen", joined(lines));
+        for (int k = 0; k < lines.size(); k++) {
+            assertTrue(lines.get(k).x + 6 * lines.get(k).text.length() <= 144 + 168, lines.get(k).text);
+            assertEquals(36 + k * 10, lines.get(k).y);
+        }
+        int hintHeight = lines.size() * 10 + 4;
+        assertEquals(36 + hintHeight, screen.optionList().widgets().get(0).y);
+        // a click on the old first row position (now covered by the hint) hits no option, one on the shifted row does
+        boolean before = model.config("stopwatch").background();
+        assertFalse(screen.mouseClicked(200, 36 + 5, 0));
+        assertEquals(before, model.config("stopwatch").background());
+        assertTrue(screen.mouseClicked(200, 36 + hintHeight + 5, 0));
+        assertEquals(!before, model.config("stopwatch").background());
+    }
+
     private Feature featureWithOptions() {
         return new Feature("zoom", 30, FeatureGroup.VISUAL, EnumSet.allOf(GameVersion.class)) {
             @Override public List<OptionSpec> options() {

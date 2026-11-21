@@ -667,6 +667,10 @@ class ModulesTest {
             io.github.clemensjl.hengst.mod.common.layout.LayoutMath.resolve(c, all[i].width(canvas, c),
                     all[i].height(canvas, c), canvas.width(), canvas.height(), rects[i]);
             assertTrue(rects[i].w > 0 && rects[i].h > 0, all[i].id() + " has a size");
+            if (all[i] instanceof io.github.clemensjl.hengst.mod.common.hud.TextHudModule) { // the fit must not cut a worst-case text here
+                String shown = ((io.github.clemensjl.hengst.mod.common.hud.TextHudModule) all[i]).text();
+                assertEquals(canvas.textWidth(shown) + 4, rects[i].w, all[i].id() + " is shown whole: " + shown);
+            }
         }
         for (int i = 0; i < all.length; i++) {
             for (int j = i + 1; j < all.length; j++) {
