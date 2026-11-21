@@ -12,13 +12,20 @@
 #![cfg(all(windows, feature = "dev-offline"))]
 
 use hengst_core::args::{Account, AccountKind};
-use hengst_core::launch::{ensure_launch_allowed, prepare, Endpoints, LaunchOptions, DEV_OFFLINE};
+use hengst_core::launch::{
+    ensure_launch_allowed, prepare_with_runner, Endpoints, LaunchOptions, Prepared, DEV_OFFLINE,
+};
+use hengst_core::loaders::forge::{
+    self,
+    processors::{ProcessRunner, SystemRunner},
+};
 use hengst_core::loaders::{LoaderKind, LoaderRequest};
 use hengst_core::paths::Paths;
 use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -27,6 +34,15 @@ static LOCK: Mutex<()> = Mutex::new(());
 
 const LWJGL_MARKERS: [&str; 2] = ["Backend library: LWJGL version", "LWJGL Version: "];
 const LOADED_MARKERS: [&str; 2] = ["blocks.png-atlas", "textures-atlas"];
+/// Lines worth printing as evidence of which loader started.
+const LOADER_HINTS: [&str; 6] = [
+    "ModLauncher",
+    "Forge Mod Loader",
+    "Forge mod loading",
+    "NeoForge",
+    "Launching target",
+    "FML",
+];
 const START_TIMEOUT: Duration = Duration::from_secs(240);
 const SETTLE: Duration = Duration::from_secs(15);
 
@@ -112,9 +128,89 @@ fn pump<R: std::io::Read + Send + 'static>(
     })
 }
 
+/// Starts every processor through the real runner and counts the starts.
+#[derive(Default)]
+struct CountingRunner(AtomicUsize);
+
+impl ProcessRunner for CountingRunner {
+    fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        SystemRunner.run(cmd, timeout)
+    }
+}
+
+/// Prepares once and returns the result with the number of processors started.
+async fn prepare_counted(paths: &Paths, opts: &LaunchOptions) -> (Prepared, usize, Duration) {
+    let runner = Arc::new(CountingRunner::default());
+    let t0 = Instant::now();
+    let p = prepare_with_runner(paths, opts, &Endpoints::default(), runner.clone())
+        .await
+        .expect("prepare against the live services");
+    (p, runner.0.load(Ordering::SeqCst), t0.elapsed())
+}
+
+/// Free physical memory in MB.
+fn free_memory_mb() -> u64 {
+    let out = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            "(Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory",
+        ])
+        .output()
+        .expect("powershell runs");
+    let kb: u64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .expect("free memory in KB");
+    kb / 1024
+}
+
+/// Another agent may run one game of its own; never start ours below 3 GB free memory. Waits up
+/// to 10 minutes for memory to come back.
+fn wait_for_memory() {
+    const NEEDED_MB: u64 = 3 * 1024;
+    let start = Instant::now();
+    loop {
+        let free = free_memory_mb();
+        if free >= NEEDED_MB {
+            println!("free memory before the launch: {free} MB");
+            return;
+        }
+        assert!(
+            start.elapsed() < Duration::from_secs(600),
+            "only {free} MB free memory after waiting 10 minutes"
+        );
+        println!("only {free} MB free memory; waiting");
+        std::thread::sleep(Duration::from_secs(15));
+    }
+}
+
+/// What the processor stage of a Forge or NeoForge build looks like.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Install {
+    /// Fabric family: nothing to install.
+    None,
+    /// Legacy and spec-0 Forge: no processors, no marker.
+    NoProcessors,
+    /// Modern Forge and NeoForge: processors on the first prepare, none on the next.
+    Processors,
+}
+
+async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Option<&str>) {
+    live_launch_with(version, kind, None, Install::None, memory_mb, banner).await
+}
+
 // The lock is held on purpose for the whole launch: only one game may run at a time.
 #[allow(clippy::await_holding_lock)]
-async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Option<&str>) {
+async fn live_launch_with(
+    version: &str,
+    kind: LoaderKind,
+    loader_version: Option<&str>,
+    install: Install,
+    memory_mb: u32,
+    banner: Option<&str>,
+) {
     let _serial = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // Offline accounts may only start the game in dev-offline builds; fail before any download.
     ensure_launch_allowed(AccountKind::Offline, DEV_OFFLINE).expect("dev-offline launch allowed");
@@ -141,15 +237,51 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
         memory_mb,
         loader: Some(LoaderRequest {
             kind,
-            version: None,
+            version: loader_version.map(String::from),
         }),
     };
-    let t0 = Instant::now();
-    let p = prepare(&paths, &opts, &Endpoints::default())
-        .await
-        .expect("prepare against the live services");
-    println!("prepared in {:?}: {}", t0.elapsed(), p.version_id);
+    let (mut p, started, took) = prepare_counted(&paths, &opts).await;
+    println!(
+        "prepared in {took:?}: {} ({started} processors started)",
+        p.version_id
+    );
+    let marker = forge::marker_path(&paths, kind, &p.version_id);
+    match install {
+        Install::None => assert_eq!(started, 0),
+        Install::NoProcessors => {
+            assert_eq!(started, 0, "this build has no processor stage");
+            assert!(!marker.exists(), "no install marker without processors");
+        }
+        Install::Processors => {
+            assert!(marker.is_file(), "install marker {}", marker.display());
+            if started == 0 {
+                // Installed by an earlier run: make the stage run once more to observe it.
+                std::fs::remove_file(&marker).unwrap();
+                let (again, started, took) = prepare_counted(&paths, &opts).await;
+                println!(
+                    "re-installed after removing the marker in {took:?}: {started} processors"
+                );
+                assert!(started > 0, "processors ran after the marker was removed");
+                assert!(marker.is_file());
+                assert_eq!(again.args, p.args);
+                p = again;
+            }
+            let log = forge::install_log(&paths, &p.version_id);
+            let headers = std::fs::read_to_string(&log)
+                .unwrap()
+                .lines()
+                .filter(|l| l.starts_with("== processor "))
+                .map(|l| l.split_once("): ").map_or(l, |(h, _)| h).to_string() + ")")
+                .collect::<Vec<_>>();
+            println!("install log {}: {headers:?}", log.display());
+            let (second, started, took) = prepare_counted(&paths, &opts).await;
+            println!("second prepare in {took:?}: {started} processors started");
+            assert_eq!(started, 0, "a valid install skips the processor stage");
+            assert_eq!(second.args, p.args);
+        }
+    }
 
+    wait_for_memory();
     mute_sound(&p.game_dir).expect("mute sound");
     let log_dir = p.game_dir.join("logs");
     std::fs::create_dir_all(&log_dir).unwrap();
@@ -177,6 +309,7 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
     let mut lwjgl_at: Option<Duration> = None;
     let mut loaded_at: Option<Duration> = None;
     let mut banner_line: Option<String> = None;
+    let mut loader_lines: Vec<String> = Vec::new();
     let mut settle_deadline: Option<Instant> = None;
     loop {
         let deadline = settle_deadline.unwrap_or(started + START_TIMEOUT);
@@ -195,6 +328,12 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
                 {
                     loaded_at = Some(started.elapsed());
                     settle_deadline = Some(Instant::now() + SETTLE);
+                }
+                if loader_lines.len() < 8
+                    && !line.contains("<log4j:Event")
+                    && LOADER_HINTS.iter().any(|h| line.contains(h))
+                {
+                    loader_lines.push(line.clone());
                 }
                 if let Some(b) = banner {
                     if banner_line.is_none() && line.contains(b) {
@@ -217,6 +356,9 @@ async fn live_launch(version: &str, kind: LoaderKind, memory_mb: u32, banner: Op
     let lwjgl = lwjgl_at.expect("no LWJGL line within 240 s; see logs/hengst-live.log");
     let loaded = loaded_at.expect("no late-loading marker (atlas created) within 240 s");
     println!("{version} {kind:?}: LWJGL line after {lwjgl:?}, loaded marker after {loaded:?}");
+    for l in &loader_lines {
+        println!("loader line: {l}");
+    }
     if let Some(b) = banner {
         let line = banner_line.unwrap_or_else(|| panic!("banner {b:?} never appeared"));
         println!("banner line: {line}");
@@ -295,6 +437,157 @@ async fn legacy_fabric_1_12_2() {
         LoaderKind::LegacyFabric,
         2048,
         Some("with Fabric Loader"),
+    )
+    .await
+}
+
+// Loader evidence lines, taken from the first real run of each family:
+// - Forge 1.13 and later: FML's "Forge mod loading, version <build>, for MC <game>" (after
+//   ModLauncher has started the `forgeclient` target).
+// - Forge before 1.13 (LaunchWrapper with FMLTweaker): "Forge Mod Loader version <build> for
+//   Minecraft <game> loading".
+
+const MODERN_FORGE: &str = "Forge mod loading, version ";
+const LEGACY_FORGE: &str = "Forge Mod Loader version ";
+
+#[tokio::test]
+#[ignore]
+async fn forge_1_7_10() {
+    live_launch_with(
+        "1.7.10",
+        LoaderKind::Forge,
+        None,
+        Install::NoProcessors,
+        2048,
+        Some(LEGACY_FORGE),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn forge_1_8_9() {
+    live_launch_with(
+        "1.8.9",
+        LoaderKind::Forge,
+        None,
+        Install::NoProcessors,
+        2048,
+        Some(LEGACY_FORGE),
+    )
+    .await
+}
+
+/// The recommended 1.12.2 build (14.23.5.2859, install profile spec 0).
+#[tokio::test]
+#[ignore]
+async fn forge_1_12_2() {
+    live_launch_with(
+        "1.12.2",
+        LoaderKind::Forge,
+        None,
+        Install::NoProcessors,
+        2048,
+        Some(LEGACY_FORGE),
+    )
+    .await
+}
+
+/// The last 1.12.2 build with the legacy installer format.
+#[tokio::test]
+#[ignore]
+async fn forge_1_12_2_legacy_format() {
+    live_launch_with(
+        "1.12.2",
+        LoaderKind::Forge,
+        Some("14.23.5.2847"),
+        Install::NoProcessors,
+        2048,
+        Some(LEGACY_FORGE),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn forge_1_16_5() {
+    live_launch_with(
+        "1.16.5",
+        LoaderKind::Forge,
+        None,
+        Install::Processors,
+        2048,
+        Some(MODERN_FORGE),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn forge_1_20_1() {
+    live_launch_with(
+        "1.20.1",
+        LoaderKind::Forge,
+        None,
+        Install::Processors,
+        3072,
+        Some(MODERN_FORGE),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn forge_latest() {
+    live_launch_with(
+        "latest",
+        LoaderKind::Forge,
+        None,
+        Install::Processors,
+        3072,
+        Some(MODERN_FORGE),
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn neoforge_1_20_1() {
+    live_launch_with(
+        "1.20.1",
+        LoaderKind::NeoForge,
+        None,
+        Install::Processors,
+        3072,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn neoforge_1_21_1() {
+    live_launch_with(
+        "1.21.1",
+        LoaderKind::NeoForge,
+        None,
+        Install::Processors,
+        3072,
+        None,
+    )
+    .await
+}
+
+#[tokio::test]
+#[ignore]
+async fn neoforge_latest() {
+    live_launch_with(
+        "latest",
+        LoaderKind::NeoForge,
+        None,
+        Install::Processors,
+        3072,
+        None,
     )
     .await
 }
