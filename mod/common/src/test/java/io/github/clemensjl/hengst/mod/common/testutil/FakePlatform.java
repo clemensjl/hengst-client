@@ -35,6 +35,10 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public Path configDir;
     /** If set, {@link #screenOpen()} throws it (a platform call that fails). */
     public RuntimeException screenOpenFailure;
+    /** If set, {@link #languageCode()} throws it. */
+    public RuntimeException languageCodeFailure;
+    /** If set, {@link #serverAddress()} throws it. */
+    public RuntimeException serverAddressFailure;
 
     public FakePlatform(Path configDir) {
         this.configDir = configDir;
@@ -62,6 +66,9 @@ public final class FakePlatform implements Platform, GameView, InputView {
 
     @Override
     public String languageCode() {
+        if (languageCodeFailure != null) {
+            throw languageCodeFailure;
+        }
         return languageCode;
     }
 
@@ -144,6 +151,9 @@ public final class FakePlatform implements Platform, GameView, InputView {
 
     @Override
     public String serverAddress() {
+        if (serverAddressFailure != null) {
+            throw serverAddressFailure;
+        }
         return serverAddress;
     }
 

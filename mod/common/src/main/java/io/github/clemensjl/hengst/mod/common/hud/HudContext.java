@@ -21,10 +21,16 @@ public final class HudContext {
     }
 
     public HudContext(Platform platform, TimeSource time, WallClock wallClock, FrameCounter frames, CpsCounter cps) {
+        this(platform, time, wallClock, frames, cps, I18n.load(platform.languageCode()));
+    }
+
+    /** The core's constructor: it read the language code itself (guarded) and passes the loaded texts. */
+    public HudContext(Platform platform, TimeSource time, WallClock wallClock, FrameCounter frames, CpsCounter cps,
+            I18n i18n) {
         this.platform = platform;
         this.time = time;
         this.wallClock = wallClock;
-        this.i18n = loadInitial(platform);
+        this.i18n = i18n;
         this.frames = frames;
         this.cps = cps;
     }
@@ -51,19 +57,13 @@ public final class HudContext {
         return languageGeneration;
     }
 
-    /** Only the core calls this, in the tick. */
+    /**
+     * Only the core calls this, in the tick. Public because the core lives in another package and Java 8 has no
+     * narrower way to share it.
+     */
     public void setI18n(I18n i18n) {
         this.i18n = i18n;
         languageGeneration++;
-    }
-
-    /** The language may not be readable yet when the mod starts early: English until the core's first check. */
-    private static I18n loadInitial(Platform platform) {
-        try {
-            return I18n.load(platform.languageCode());
-        } catch (RuntimeException e) {
-            return I18n.load(null);
-        }
     }
 
     public FrameCounter frames() {

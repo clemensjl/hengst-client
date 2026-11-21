@@ -39,6 +39,7 @@ import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Function;
 
 /**
  * The one object the game adapters talk to. It owns the registry, the stored settings and profile, the HUD renderer
@@ -49,8 +50,8 @@ import java.util.Set;
  * <li>All methods, including {@link #start} and {@link #shutdown}, run on the client thread. Never call
  * {@link #shutdown} from a JVM shutdown hook.</li>
  * <li>{@link #start} may be called from the client mod initializer. It uses only the platform's version, config
- * directory, {@code logWarning} and {@code languageCode} (a failing read counts as English until the first tick
- * check), and reads files synchronously. No hook may fire before it returned. If it
+ * directory, {@code logWarning} and {@code languageCode} (a failing read is logged and counts as English until the
+ * first tick check), and reads files synchronously. No hook may fire before it returned. If it
  * throws, the adapter keeps no core and treats every hook as a no-op.</li>
  * <li>Hooks are safe after {@link #shutdown}; a change made later is saved again by the tick.</li>
  * <li>{@link Platform#game()} and {@link Platform#input()} return long-lived objects and must not allocate.</li>
@@ -69,7 +70,9 @@ import java.util.Set;
 public final class HengstCore {
     private static final long SAVE_INTERVAL_NANOS = 2_000_000_000L;
     private static final long LANGUAGE_INTERVAL_NANOS = 1_000_000_000L;
-    // The language code before the first successful read; equal to no code the platform returns.
+    // How often a failing language load is tried for one code (one per periodic check) before it is given up.
+    private static final int MAX_LANGUAGE_ATTEMPTS = 3;
+    // "No language loaded yet": a code read that failed at start. Compared by reference, equal to no real code.
     private static final String UNREAD = new String("unread");
 
     // Failure sites. Each logs once per distinct exception class and is re-armed by the next success of that site.
@@ -81,7 +84,9 @@ public final class HengstCore {
     private static final int SITE_SAVE = 5;
     private static final int SITE_FRAME = 6;
     private static final int SITE_SETTINGS = 7;
-    private static final int SITES = 8;
+    private static final int SITE_SERVER = 8;
+    private static final int SITE_LANGUAGE = 9;
+    private static final int SITES = 10;
     private static final int MAX_CONFIG_KINDS = 32;
     private static final int MAX_KINDS = 4;
 
@@ -117,6 +122,11 @@ public final class HengstCore {
     private String loadedLanguage;
     private long lastLanguageCheckNanos;
     private String lastServer;
+    // A language code whose load failed, and how often it was tried; given up after MAX_LANGUAGE_ATTEMPTS.
+    private String failedLanguage;
+    private int languageAttempts;
+    // The language loader; replaced only by tests.
+    private Function<String, I18n> languageLoader = I18n::load;
 
     private HengstCore(Platform platform, TimeSource time, Clock clock, WallClock wallClock, RestrictionPolicy policy) {
         this.platform = platform;
@@ -143,12 +153,14 @@ public final class HengstCore {
         }
         frames = new FrameCounter(time);
         cps = new CpsCounter(time);
-        ctx = new HudContext(platform, time, wallClock, frames, cps);
-        loadedLanguage = readLanguage();
+        String code = readLanguage();
+        ctx = new HudContext(platform, time, wallClock, frames, cps, I18n.load(code == UNREAD ? null : code));
+        loadedLanguage = code;
         renderer = new HudRenderer(registry, gate);
         applyConfig();
         lastSaveNanos = time.nanoTime();
-        lastLanguageCheckNanos = lastSaveNanos;
+        // The first periodic check runs in the first tick.
+        lastLanguageCheckNanos = lastSaveNanos - LANGUAGE_INTERVAL_NANOS;
         registry.seal();
     }
 
@@ -170,10 +182,12 @@ public final class HengstCore {
         return new HengstCore(platform, time, clock, wallClock, policy);
     }
 
+    /** The code once at start. A throw is logged once; English until the first tick check reads it again. */
     private String readLanguage() {
         try {
             return platform.languageCode();
         } catch (RuntimeException e) {
+            platform.logWarning("Hengst: reading the language failed, using English until the next check: " + e);
             return UNREAD;
         }
     }
@@ -303,8 +317,19 @@ public final class HengstCore {
                 s.run();
                 s = null;
             }
-            checkServer(game);
-            checkLanguage();
+            // Each check is isolated: a failure in one never skips the HUD tick or the save below.
+            try {
+                checkServer(game);
+                ok(SITE_SERVER);
+            } catch (RuntimeException e) {
+                failure(SITE_SERVER, "the server check", e);
+            }
+            try {
+                checkLanguage();
+                ok(SITE_LANGUAGE);
+            } catch (RuntimeException e) {
+                failure(SITE_LANGUAGE, "the language check", e);
+            }
             renderer.tick(ctx);
             if (s != null && s.editorModel != null && s.editorModel.dirty()) {
                 dirty = true;
@@ -328,15 +353,23 @@ public final class HengstCore {
         if (server == last || (server != null && server.equals(last))) {
             return;
         }
+        // Recorded first: a failure below is logged once and not retried every tick.
         lastServer = server;
         gate.setServer(server);
-        applyConfig();
+        try {
+            applyConfig();
+        } catch (RuntimeException | LinkageError e) {
+            configFailure("applying the server change", e);
+        }
     }
 
     /**
-     * At most once a second: reads the language code and, only if it differs from the one the texts were loaded for,
-     * loads the new language file. The one allowed file read in the tick (spec 8.6): once per language change, never
-     * from a frame hook. Every module then drops what it cached from text measurements.
+     * At most once a second (the first time in the first tick): reads the language code and, only if it differs from
+     * the one the texts were loaded for, loads the new language. The one allowed file read in the tick (spec 8.6):
+     * once per language change, never from a frame hook. If the load fails the old texts stay; it is tried again at
+     * the next checks, {@link #MAX_LANGUAGE_ATTEMPTS} times in all, then given up (one log line) until the code
+     * changes. After a load every module drops what it cached from text measurements; a module that throws there is
+     * logged once and does not stop the others.
      */
     private void checkLanguage() {
         long now = time.nanoTime();
@@ -345,17 +378,43 @@ public final class HengstCore {
         }
         lastLanguageCheckNanos = now;
         String code = platform.languageCode();
-        String loaded = loadedLanguage;
-        if (code == loaded || (code != null && code.equals(loaded))) {
+        if (sameCode(code, loadedLanguage)) {
+            return;
+        }
+        if (!sameCode(code, failedLanguage)) {
+            failedLanguage = code;
+            languageAttempts = 0;
+        } else if (languageAttempts >= MAX_LANGUAGE_ATTEMPTS) {
+            return;
+        }
+        I18n loaded;
+        try {
+            loaded = languageLoader.apply(code);
+        } catch (RuntimeException | LinkageError e) {
+            languageAttempts++;
+            if (languageAttempts >= MAX_LANGUAGE_ATTEMPTS) {
+                platform.logWarning("Hengst: loading the language " + code + " failed " + languageAttempts
+                        + " times, keeping the current texts until it changes: " + e);
+            }
             return;
         }
         loadedLanguage = code;
-        ctx.setI18n(I18n.load(code));
+        failedLanguage = null;
+        languageAttempts = 0;
+        ctx.setI18n(loaded);
         for (Feature f : registry.supportedOn(platform.version())) {
             if (f instanceof HudModule) {
-                ((HudModule) f).onLanguageChanged();
+                try {
+                    ((HudModule) f).onLanguageChanged();
+                } catch (RuntimeException | LinkageError e) {
+                    configFailure("the language change of " + f.id(), e);
+                }
             }
         }
+    }
+
+    private static boolean sameCode(String a, String b) {
+        return a == b || (a != null && a.equals(b));
     }
 
     /**
@@ -475,6 +534,11 @@ public final class HengstCore {
      */
     public FeatureRegistry registry() {
         return registry;
+    }
+
+    /** Test access only, not for adapters or features: replaces the function that loads a language. */
+    void setLanguageLoaderForTest(Function<String, I18n> loader) {
+        languageLoader = loader;
     }
 
     /** Test access only, not for adapters or features: applies the loaded profile as a close of the settings does. */

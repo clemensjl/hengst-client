@@ -871,11 +871,201 @@ class HengstCoreTest {
 
     @Test void the_language_is_read_at_most_once_a_second() {
         core = start(); platform.inWorld = true;
+        core.onClientTick();                                             // the first check runs in the first tick
         platform.languageCode = "de_de";
         time.advanceMillis(900); core.onClientTick();
         assertEquals(0, core.context().languageGeneration());            // not yet a second
         time.advanceMillis(100); core.onClientTick();
         assertEquals(1, core.context().languageGeneration());
+    }
+
+    @Test void the_first_language_check_runs_in_the_first_tick() {
+        core = start(); platform.inWorld = true;
+        platform.languageCode = "de_de";
+        core.onClientTick();
+        assertEquals(1, core.context().languageGeneration());
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+    }
+
+    private String doneAfterSwitchTo(String code) {
+        core = start(); platform.inWorld = true;
+        core.onClientTick();
+        platform.languageCode = code;
+        time.advanceMillis(1000); core.onClientTick();
+        return core.context().i18n().get("hengst.button.done");
+    }
+
+    @Test void regional_codes_use_the_language_of_their_family_and_unknown_ones_english() {
+        assertEquals("Fertig", doneAfterSwitchTo("de_at"));
+        assertEquals("Fertig", doneAfterSwitchTo("de_ch"));
+        assertEquals("Done", doneAfterSwitchTo("en_gb"));
+        assertEquals("Done", doneAfterSwitchTo("fr_fr"));
+        assertEquals("Fertig", doneAfterSwitchTo("de_de"));
+        assertEquals("Done", doneAfterSwitchTo(""));
+        assertEquals("Done", doneAfterSwitchTo(null));
+        assertEquals("Done", doneAfterSwitchTo("../x"));
+        assertTrue(platform.warnings.isEmpty(), platform.warnings.toString());
+    }
+
+    @Test void an_unsupported_language_is_read_once_across_a_thousand_ticks() {
+        core = start(); platform.inWorld = true;
+        core.onClientTick();
+        platform.languageCode = "fr_fr";
+        int reads = I18n.fileReads();
+        for (int i = 0; i < 1000; i++) { time.advanceMillis(50); core.onClientTick(); }
+        assertTrue(I18n.fileReads() - reads <= 1, "reads: " + (I18n.fileReads() - reads));
+        assertEquals(1, core.context().languageGeneration());
+        int after = I18n.fileReads();
+        for (int i = 0; i < 1000; i++) { time.advanceMillis(50); core.onClientTick(); }
+        assertEquals(after, I18n.fileReads());
+        assertEquals(1, core.context().languageGeneration());
+    }
+
+    @Test void a_throwing_language_code_at_start_is_logged_once_and_corrected_by_the_first_check() {
+        platform.languageCodeFailure = new IllegalStateException("not ready");
+        core = start(); platform.inWorld = true;
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("language"), platform.warnings.get(0));
+        assertEquals("Done", core.context().i18n().get("hengst.button.done"));
+        platform.languageCodeFailure = null; platform.languageCode = "de_de";
+        core.onClientTick();
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+        assertEquals(1, platform.warnings.size());
+    }
+
+    @Test void a_throwing_language_code_in_the_tick_does_not_skip_the_hud_tick() {
+        TickProbe probe = new TickProbe();
+        core = start(); platform.inWorld = true;
+        core.registerForTest(probe);
+        core.activeProfile().module("probe").setEnabled(true);
+        core.applyConfigForTest();
+        core.onClientTick();
+        int before = probe.ticks;
+        platform.languageCodeFailure = new IllegalStateException("boom");
+        time.advanceMillis(1000); core.onClientTick(); core.onClientTick();
+        assertEquals(before + 2, probe.ticks);
+        assertEquals(1, platform.warnings.size());
+    }
+
+    /** A HUD module that counts ticks and can throw when the language changes. */
+    private static final class TickProbe extends HudModule {
+        int ticks;
+        int languageChanges;
+        boolean throwOnLanguage;
+
+        TickProbe() { super("probe", 0, EnumSet.allOf(GameVersion.class)); }
+        @Override public void tick(io.github.clemensjl.hengst.mod.common.hud.HudContext ctx, ModuleConfig cfg) { ticks++; }
+        @Override public void onLanguageChanged() {
+            languageChanges++;
+            if (throwOnLanguage) { throw new IllegalStateException("probe"); }
+        }
+        @Override public int width(io.github.clemensjl.hengst.mod.common.platform.Canvas c, ModuleConfig cfg) { return 1; }
+        @Override public int height(io.github.clemensjl.hengst.mod.common.platform.Canvas c, ModuleConfig cfg) { return 1; }
+        @Override public void render(io.github.clemensjl.hengst.mod.common.platform.Canvas c, ModuleConfig cfg,
+                io.github.clemensjl.hengst.mod.common.hud.HudContext ctx) { }
+    }
+
+    @Test void a_module_that_throws_on_a_language_change_does_not_skip_the_others() {
+        platform.labels.put(GameKey.FORWARD, "W");
+        TickProbe probe = new TickProbe();
+        probe.throwOnLanguage = true;
+        core = start(); platform.inWorld = true;
+        core.registerForTest(probe);                                     // number 0: before every other module
+        WidthCanvas c = new WidthCanvas();
+        core.onClientTick(); core.onHudRender(c, 0f);
+        assertTrue(c.calls.contains("text W 26 4 ffffffff true"), c.calls.toString());
+        c.charWidth = 10;
+        platform.languageCode = "de_de"; time.advanceMillis(1000); core.onClientTick();
+        assertEquals(1, probe.languageChanges);
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+        c.calls.clear(); core.onHudRender(c, 0f);
+        assertTrue(c.calls.contains("text W 24 4 ffffffff true"), c.calls.toString());   // keystrokes refitted
+        platform.languageCode = "en_us"; time.advanceMillis(1000); core.onClientTick();
+        assertEquals(2, probe.languageChanges);
+        long logged = platform.warnings.stream().filter(w -> w.contains("the language change of probe")).count();
+        assertEquals(1, logged, platform.warnings.toString());           // once per module and exception class
+    }
+
+    @Test void a_failed_language_load_keeps_the_old_texts_and_is_tried_three_times_then_given_up() {
+        int[] calls = {0};
+        core = start(); platform.inWorld = true;
+        core.setLanguageLoaderForTest(code -> { calls[0]++; throw new IllegalStateException("unreadable"); });
+        core.onClientTick();
+        platform.languageCode = "de_de";
+        for (int i = 0; i < 20; i++) { time.advanceMillis(1000); core.onClientTick(); }
+        assertEquals(3, calls[0]);
+        assertEquals("Done", core.context().i18n().get("hengst.button.done"));   // never an empty map with raw keys
+        assertEquals(0, core.context().languageGeneration());
+        assertEquals(1, platform.warnings.size(), platform.warnings.toString());
+        platform.languageCode = "de_at";                                  // a new code is tried again
+        time.advanceMillis(1000); core.onClientTick();
+        assertEquals(4, calls[0]);
+    }
+
+    @Test void a_language_load_that_fails_twice_and_then_works_is_applied() {
+        int[] calls = {0};
+        core = start(); platform.inWorld = true;
+        core.setLanguageLoaderForTest(code -> {
+            if (++calls[0] < 3) { throw new IllegalStateException("busy"); }
+            return I18n.load(code);
+        });
+        core.onClientTick();
+        platform.languageCode = "de_de";
+        for (int i = 0; i < 10; i++) { time.advanceMillis(1000); core.onClientTick(); }
+        assertEquals(3, calls[0]);
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+        assertEquals(1, core.context().languageGeneration());
+        assertTrue(platform.warnings.isEmpty(), platform.warnings.toString());
+    }
+
+    @Test void a_failing_language_load_does_not_skip_the_hud_tick() {
+        TickProbe probe = new TickProbe();
+        core = start(); platform.inWorld = true;
+        core.registerForTest(probe);
+        core.activeProfile().module("probe").setEnabled(true);
+        core.applyConfigForTest();
+        core.setLanguageLoaderForTest(code -> { throw new IllegalStateException("x"); });
+        platform.languageCode = "de_de";
+        int before = probe.ticks;
+        core.onClientTick();
+        assertEquals(before + 1, probe.ticks);
+    }
+
+    @Test void a_failing_server_change_is_recorded_logged_once_and_keeps_the_published_state() {
+        int[] asked = {0};
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), (f, s) -> {
+            if ("bad.net".equals(s)) { asked[0]++; throw new IllegalStateException("policy"); }
+            return false;
+        });
+        TickProbe probe = new TickProbe();
+        core.registerForTest(probe);
+        core.activeProfile().module("probe").setEnabled(true);
+        core.applyConfigForTest();
+        platform.inWorld = true; core.onClientTick();
+        assertTrue(FeatureState.on(1));
+        platform.serverAddress = "bad.net";
+        int before = probe.ticks;
+        core.onClientTick();
+        assertEquals(before + 1, probe.ticks);                           // the HUD tick still ran
+        assertTrue(FeatureState.on(1));                                  // the previous state stays published
+        int askedAfter = asked[0];
+        for (int i = 0; i < 20; i++) { core.onClientTick(); }
+        assertEquals(askedAfter, asked[0]);                              // recorded: no retry every tick
+        assertEquals(1, platform.warnings.stream().filter(w -> w.contains("publishing the feature state")).count(),
+                platform.warnings.toString());
+    }
+
+    @Test void a_throwing_server_read_does_not_skip_the_hud_tick() {
+        TickProbe probe = new TickProbe();
+        core = start(); platform.inWorld = true;
+        core.registerForTest(probe);
+        core.activeProfile().module("probe").setEnabled(true);
+        core.applyConfigForTest();
+        platform.serverAddressFailure = new IllegalStateException("gone");
+        int before = probe.ticks;
+        core.onClientTick(); core.onClientTick();
+        assertEquals(before + 2, probe.ticks);
+        assertEquals(1, platform.warnings.size());
     }
 
     @Test void the_settings_opened_after_a_switch_are_german() {

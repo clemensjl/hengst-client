@@ -87,6 +87,53 @@ class HengstCoreAllocationTest {
         assertEquals(generation, core.context().languageGeneration());
     }
 
+    /**
+     * One FPS value change builds one String ("<n> FPS"). Measured after a warm-up with 300 changes (class loading and
+     * resolution done), over 200 further distinct values of 3 digits. Bound: a String of length L is a 24-byte object
+     * (compressed oops: header 12, hash 4, coder 1, hashIsZero 1, value reference 4, padded) plus its byte[] of
+     * 16 + L bytes rounded up to 8; "301 FPS" has L = 7: 24 + 24 = 48. The bound allows 16 more bytes of slack.
+     */
+    @Test void an_fps_value_change_allocates_one_string_and_nothing_else() {
+        core = start(); platform.inWorld = true;
+        CountingCanvas counting = new CountingCanvas();
+        StringBuilder first = new StringBuilder();
+        for (int v = 1; v <= 300; v++) {
+            long a = allocated();
+            fpsChangeTo(v, counting);
+            if (v <= 4) { first.append(' ').append(allocated() - a); }
+        }
+        System.out.println("FPS value change, bytes of the first four changes of this run (warm-up):" + first);
+        int changes = 200;
+        long min = Long.MAX_VALUE, max = 0, sum = 0, quiet = 0;
+        for (int v = 301; v < 301 + changes; v++) {
+            // build the window's frames first (no allocation, no time passing), then close it
+            for (int i = 0; i < v - 1; i++) { core.onFrame(); }
+            time.advanceMillis(1000);
+            core.onFrame();
+            long a = allocated();
+            core.onClientTick();
+            core.onHudRender(counting, 0f);
+            long used = allocated() - a;
+            min = Math.min(min, used); max = Math.max(max, used); sum += used;
+            a = allocated();
+            for (int i = 0; i < 3; i++) { core.onClientTick(); core.onHudRender(counting, 0f); core.onFrame(); }
+            quiet += allocated() - a;
+        }
+        long perString = 24 + ((16 + 7 + 7) & ~7);
+        System.out.println("FPS value change over " + changes + " distinct values (tick + render): min " + min + ", max " + max
+                + ", avg " + sum / changes + " bytes; quiet ticks and frames: " + quiet + " bytes; one String of 7 chars = " + perString);
+        assertEquals(0, quiet, "ticks and frames without a value change allocated " + quiet + " bytes");
+        assertTrue(max <= perString + 16, "a value change allocated " + max + " bytes, bound " + (perString + 16));
+    }
+
+    private void fpsChangeTo(int v, Canvas c) {
+        for (int i = 0; i < v - 1; i++) { core.onFrame(); }
+        time.advanceMillis(1000);
+        core.onFrame();
+        core.onClientTick();
+        core.onHudRender(c, 0f);
+    }
+
     @Test void ticks_with_an_equal_server_name_in_a_new_object_allocate_nothing() {
         core = start(); platform.inWorld = true;
         String a = "mc.example.net";

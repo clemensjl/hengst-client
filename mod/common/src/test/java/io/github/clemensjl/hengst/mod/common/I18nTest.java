@@ -29,6 +29,58 @@ class I18nTest {
         assertNotEquals(I18n.load("en_us").get("hengst.button.done"), I18n.load("de_DE").get("hengst.button.done"));
     }
 
+    private static String done(String code) {
+        return I18n.load(code).get("hengst.button.done");
+    }
+
+    @Test
+    void a_regional_code_uses_the_bundled_file_of_its_language() {
+        assertEquals("Fertig", done("de_at"));
+        assertEquals("Fertig", done("de_ch"));
+        assertEquals("Fertig", done("de_de"));
+        assertEquals("Fertig", done("de"));
+        assertEquals("Done", done("en_gb"));
+        assertEquals("Done", done("en_us"));
+    }
+
+    @Test
+    void an_unsupported_empty_or_missing_code_is_english() {
+        assertEquals("Done", done("fr_fr"));
+        assertEquals("Done", done(""));
+        assertEquals("Done", done(null));
+    }
+
+    @Test
+    void a_key_missing_in_a_translation_falls_back_to_the_english_text_then_the_key() {
+        I18n partial = I18n.of(java.util.Collections.<String, Object>singletonMap("a", "A-de"),
+                java.util.Collections.<String, Object>singletonMap("b", "B-en"));
+        assertEquals("A-de", partial.get("a"));
+        assertEquals("B-en", partial.get("b"));
+        assertEquals("c", partial.get("c"));
+    }
+
+    @Test
+    void a_code_is_lowercased_then_validated_before_it_is_used() {
+        assertEquals("Fertig", done("DE_AT"));                 // the legacy version reports "de_DE"-style codes
+        assertEquals("Done", done("../x"));
+        assertEquals("Done", done("de/../en_us"));
+        assertEquals("Done", done("de_de\0"));
+        assertEquals("Done", done("de\0"));
+        assertEquals("Done", done("d"));                       // too short
+        assertEquals("Done", done("de_de_de_de_de_de"));      // 17 characters
+        assertEquals("Done", done("de-de"));
+    }
+
+    @Test
+    void every_bundled_file_is_in_the_table_and_the_table_names_only_bundled_files() throws Exception {
+        java.nio.file.Path dir = java.nio.file.Paths.get(I18n.class.getResource("/hengst/lang").toURI());
+        java.util.Set<String> onDisk = new java.util.TreeSet<String>();
+        try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.list(dir)) {
+            files.forEach(f -> onDisk.add(f.getFileName().toString().replace(".json", "")));
+        }
+        assertEquals(onDisk, new java.util.TreeSet<String>(Arrays.asList(I18n.BUNDLED)));
+    }
+
     @Test
     void get_with_arg_replaces_placeholder() {
         assertEquals("Profil: x", I18n.load("de_de").get("hengst.profile", "x"));
