@@ -1,5 +1,6 @@
 //! App start: debug arguments, plugins, navigation guard, the main window and its saved state.
 
+use crate::settings::{window_theme, Theme};
 use crate::state::AppState;
 use crate::window_state::{self, MonitorArea, Placement, Size, Tracker, WindowState, DEFAULT_SIZE};
 use hengst_core::launch::Endpoints;
@@ -102,6 +103,33 @@ pub fn navigation_allowed(url: &Url, dev_url: Option<&Url>) -> bool {
     (own || dev_url.is_some_and(same)) && plain
 }
 
+/// `--bg` of the resolved theme (DESIGN.md 2.1), as the native window and WebView background. The
+/// frontend test `tokens.test.ts` checks these two values against `index.css`.
+pub const BG_LIGHT: (u8, u8, u8) = (243, 244, 246);
+pub const BG_DARK: (u8, u8, u8) = (18, 20, 23);
+
+pub fn background_color(resolved: tauri::Theme) -> Color {
+    let (r, g, b) = match resolved {
+        tauri::Theme::Dark => BG_DARK,
+        _ => BG_LIGHT,
+    };
+    Color(r, g, b, 255)
+}
+
+/// Sets the title bar theme (`System` follows the system again) and the background that matches
+/// the resolved theme.
+pub fn apply_window_theme<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+    setting: Theme,
+) -> tauri::Result<()> {
+    window.set_theme(window_theme(setting))?;
+    let resolved = match window_theme(setting) {
+        Some(t) => t,
+        None => window.theme()?,
+    };
+    window.set_background_color(Some(background_color(resolved)))
+}
+
 fn logical(size: u32, scale: f64) -> u32 {
     (f64::from(size) / scale).round() as u32
 }
@@ -165,6 +193,7 @@ fn create_window(
     args: &StartupArgs,
     paths: &Paths,
     dev_url: Option<Url>,
+    theme: Theme,
 ) -> tauri::Result<()> {
     let restore = window_state::should_restore(args.window_size.is_some(), cfg!(feature = "e2e"));
     let saved = if restore {
@@ -177,8 +206,8 @@ fn create_window(
     } else {
         "Hengst Client"
     };
-    // Created invisible and shown once size and position are set. The background is `--bg` of the
-    // light theme until Task 3 reads the theme.
+    // Created invisible and shown once size and position are set, with the title bar theme and the
+    // `--bg` background of the setting; `System` is resolved right after creation.
     let window = WebviewWindowBuilder::new(app, WINDOW_LABEL, WebviewUrl::default())
         .title(title)
         .visible(false)
@@ -186,10 +215,16 @@ fn create_window(
             f64::from(DEFAULT_SIZE.width),
             f64::from(DEFAULT_SIZE.height),
         )
-        .background_color(Color(243, 244, 246, 255))
+        .theme(window_theme(theme))
+        .background_color(background_color(
+            window_theme(theme).unwrap_or(tauri::Theme::Light),
+        ))
+        // Ctrl+Plus, Ctrl+Minus and the mouse wheel zoom stay on (DESIGN.md 13).
+        .zoom_hotkeys_enabled(true)
         .devtools(cfg!(debug_assertions))
         .on_navigation(move |url| navigation_allowed(url, dev_url.as_ref()))
         .build()?;
+    apply_window_theme(&window, theme)?;
 
     let monitors = window.available_monitors()?;
     let areas: Vec<MonitorArea> = monitors.iter().map(area_of).collect();
@@ -283,6 +318,7 @@ pub fn run() {
     let args = StartupArgs::from_env();
     let paths = Paths::new(args.home.clone().unwrap_or_else(Paths::default_root));
     let state = AppState::new(paths.clone(), Endpoints::default());
+    let theme = state.settings.get().theme;
     let mut context = tauri::generate_context!();
     let debug = cfg!(debug_assertions);
     let identifier = app_identifier(&context.config().identifier, debug);
@@ -310,7 +346,7 @@ pub fn run() {
         .manage(state)
         .invoke_handler(with_commands!(handler))
         .setup(move |app| {
-            create_window(app.handle(), &args, &paths, dev_url)?;
+            create_window(app.handle(), &args, &paths, dev_url, theme)?;
             Ok(())
         })
         .run(context)
@@ -376,6 +412,15 @@ mod tests {
         let base = "io.github.clemensjl.hengst-client";
         assert_eq!(app_identifier(base, false), base);
         assert_ne!(app_identifier(base, true), base);
+    }
+
+    #[test]
+    fn the_window_background_is_bg_of_the_resolved_theme() {
+        assert_eq!(
+            background_color(tauri::Theme::Light),
+            Color(243, 244, 246, 255)
+        );
+        assert_eq!(background_color(tauri::Theme::Dark), Color(18, 20, 23, 255));
     }
 
     #[test]

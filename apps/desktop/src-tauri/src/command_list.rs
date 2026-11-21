@@ -5,7 +5,9 @@ macro_rules! with_commands {
         $callback!(
             app::app_info,
             app::subscribe_events,
-            versions::game_versions
+            versions::game_versions,
+            settings::settings_get,
+            settings::settings_update
         )
     };
 }

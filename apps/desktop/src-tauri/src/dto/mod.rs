@@ -2,6 +2,7 @@
 
 pub mod app;
 pub mod error;
+pub mod settings;
 pub mod versions;
 
 use ts_rs::{Config, ExportError, TS};
@@ -22,4 +23,9 @@ pub const ALL_TYPES: &[Export] = &[
     crate::events::DataScope::export_all,
     crate::events::NoticeKind::export_all,
     crate::events::AppEvent::export_all,
+    crate::settings::Language::export_all,
+    crate::settings::Theme::export_all,
+    crate::settings::SettingsNotice::export_all,
+    settings::SettingsDto::export_all,
+    settings::SettingsPatch::export_all,
 ];

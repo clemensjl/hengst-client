@@ -8,6 +8,8 @@ use ts_rs::TS;
 pub enum ErrorCode {
     Internal,
     Network,
+    /// A value the user or the web view sent is not acceptable; `params.field` names it.
+    InvalidInput,
 }
 
 /// Task 4 completes this list.

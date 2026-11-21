@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { ErrorDto } from "./bindings/ErrorDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
+import type { SettingsDto } from "./bindings/SettingsDto";
+import type { SettingsPatch } from "./bindings/SettingsPatch";
 import type { VersionFilter } from "./bindings/VersionFilter";
 
 export class IpcError extends Error {
@@ -31,8 +33,17 @@ export async function guard<T>(call: Promise<T>): Promise<T> {
   }
 }
 
+/** The backend wants every `Patch` field; a change names only what it changes. */
+const KEEP: Pick<SettingsPatch, "language" | "javaOverride"> = {
+  language: { op: "keep" },
+  javaOverride: { op: "keep" },
+};
+
 export const api = {
   appInfo: (): Promise<AppInfo> => guard(invoke<AppInfo>("app_info")),
   gameVersions: (filter: VersionFilter): Promise<GameVersionsDto> =>
     guard(invoke<GameVersionsDto>("game_versions", { filter })),
+  settingsGet: (): Promise<SettingsDto> => guard(invoke<SettingsDto>("settings_get")),
+  settingsUpdate: (change: Partial<SettingsPatch>): Promise<SettingsDto> =>
+    guard(invoke<SettingsDto>("settings_update", { patch: { ...KEEP, ...change } })),
 };

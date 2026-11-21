@@ -1,4 +1,6 @@
 use crate::events::EventHub;
+use crate::settings::{load_settings, SettingsHandle, SettingsNotice};
+use hengst_core::auth::unix_now;
 use hengst_core::launch::Endpoints;
 use hengst_core::manifest::{load_cached, VersionManifest};
 use hengst_core::paths::Paths;
@@ -11,11 +13,17 @@ pub struct AppState {
     pub endpoints: Endpoints,
     pub events: EventHub,
     pub versions: VersionsCache,
+    pub settings: SettingsHandle,
+    /// The notice of the settings file at start; `settings_get` takes it, so it is shown once.
+    pub pending_notice: Mutex<Option<SettingsNotice>>,
 }
 
 impl AppState {
     pub fn new(paths: Paths, endpoints: Endpoints) -> AppState {
+        let (settings, notice) = load_settings(&paths, unix_now());
         AppState {
+            settings: SettingsHandle::new(paths.clone(), settings),
+            pending_notice: Mutex::new(notice),
             paths,
             endpoints,
             events: EventHub::default(),

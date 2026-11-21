@@ -3,4 +3,4 @@
 /**
  * Task 4 completes this list.
  */
-export type ErrorCode = "internal" | "network";
+export type ErrorCode = "internal" | "network" | "invalidInput";
