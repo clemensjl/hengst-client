@@ -55,6 +55,8 @@ class ModulesTest {
         assertIdentity(new CpsModule(), "cps", 2);
         assertIdentity(new KeystrokesModule(), "keystrokes", 3);
         assertIdentity(new CoordinatesModule(), "coordinates", 6);
+        assertIdentity(new DirectionModule(), "direction", 7);
+        assertIdentity(new SpeedModule(), "speed", 15);
     }
 
     private static void assertIdentity(io.github.clemensjl.hengst.mod.common.feature.Feature f, String id, int nr) {
@@ -88,6 +90,27 @@ class ModulesTest {
         assertEquals(0, d.defaultValue());
         assertEquals(0f, d.min());
         assertEquals(2f, d.max());
+
+        List<OptionSpec> direction = new DirectionModule().options();
+        assertEquals(1, direction.size());
+        OptionSpec style = direction.get(0);
+        assertEquals("style", style.key());
+        assertEquals(OptionSpec.Kind.CHOICE, style.kind());
+        assertEquals("cardinal_degrees", style.defaultValue());
+        assertEquals("cardinal", style.value(0));
+        assertEquals("cardinal_degrees", style.value(1));
+        assertEquals("degrees", style.value(2));
+
+        List<OptionSpec> speed = new SpeedModule().options();
+        assertEquals(2, speed.size());
+        assertEquals("include_vertical", speed.get(0).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, speed.get(0).kind());
+        assertEquals(Boolean.FALSE, speed.get(0).defaultValue());
+        assertEquals("decimals", speed.get(1).key());
+        assertEquals(OptionSpec.Kind.INT_RANGE, speed.get(1).kind());
+        assertEquals(1, speed.get(1).defaultValue());
+        assertEquals(0f, speed.get(1).min());
+        assertEquals(2f, speed.get(1).max());
 
         assertTrue(new FpsModule().options().isEmpty());
     }
@@ -534,5 +557,41 @@ class ModulesTest {
         k.render(c, cfg, ctx);
         k.render(c, cfg, ctx);
         assertEquals(6, measured[0]);
+    }
+
+    @Test
+    void default_places_of_the_six_modules_do_not_overlap_at_320_by_240() {
+        platform.inWorld = true;
+        platform.worldIdentity = new Object();
+        platform.playerYaw = -135f;
+        platform.down.add(GameKey.FORWARD);
+        platform.playerX = 12345.6789;
+        platform.playerY = 120.5;
+        platform.playerZ = -12345.6789;
+        cfg.setOption("decimals", 0);
+        io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
+            new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule()};
+        FakeCanvas canvas = new FakeCanvas();
+        io.github.clemensjl.hengst.mod.common.layout.MutableRect[] rects =
+                new io.github.clemensjl.hengst.mod.common.layout.MutableRect[all.length];
+        for (int i = 0; i < all.length; i++) {
+            ModuleConfig c = ModuleConfig.defaults();
+            c.setAnchor(all[i].defaultAnchor());
+            c.setOffsetX(all[i].defaultOffsetX());
+            c.setOffsetY(all[i].defaultOffsetY());
+            all[i].tick(ctx, c);
+            rects[i] = new io.github.clemensjl.hengst.mod.common.layout.MutableRect();
+            io.github.clemensjl.hengst.mod.common.layout.LayoutMath.resolve(c, all[i].width(canvas, c),
+                    all[i].height(canvas, c), canvas.width(), canvas.height(), rects[i]);
+            assertTrue(rects[i].w > 0 && rects[i].h > 0, all[i].id() + " has a size");
+        }
+        for (int i = 0; i < all.length; i++) {
+            for (int j = i + 1; j < all.length; j++) {
+                io.github.clemensjl.hengst.mod.common.layout.MutableRect a = rects[i];
+                io.github.clemensjl.hengst.mod.common.layout.MutableRect b = rects[j];
+                boolean apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assertTrue(apart, all[i].id() + " overlaps " + all[j].id());
+            }
+        }
     }
 }

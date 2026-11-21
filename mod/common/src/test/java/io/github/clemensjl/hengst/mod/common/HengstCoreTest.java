@@ -717,7 +717,8 @@ class HengstCoreTest {
         UiScreen s = platform.openedScreen;
         s.render(canvas, 0, 0, 0f);
         armed[0] = true;
-        for (int y = 66; y < 66 + 20 * 5; y += 20) {       // selecting the row of the bad feature rebuilds its options
+        s.mouseScrolled(60, 100, -30);                      // six features now: the bad row is below the visible part
+        for (int y = 66; y < 66 + 20 * 7; y += 20) {       // selecting the row of the bad feature rebuilds its options
             assertFalse(throwsOnClick(s, 60, y));
         }
         assertEquals(1, platform.warnings.size());

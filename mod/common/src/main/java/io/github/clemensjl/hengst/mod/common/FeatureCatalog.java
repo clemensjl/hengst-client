@@ -5,8 +5,10 @@ import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CpsModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.DirectionModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.KeystrokesModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.SpeedModule;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -23,6 +25,8 @@ public final class FeatureCatalog {
         all.add(new CpsModule());
         all.add(new KeystrokesModule());
         all.add(new CoordinatesModule());
+        all.add(new DirectionModule());
+        all.add(new SpeedModule());
         return all;
     }
 
