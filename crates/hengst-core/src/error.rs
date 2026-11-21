@@ -24,6 +24,56 @@ pub enum Error {
     NoRuntime { component: String, platform: String },
     #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
     OfflineLaunchDisabled,
+    #[error("no {loader} versions available for Minecraft {game}{}", hint_suffix(.hint))]
+    NoLoaderVersions {
+        loader: String,
+        game: String,
+        /// A likely reason the launcher can tell without asking anything.
+        hint: Option<&'static str>,
+    },
+    #[error("{loader} {version} is not available for Minecraft {game} (see `hengst loaders {loader} {game}`)")]
+    UnknownLoaderVersion {
+        loader: String,
+        game: String,
+        version: String,
+    },
+    #[error("{loader} for Minecraft {game} is not supported ({reason})")]
+    LoaderUnsupported {
+        loader: String,
+        game: String,
+        reason: String,
+    },
+    #[error("{path} is missing, damaged or cannot be verified, and {url} cannot be reached: the launcher is offline or the server is unreachable ({source})")]
+    Offline {
+        path: PathBuf,
+        url: String,
+        #[source]
+        source: reqwest::Error,
+    },
+    #[error(
+        "{url} sends more than {limit} bytes, which is more than the launcher accepts from it"
+    )]
+    TooLarge { url: String, limit: usize },
+    #[error("checksum file {url} does not contain a SHA-1")]
+    InvalidChecksumFile { url: String },
+    #[error("no checksum available for {url}; refusing to download it unverified")]
+    NoChecksum { url: String },
+    #[error("loader profile inherits from {found}, expected {expected}")]
+    ParentMismatch { expected: String, found: String },
+    #[error("{version} uses the launch argument placeholder ${{{key}}}, which the launcher does not know")]
+    UnknownPlaceholder { version: String, key: String },
+    #[error("invalid loader installer: {0}")]
+    Installer(String),
+    #[error("cannot replace {dir}: this game version appears to be running already, close it and try again")]
+    NativesInUse { dir: PathBuf },
+    #[error("loader install failed: {0}")]
+    InstallFailed(String),
+    #[error("loader installer step {jar} failed with exit code {code}, see {log}")]
+    Processor {
+        jar: String,
+        code: i32,
+        log: PathBuf,
+    },
     #[error("Windows Credential Manager error: {0}")]
     CredentialStore(String),
     #[error(transparent)]
@@ -34,6 +84,10 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
+}
+
+fn hint_suffix(hint: &Option<&'static str>) -> String {
+    hint.map(|h| format!(" ({h})")).unwrap_or_default()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

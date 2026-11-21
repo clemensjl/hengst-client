@@ -9,11 +9,19 @@ use hengst_core::auth::store::{load_accounts_file, AccountStore};
 use hengst_core::auth::{client_id, unix_now, AuthEndpoints, MicrosoftAuth};
 use hengst_core::download::http_client;
 use hengst_core::launch::{
-    ensure_launch_allowed, prepare, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+    ensure_launch_allowed, prepare_with_progress, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+};
+use hengst_core::loaders::forge::processors::SystemRunner;
+use hengst_core::loaders::{
+    list_versions, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion,
+    ResolvedLoader,
 };
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
+use hengst_core::progress::{Progress, Transfer};
 use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -54,9 +62,27 @@ enum Cmd {
         java: Option<PathBuf>,
         #[arg(long, default_value_t = 2048)]
         memory: u32,
-        /// Download everything and print the command line instead of starting
+        /// Mod loader: fabric, quilt, legacy-fabric, neoforge or forge (case-insensitive)
+        #[arg(long, value_parser = LoaderKind::from_str)]
+        loader: Option<LoaderKind>,
+        /// Loader version (default: the newest stable one)
+        #[arg(long, requires = "loader")]
+        loader_version: Option<String>,
+        /// Download everything and print the command line instead of starting (Forge and
+        /// NeoForge also run the installer's processors)
         #[arg(long)]
         dry_run: bool,
+    },
+    /// List loader versions for a game version, newest first
+    Loaders {
+        /// Loader: fabric, quilt, legacy-fabric, neoforge or forge (case-insensitive)
+        #[arg(value_parser = LoaderKind::from_str)]
+        loader: LoaderKind,
+        /// Game version id, or `latest` / `latest-snapshot`
+        version: String,
+        /// Maximum number of versions to list
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u64).range(1..))]
+        limit: u64,
     },
     /// Sign in with a Microsoft account and save it
     Login,
@@ -102,6 +128,44 @@ impl KindFilter {
     }
 }
 
+/// Whether the unstable-fallback note can apply at all (no explicit version, unstable pick).
+fn note_applies(requested: Option<&str>, resolved: &ResolvedLoader) -> bool {
+    requested.is_none() && !resolved.version.stable
+}
+
+/// Warns when the default pick had to fall back to a non-stable loader build.
+fn unstable_note(requested: Option<&str>, resolved: &ResolvedLoader, game: &str) -> Option<String> {
+    if !note_applies(requested, resolved) {
+        return None;
+    }
+    Some(format!(
+        "note: no stable {} release for Minecraft {game}, using {}",
+        resolved.kind, resolved.version.id
+    ))
+}
+
+/// One line per loader version (at most `limit`), the default marked.
+fn loader_lines(versions: &[LoaderVersion], limit: usize, default_id: &str) -> Vec<String> {
+    versions
+        .iter()
+        .take(limit)
+        .map(|v| {
+            let stable = if v.stable { "stable" } else { "unstable" };
+            let marker = if v.id == default_id { " (default)" } else { "" };
+            format!("{:<24} {stable}{marker}", v.id)
+        })
+        .collect()
+}
+
+/// Maps `latest` / `latest-snapshot` to a game version id; other ids pass through.
+async fn resolve_game(paths: &Paths, version: &str) -> anyhow::Result<String> {
+    let manifest = fetch_manifest(&http_client(), paths, MANIFEST_URL).await?;
+    Ok(manifest
+        .find(version)
+        .map(|v| v.id.clone())
+        .unwrap_or_else(|| version.to_string()))
+}
+
 #[cfg(windows)]
 fn open_store(paths: &Paths) -> anyhow::Result<AccountStore<KeyringSecretStore>> {
     Ok(AccountStore::new(
@@ -138,6 +202,8 @@ async fn main() -> anyhow::Result<()> {
             offline,
             java,
             memory,
+            loader,
+            loader_version,
             dry_run,
         } => {
             let account = match offline {
@@ -159,8 +225,46 @@ async fn main() -> anyhow::Result<()> {
                 account,
                 java,
                 memory_mb: memory,
+                loader: loader.map(|kind| LoaderRequest {
+                    kind,
+                    version: loader_version.clone(),
+                }),
             };
-            let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
+            let sink = Arc::new(|event: Progress| {
+                if let Some(line) = progress_line(&event) {
+                    eprintln!("{line}");
+                }
+            });
+            let prepared = prepare_with_progress(
+                &paths,
+                &opts,
+                &Endpoints::default(),
+                Arc::new(SystemRunner),
+                sink,
+            )
+            .await?;
+            if let Some(resolved) = prepared
+                .loader
+                .as_ref()
+                .filter(|_| prepared.loader_list_from_cache)
+            {
+                eprintln!(
+                    "note: the {} version service is unreachable; picked {} from the last saved list",
+                    resolved.kind, resolved.version.id
+                );
+            }
+            if let Some(resolved) = prepared
+                .loader
+                .as_ref()
+                .filter(|r| note_applies(loader_version.as_deref(), r))
+            {
+                // The note is cosmetic: a failed lookup skips it silently.
+                if let Ok(game) = resolve_game(&paths, &opts.version).await {
+                    if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &game) {
+                        eprintln!("{note}");
+                    }
+                }
+            }
             if dry_run {
                 println!("{}", prepared.java.display());
                 for arg in &prepared.redacted_args() {
@@ -170,6 +274,19 @@ async fn main() -> anyhow::Result<()> {
             }
             let code = run(&prepared).await?;
             std::process::exit(code);
+        }
+        Cmd::Loaders {
+            loader,
+            version,
+            limit,
+        } => {
+            let game = resolve_game(&paths, &version).await?;
+            let versions =
+                list_versions(&http_client(), &LoaderEndpoints::default(), loader, &game).await?;
+            let default = pick_version(&versions, None, loader, &game)?;
+            for line in loader_lines(&versions, limit as usize, &default.id) {
+                println!("{line}");
+            }
         }
         Cmd::Login => {
             let auth = MicrosoftAuth::new(client_id()?, AuthEndpoints::default());
@@ -215,10 +332,179 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn loader_name(kind: LoaderKind) -> &'static str {
+    match kind {
+        LoaderKind::Fabric => "Fabric",
+        LoaderKind::Quilt => "Quilt",
+        LoaderKind::LegacyFabric => "Legacy Fabric",
+        LoaderKind::Forge => "Forge",
+        LoaderKind::NeoForge => "NeoForge",
+    }
+}
+
+/// 3402 -> "3,402".
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The line printed to stderr for a progress event; `None` for events that stay silent.
+fn progress_line(event: &Progress) -> Option<String> {
+    Some(match event {
+        Progress::ResolvingLoader { kind, game } => {
+            format!("Resolving {} version for {game}", loader_name(*kind))
+        }
+        Progress::DownloadingInstaller { kind } => {
+            format!("Downloading the {} installer", loader_name(*kind))
+        }
+        Progress::Downloading { what, count } => {
+            let n = grouped(*count);
+            match what {
+                Transfer::GameFiles => format!("Downloading {n} game files"),
+                Transfer::Assets => format!("Downloading {n} assets"),
+                Transfer::Java => format!("Preparing the Java runtime ({n} files)"),
+            }
+        }
+        Progress::Downloaded { .. } => return None,
+        Progress::InstallStarted {
+            kind,
+            version,
+            game,
+        } => format!(
+            "Installing {} {version} for {game} (runs the official installer locally)",
+            loader_name(*kind)
+        ),
+        Progress::InstallLog { path } => format!("Install log: {}", path.display()),
+        Progress::InstallStep { index, total, name } => {
+            format!("Step {index} of {total}: {name}")
+        }
+        Progress::VerifyingInstall => "Verifying the install".to_string(),
+        Progress::InstallFinished { elapsed } => {
+            format!(
+                "Install finished in {} s",
+                (elapsed.as_millis() + 500) / 1000
+            )
+        }
+        Progress::InstallReused => "Install is up to date, reusing it".to_string(),
+        Progress::Notice { message } => message.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn progress_events_become_plain_lines() {
+        use std::time::Duration;
+        let line = |e: Progress| progress_line(&e);
+        assert_eq!(
+            line(Progress::ResolvingLoader {
+                kind: LoaderKind::Forge,
+                game: "1.20.1".into()
+            })
+            .as_deref(),
+            Some("Resolving Forge version for 1.20.1")
+        );
+        assert_eq!(
+            line(Progress::DownloadingInstaller {
+                kind: LoaderKind::NeoForge
+            })
+            .as_deref(),
+            Some("Downloading the NeoForge installer")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::GameFiles,
+                count: 142
+            })
+            .as_deref(),
+            Some("Downloading 142 game files")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::Assets,
+                count: 3402
+            })
+            .as_deref(),
+            Some("Downloading 3,402 assets")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::Java,
+                count: 1234567
+            })
+            .as_deref(),
+            Some("Preparing the Java runtime (1,234,567 files)")
+        );
+        assert_eq!(
+            line(Progress::Downloaded {
+                what: Transfer::Assets
+            }),
+            None
+        );
+        assert_eq!(
+            line(Progress::InstallStarted {
+                kind: LoaderKind::Forge,
+                version: "47.4.28".into(),
+                game: "1.20.1".into()
+            })
+            .as_deref(),
+            Some("Installing Forge 47.4.28 for 1.20.1 (runs the official installer locally)")
+        );
+        assert_eq!(
+            line(Progress::InstallLog {
+                path: PathBuf::from("logs").join("install.log")
+            })
+            .as_deref(),
+            Some(
+                format!(
+                    "Install log: {}",
+                    PathBuf::from("logs").join("install.log").display()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            line(Progress::InstallStep {
+                index: 3,
+                total: 6,
+                name: "jarsplitter".into()
+            })
+            .as_deref(),
+            Some("Step 3 of 6: jarsplitter")
+        );
+        assert_eq!(
+            line(Progress::VerifyingInstall).as_deref(),
+            Some("Verifying the install")
+        );
+        assert_eq!(
+            line(Progress::InstallFinished {
+                elapsed: Duration::from_millis(26_400)
+            })
+            .as_deref(),
+            Some("Install finished in 26 s")
+        );
+        assert_eq!(
+            line(Progress::InstallReused).as_deref(),
+            Some("Install is up to date, reusing it")
+        );
+        assert_eq!(
+            line(Progress::Notice {
+                message: "another install is running".into()
+            })
+            .as_deref(),
+            Some("another install is running")
+        );
+    }
 
     #[test]
     fn launch_account_and_offline_conflict() {
@@ -235,5 +521,150 @@ mod tests {
         assert!(Cli::try_parse_from(["hengst", "accounts", "use", "Steve"]).is_ok());
         assert!(Cli::try_parse_from(["hengst", "logout", "Steve"]).is_ok());
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn parses_loader_options() {
+        let cli = Cli::try_parse_from([
+            "hengst",
+            "launch",
+            "1.20.1",
+            "--loader",
+            "forge",
+            "--loader-version",
+            "47.4.28",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Launch {
+                version,
+                loader,
+                loader_version,
+                ..
+            } => {
+                assert_eq!(version, "1.20.1");
+                assert_eq!(loader, Some(LoaderKind::Forge));
+                assert_eq!(loader_version.as_deref(), Some("47.4.28"));
+            }
+            _ => panic!("expected launch"),
+        }
+    }
+
+    #[test]
+    fn loader_defaults_to_none() {
+        let cli = Cli::try_parse_from(["hengst", "launch", "1.20.1"]).unwrap();
+        match cli.cmd {
+            Cmd::Launch {
+                loader,
+                loader_version,
+                ..
+            } => {
+                assert_eq!(loader, None);
+                assert_eq!(loader_version, None);
+            }
+            _ => panic!("expected launch"),
+        }
+    }
+
+    #[test]
+    fn loader_version_needs_loader() {
+        assert!(
+            Cli::try_parse_from(["hengst", "launch", "1.20.1", "--loader-version", "1"]).is_err()
+        );
+    }
+
+    #[test]
+    fn rejects_unknown_loader() {
+        let err = Cli::try_parse_from(["hengst", "launch", "1.8.9", "--loader", "ornithe"])
+            .err()
+            .expect("unknown loader must be rejected")
+            .to_string();
+        assert!(
+            err.contains("unknown loader 'ornithe' (expected fabric, quilt, legacy-fabric, neoforge or forge)"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn parses_loaders_command() {
+        let cli =
+            Cli::try_parse_from(["hengst", "loaders", "quilt", "1.21.11", "--limit", "5"]).unwrap();
+        match cli.cmd {
+            Cmd::Loaders {
+                loader,
+                version,
+                limit,
+            } => {
+                assert_eq!(loader, LoaderKind::Quilt);
+                assert_eq!(version, "1.21.11");
+                assert_eq!(limit, 5u64);
+            }
+            _ => panic!("expected loaders"),
+        }
+        let cli = Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11"]).unwrap();
+        match cli.cmd {
+            Cmd::Loaders { limit, .. } => assert_eq!(limit, 20u64),
+            _ => panic!("expected loaders"),
+        }
+    }
+
+    fn resolved(id: &str, stable: bool) -> ResolvedLoader {
+        ResolvedLoader {
+            kind: LoaderKind::Quilt,
+            version: LoaderVersion {
+                id: id.into(),
+                maven: id.into(),
+                stable,
+            },
+        }
+    }
+
+    #[test]
+    fn notes_only_unrequested_unstable_picks() {
+        assert_eq!(
+            unstable_note(None, &resolved("0.31.0-beta.6", false), "1.21.11").as_deref(),
+            Some("note: no stable quilt release for Minecraft 1.21.11, using 0.31.0-beta.6")
+        );
+        assert_eq!(
+            unstable_note(None, &resolved("0.30.2", true), "1.21.11"),
+            None
+        );
+        assert_eq!(
+            unstable_note(
+                Some("0.31.0-beta.6"),
+                &resolved("0.31.0-beta.6", false),
+                "1.21.11"
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn note_lookup_only_for_unrequested_unstable_picks() {
+        assert!(note_applies(None, &resolved("0.31.0-beta.6", false)));
+        assert!(!note_applies(None, &resolved("0.30.2", true)));
+        assert!(!note_applies(Some("1"), &resolved("1", false)));
+    }
+
+    #[test]
+    fn rejects_zero_limit() {
+        assert!(
+            Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11", "--limit", "0"])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn formats_loader_lines() {
+        let v = |id: &str, stable| LoaderVersion {
+            id: id.into(),
+            maven: id.into(),
+            stable,
+        };
+        let list = [v("0.31.0-beta.6", false), v("0.30.2", true)];
+        let lines = loader_lines(&list, 20, "0.30.2");
+        assert_eq!(lines[0], format!("{:<24} unstable", "0.31.0-beta.6"));
+        assert_eq!(lines[1], format!("{:<24} stable (default)", "0.30.2"));
+        assert_eq!(loader_lines(&list, 1, "0.30.2").len(), 1);
     }
 }

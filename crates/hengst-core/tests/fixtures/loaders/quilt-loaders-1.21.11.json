@@ -1,0 +1,176 @@
+[
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.20.0-beta.9",
+   "version": "0.20.0-beta.9",
+   "build": 9,
+   "separator": ".",
+   "file_size": 1550096,
+   "hashes": {
+    "sha1": "5f092442b79a6511f6b25c8d175ae76393444db7",
+    "sha256": "a475689ac9a5b9718c045972bb0f41381ce22315a87273a99f30ec1fa3aacb8a",
+    "sha512": "6f2e2c0f47afeee5812bf979b19372a9384661e896a0278f2183a5494ea0db962dff7afc401738c469d37f2e506261fb971e0831ddf12efa219e4f875d0b9e45"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ },
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.24.0",
+   "version": "0.24.0",
+   "build": 0,
+   "separator": ".",
+   "file_size": 1835091,
+   "hashes": {
+    "sha1": "4871568efbf6714774904c97b438d2b2bb7f4eba",
+    "sha256": "c5ae7358819fe4dde4e2836cddfe57e76ed84ab7851a54edd56f7831b2af73fc",
+    "sha512": "95436417d84f56ebaf513257804073fa9e23f992f642cfd57dcc2a245598b2072157935d1605b169a237bb86da65b956eacd967cb3d58fde32291398017d0bce"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ },
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.31.0-beta.6",
+   "version": "0.31.0-beta.6",
+   "build": 6,
+   "separator": ".",
+   "file_size": 3221767,
+   "hashes": {
+    "sha1": "d6f287f4620e9973c3ca7694a180586bb79092e7",
+    "sha256": "f14bf8d5ec41be892f161526d2bc509ef3f7eea4184ce02d071b818fe56ab5ee",
+    "sha512": "5cbbe32437ad5ccd45f550f84dac06be9673b39a5579f840229b9e506548247ef6d22b58c3206217f9a20a2b1f30c75e16b7b82a572c86ed1073852126c43dbf"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ },
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.30.2-beta.1",
+   "version": "0.30.2-beta.1",
+   "build": 1,
+   "separator": ".",
+   "file_size": 3159851,
+   "hashes": {
+    "sha1": "719364a99a083ed0e2b9d490af0faa2243751318",
+    "sha256": "dd74de247990d964c66d9d231c4c4431499bd955a7eea710b44631169a1f4403",
+    "sha512": "ef7a7cd4a11fc4cac71d20c3a00d10405902fa5e86afb0a221957296e3015beb86420e24678789245543561b1dee1c535138d50d6d10a211df0319c898fb3fa8"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ },
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.30.2",
+   "version": "0.30.2",
+   "build": 2,
+   "separator": ".",
+   "file_size": 3159782,
+   "hashes": {
+    "sha1": "6d9a96b5d366ea2d7c008a182c5148080dadfacb",
+    "sha256": "273033b1e92793e87f4800b02c6f3d8a89e14cbb71a8087a1f008837f24ab945",
+    "sha512": "d84fa34920adbbadd8e55522c96d006d512ba551c1a1392e0ddc47e31470f3fcb2caf6e1ad8e3a1661bd4419795f1366b9667fd718e24707db056435d59e953b"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ },
+ {
+  "loader": {
+   "maven": "org.quiltmc:quilt-loader:0.29.2",
+   "version": "0.29.2",
+   "build": 2,
+   "separator": ".",
+   "file_size": 3055017,
+   "hashes": {
+    "sha1": "517e5a696ba6ff779e09821b1799c989779b4219",
+    "sha256": "6411442d4b195dea50c983b2921464688f9e020f936949557d73c872dc7e2cd9",
+    "sha512": "db2ca43f4a374f52257b403d187824b3e59423f3180e5cd0d7582a2ed98d73decd1b1f5f0e9a45f907ccb40bbde80264e993b05519bce43358625a9e11691b59"
+   }
+  },
+  "hashed": {
+   "maven": "org.quiltmc:hashed:1.21.11",
+   "version": "1.21.11",
+   "file_size": 1103658,
+   "hashes": {
+    "sha1": "56aa2b39b149ce19c6ea86324198e4829e09a4c6",
+    "sha256": "d76039d601a0c54cbe401a0e27c65caff83af31740d0ee021a094f10bb09eaef",
+    "sha512": "7d544744d8e619d8d698fe477926fc02f765259fd163f5577cd74f695eb56bab4f76bd0b7a067daa462d054893fa915a4f6b12ef8a29b44af921753b6fd5c4b3"
+   }
+  },
+  "intermediary": {
+   "maven": "net.fabricmc:intermediary:1.21.11",
+   "version": "1.21.11"
+  },
+  "launcherMeta": {}
+ }
+]

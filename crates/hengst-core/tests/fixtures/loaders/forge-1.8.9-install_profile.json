@@ -1,0 +1,54 @@
+{
+ "install": {
+  "profileName": "forge",
+  "target": "1.8.9-forge1.8.9-11.15.1.2318-1.8.9",
+  "path": "net.minecraftforge:forge:1.8.9-11.15.1.2318-1.8.9",
+  "version": "forge 1.8.9-11.15.1.2318-1.8.9",
+  "filePath": "forge-1.8.9-11.15.1.2318-1.8.9-universal.jar",
+  "welcome": "Welcome to the simple forge installer.",
+  "minecraft": "1.8.9",
+  "mirrorList": "https://files.minecraftforge.net/mirror-brand.list",
+  "logo": "/big_logo.png"
+ },
+ "versionInfo": {
+  "id": "1.8.9-forge1.8.9-11.15.1.2318-1.8.9",
+  "time": "2017-06-08T04:26:33+0000",
+  "releaseTime": "1960-01-01T00:00:00-0700",
+  "type": "release",
+  "minecraftArguments": "--username ${auth_player_name} --version ${version_name} --gameDir ${game_directory} --assetsDir ${assets_root} --assetIndex ${assets_index_name} --uuid ${auth_uuid} --accessToken ${auth_access_token} --userProperties ${user_properties} --userType ${user_type} --tweakClass net.minecraftforge.fml.common.launcher.FMLTweaker",
+  "mainClass": "net.minecraft.launchwrapper.Launch",
+  "minimumLauncherVersion": 14,
+  "assets": "1.8",
+  "inheritsFrom": "1.8.9",
+  "jar": "1.8.9",
+  "libraries": [
+   {
+    "name": "net.minecraftforge:forge:1.8.9-11.15.1.2318-1.8.9",
+    "url": "https://maven.minecraftforge.net/"
+   },
+   {
+    "name": "net.minecraft:launchwrapper:1.12",
+    "serverreq": true
+   },
+   {
+    "name": "jline:jline:2.13",
+    "url": "https://maven.minecraftforge.net/",
+    "checksums": [
+     "2d9530d0a25daffaffda7c35037b046b627bb171"
+    ],
+    "serverreq": true,
+    "clientreq": false
+   },
+   {
+    "name": "com.typesafe.akka:akka-actor_2.11:2.3.3",
+    "url": "https://maven.minecraftforge.net/",
+    "checksums": [
+     "ed62e9fc709ca0f2ff1a3220daa8b70a2870078e",
+     "25a86ccfdb6f6dfe08971f4825d0a01be83a6f2e"
+    ],
+    "serverreq": true,
+    "clientreq": true
+   }
+  ]
+ }
+}

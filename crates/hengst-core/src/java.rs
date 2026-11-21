@@ -1,5 +1,6 @@
 use crate::download::{get_bytes, Download, Downloader};
 use crate::paths::{join_relative, validate_id, Paths};
+use crate::progress::Transfer;
 use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
@@ -107,6 +108,7 @@ pub async fn ensure_runtime(
         url: entry.manifest.url.clone(),
         path: manifest_path.clone(),
         sha1: Some(entry.manifest.sha1.clone()),
+        sha1_from_cache: false,
     })
     .await?;
     let manifest: RuntimeManifest =
@@ -121,12 +123,13 @@ pub async fn ensure_runtime(
                 url: d.raw.url.clone(),
                 path: target,
                 sha1: Some(d.raw.sha1.clone()),
+                sha1_from_cache: false,
             }),
             // Links only matter on macOS/Linux, which are out of MVP scope.
             _ => {}
         }
     }
-    dl.fetch_all(downloads).await?;
+    dl.fetch_all_reporting(downloads, Transfer::Java).await?;
     Ok(exe)
 }
 

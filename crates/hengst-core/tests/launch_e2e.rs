@@ -78,11 +78,13 @@ async fn prepares_a_full_version_against_mock_mojang() {
         account: Account::offline("Dev"),
         java: None,
         memory_mb: 1024,
+        loader: None,
     };
     let ep = Endpoints {
         manifest: format!("{u}/manifest.json"),
         resources: u.clone(),
         runtime_index: format!("{u}/all.json"),
+        ..Endpoints::default()
     };
     let p = prepare(&paths, &opts, &ep).await.unwrap();
 

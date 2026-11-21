@@ -22,6 +22,8 @@ pub struct VersionJson {
     #[serde(default)]
     pub libraries: Vec<Library>,
     pub logging: Option<Logging>,
+    #[serde(rename = "inheritsFrom")]
+    pub inherits_from: Option<String>,
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -82,6 +84,10 @@ pub struct Library {
     pub extract: Option<Extract>,
     #[serde(default)]
     pub rules: Vec<Rule>,
+    pub sha1: Option<String>,
+    #[serde(default)]
+    pub checksums: Vec<String>,
+    pub clientreq: Option<bool>,
 }
 
 #[derive(Deserialize, Clone, Debug)]
@@ -134,6 +140,7 @@ pub async fn fetch_version(
         url: entry.url.clone(),
         path: path.clone(),
         sha1: Some(entry.sha1.clone()),
+        sha1_from_cache: false,
     })
     .await?;
     Ok(serde_json::from_slice(&tokio::fs::read(&path).await?)?)
@@ -222,5 +229,33 @@ mod tests {
             lib.extract.as_ref().unwrap().exclude,
             vec!["META-INF/".to_string()]
         );
+    }
+
+    #[test]
+    fn parses_loader_fields() {
+        let v: VersionJson = serde_json::from_value(json!({
+            "id": "fabric-loader-0.17.3-1.21.11",
+            "inheritsFrom": "1.21.11",
+            "mainClass": "net.fabricmc.loader.impl.launch.knot.KnotClient",
+            "libraries": [
+                {"name": "org.ow2.asm:asm:9.9", "url": "https://maven.fabricmc.net/",
+                 "sha1": "c29635c8a7afa03d74b33c1884df8abb2b3f3dcc", "checksums": ["a", "b"],
+                 "clientreq": false},
+                {"name": "com.mojang:brigadier:1.3.10"}
+            ]
+        }))
+        .unwrap();
+        assert_eq!(v.inherits_from.as_deref(), Some("1.21.11"));
+        let l = &v.libraries[0];
+        assert_eq!(
+            l.sha1.as_deref(),
+            Some("c29635c8a7afa03d74b33c1884df8abb2b3f3dcc")
+        );
+        assert_eq!(l.checksums, vec!["a".to_string(), "b".to_string()]);
+        assert_eq!(l.clientreq, Some(false));
+        let plain = &v.libraries[1];
+        assert!(plain.sha1.is_none());
+        assert!(plain.checksums.is_empty());
+        assert_eq!(plain.clientreq, None);
     }
 }

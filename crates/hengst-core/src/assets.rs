@@ -1,5 +1,6 @@
 use crate::download::{Download, Downloader};
 use crate::paths::{join_relative, validate_id, validate_sha1, Paths};
+use crate::progress::Transfer;
 use crate::version::AssetIndexRef;
 use crate::Result;
 use serde::Deserialize;
@@ -44,6 +45,7 @@ pub async fn install_assets(
         url: index.url.clone(),
         path: index_path.clone(),
         sha1: Some(index.sha1.clone()),
+        sha1_from_cache: false,
     })
     .await?;
     let parsed: AssetIndex = serde_json::from_slice(&tokio::fs::read(&index_path).await?)?;
@@ -58,10 +60,11 @@ pub async fn install_assets(
                 url: format!("{base}/{}/{}", &o.hash[..2], o.hash),
                 path: paths.asset_object(&o.hash),
                 sha1: Some(o.hash.clone()),
+                sha1_from_cache: false,
             });
         }
     }
-    dl.fetch_all(downloads).await?;
+    dl.fetch_all_reporting(downloads, Transfer::Assets).await?;
 
     let assets_root = paths.assets();
     let game_assets = if parsed.map_to_resources {
