@@ -1069,3 +1069,81 @@ async fn forge_installer_for_wrong_game_version_is_refused() {
     assert!(!seen.iter().any(|p| p.starts_with("/m/")), "{seen:?}");
     assert!(!seen.contains(&"/client.jar".to_string()), "{seen:?}");
 }
+
+#[tokio::test]
+async fn installed_forge_launches_offline_and_fails_closed_on_a_damaged_file() {
+    // Not from the pool: dropping it really stops the server.
+    let s = MockServer::builder().start().await;
+    let u = s.uri();
+    mount_forge_1201(&s).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let ep = forge_endpoints(&u);
+    let default = opts("1.20.1", Some((LoaderKind::Forge, None)));
+    let online = prepare_with_runner(&paths, &default, &ep, Arc::new(FakeJava::default()))
+        .await
+        .unwrap();
+    assert!(!online.loader_list_from_cache);
+    drop(s);
+    assert!(reqwest::get(format!("{u}/forgefiles/maven-metadata.json"))
+        .await
+        .is_err());
+
+    // Default build: the saved version list stands in for the unreachable service.
+    let p = prepare_with_runner(&paths, &default, &ep, Arc::new(NoStart))
+        .await
+        .unwrap();
+    assert!(p.loader_list_from_cache);
+    assert_eq!(p.version_id, FORGE_ID);
+    assert_eq!(p.args, online.args);
+    // A named build needs no list at all.
+    let named = opts("1.20.1", Some((LoaderKind::Forge, Some("47.4.28"))));
+    let p = prepare_with_runner(&paths, &named, &ep, Arc::new(NoStart))
+        .await
+        .unwrap();
+    assert!(!p.loader_list_from_cache);
+    assert_eq!(p.version_id, FORGE_ID);
+
+    // A damaged library is not trusted and cannot be fetched again: a clear offline error.
+    let lib = paths
+        .libraries()
+        .join("cpw/mods/securejarhandler/2.1.10/securejarhandler-2.1.10.jar");
+    std::fs::write(&lib, b"damaged").unwrap();
+    let err = prepare_with_runner(&paths, &named, &ep, Arc::new(NoStart))
+        .await
+        .unwrap_err();
+    let m = err.to_string();
+    assert!(matches!(err, Error::Offline { .. }), "{m}");
+    assert!(
+        m.contains("securejarhandler-2.1.10.jar") && m.contains("offline"),
+        "{m}"
+    );
+}
+
+#[tokio::test]
+async fn named_forge_build_skips_the_version_list() {
+    let s = MockServer::start().await;
+    mount_forge_1201(&s).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let ep = forge_endpoints(&s.uri());
+    for requested in ["47.4.28", "1.20.1-47.4.28"] {
+        let o = opts("1.20.1", Some((LoaderKind::Forge, Some(requested))));
+        let p = prepare_with_runner(&paths, &o, &ep, Arc::new(FakeJava::default()))
+            .await
+            .unwrap();
+        assert_eq!(p.version_id, FORGE_ID);
+        assert_eq!(p.loader.unwrap().version.maven, "1.20.1-47.4.28");
+    }
+    let seen = requested(&s.received_requests().await.unwrap());
+    assert!(
+        !seen.iter().any(|p| p.starts_with("/forgefiles/")),
+        "{seen:?}"
+    );
+    // A build that does not exist surfaces as an unknown version (no installer).
+    let o = opts("1.20.1", Some((LoaderKind::Forge, Some("47.0.0"))));
+    let err = prepare_with_runner(&paths, &o, &ep, Arc::new(NoStart))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, Error::UnknownLoaderVersion { .. }), "{err}");
+}

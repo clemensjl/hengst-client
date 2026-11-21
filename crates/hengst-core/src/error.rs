@@ -38,6 +38,8 @@ pub enum Error {
         game: String,
         reason: String,
     },
+    #[error("{path} is missing or does not match its checksum and cannot be downloaded from {url}: the launcher is offline or the server is unreachable")]
+    Offline { path: PathBuf, url: String },
     #[error("no checksum available for {url}; refusing to download it unverified")]
     NoChecksum { url: String },
     #[error("loader profile inherits from {found}, expected {expected}")]

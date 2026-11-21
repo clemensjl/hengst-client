@@ -212,6 +212,74 @@ pub async fn fetch_installer(
     Ok((item.path, sha1))
 }
 
+/// The builds a typed version can mean, without asking for the version list. Forge ids are short
+/// (`47.4.28`) or full (`1.20.1-47.4.28`); old Forge builds carry the game version a second time
+/// at the end (`1.8.9-11.15.1.2318-1.8.9`). NeoForge for 1.20.1 is `1.20.1-<id>`.
+fn named_candidates(kind: LoaderKind, game: &str, requested: &str) -> Vec<LoaderVersion> {
+    let v = |id: &str, maven: String| LoaderVersion {
+        id: id.to_string(),
+        maven,
+        stable: false,
+    };
+    let prefix = format!("{game}-");
+    match kind {
+        LoaderKind::Forge => match requested.strip_prefix(&prefix) {
+            Some(rest) => {
+                let id = rest.strip_suffix(&format!("-{game}")).unwrap_or(rest);
+                vec![v(id, requested.to_string())]
+            }
+            None => vec![
+                v(requested, format!("{game}-{requested}")),
+                v(requested, format!("{game}-{requested}-{game}")),
+            ],
+        },
+        LoaderKind::NeoForge if game == "1.20.1" => {
+            let id = requested.strip_prefix(&prefix).unwrap_or(requested);
+            vec![v(id, format!("{prefix}{id}"))]
+        }
+        _ => vec![v(requested, requested.to_string())],
+    }
+}
+
+/// Fetches the installer of a build the user named, without the version list. A candidate whose
+/// installer is already on disk is tried first, so an installed build needs no network. A build
+/// without an installer is `Error::UnknownLoaderVersion`.
+pub async fn fetch_named(
+    dl: &Downloader,
+    paths: &Paths,
+    ep: &LoaderEndpoints,
+    kind: LoaderKind,
+    game: &str,
+    requested: &str,
+) -> Result<(LoaderVersion, PathBuf, String)> {
+    validate_id(game)?;
+    validate_id(requested)?;
+    let mut candidates = named_candidates(kind, game, requested);
+    for c in &candidates {
+        validate_id(&c.maven)?;
+    }
+    let on_disk = |c: &LoaderVersion| {
+        installer_coords(kind, game, &c.maven)
+            .ok()
+            .and_then(|coord| maven_path(&coord))
+            .and_then(|rel| join_relative(&paths.libraries(), &rel).ok())
+            .is_some_and(|p| p.is_file())
+    };
+    candidates.sort_by_key(|c| !on_disk(c));
+    for c in candidates {
+        match fetch_installer(dl, paths, kind, game, &c.maven, ep).await {
+            Ok((installer, sha1)) => return Ok((c, installer, sha1)),
+            Err(Error::NoChecksum { .. } | Error::Status { status: 404, .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(Error::UnknownLoaderVersion {
+        loader: kind.to_string(),
+        game: game.to_string(),
+        version: requested.to_string(),
+    })
+}
+
 /// A Forge or NeoForge build whose installer was fetched, verified and read.
 #[derive(Clone, Debug)]
 pub struct ForgeInstall {
@@ -786,6 +854,54 @@ mod tests {
             list_neoforge(&client, &ep, "1.21.1").await,
             Err(Error::Http { .. })
         ));
+    }
+
+    #[test]
+    fn named_builds_map_to_maven_versions_without_a_list() {
+        let mavens = |kind, game, req| -> Vec<(String, String)> {
+            named_candidates(kind, game, req)
+                .into_iter()
+                .map(|v| (v.id, v.maven))
+                .collect()
+        };
+        let p = |id: &str, m: &str| (id.to_string(), m.to_string());
+        assert_eq!(
+            mavens(LoaderKind::Forge, "1.20.1", "47.4.28"),
+            [
+                p("47.4.28", "1.20.1-47.4.28"),
+                p("47.4.28", "1.20.1-47.4.28-1.20.1")
+            ]
+        );
+        assert_eq!(
+            mavens(LoaderKind::Forge, "1.8.9", "1.8.9-11.15.1.2318-1.8.9"),
+            [p("11.15.1.2318", "1.8.9-11.15.1.2318-1.8.9")]
+        );
+        assert_eq!(
+            mavens(LoaderKind::NeoForge, "1.20.1", "47.1.106"),
+            [p("47.1.106", "1.20.1-47.1.106")]
+        );
+        assert_eq!(
+            mavens(LoaderKind::NeoForge, "1.20.1", "1.20.1-47.1.106"),
+            [p("47.1.106", "1.20.1-47.1.106")]
+        );
+        assert_eq!(
+            mavens(LoaderKind::NeoForge, "26.3", "26.3.0.115"),
+            [p("26.3.0.115", "26.3.0.115")]
+        );
+    }
+
+    #[tokio::test]
+    async fn named_build_with_an_unsafe_id_is_refused_without_network() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let ep = LoaderEndpoints::default();
+        for bad in ["../x", "a/b", "a:b"] {
+            assert!(matches!(
+                fetch_named(&dl, &paths, &ep, LoaderKind::Forge, "1.20.1", bad).await,
+                Err(Error::UnsafePath(_))
+            ));
+        }
     }
 
     #[test]

@@ -133,6 +133,13 @@ impl Downloader {
                     attempt += 1;
                     tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
                 }
+                // The local file is missing or wrong and the server cannot be reached.
+                Err(Error::Http { .. }) => {
+                    return Err(Error::Offline {
+                        path: item.path.clone(),
+                        url: item.url.clone(),
+                    })
+                }
                 Err(e) => return Err(e),
             }
         }

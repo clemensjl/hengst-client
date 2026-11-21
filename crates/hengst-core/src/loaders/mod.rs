@@ -59,7 +59,7 @@ impl FromStr for LoaderKind {
 
 /// One installable loader build. `id` is the short form for display and typing, `maven` the full
 /// Maven version.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct LoaderVersion {
     pub id: String,
     pub maven: String,
@@ -114,6 +114,8 @@ pub struct LoaderSetup {
     /// Forge and NeoForge: the verified installer, finished by `forge::finish_install` once
     /// every download is in place.
     pub forge: Option<forge::ForgeInstall>,
+    /// The build was picked from the saved version list because the service was unreachable.
+    pub list_from_cache: bool,
 }
 
 /// Loader builds for a game version, newest first. Errors with `NoLoaderVersions` when there are
@@ -175,14 +177,27 @@ pub async fn prepare_loader(
                 child,
                 extra_downloads: Vec::new(),
                 forge: None,
+                list_from_cache: false,
             })
         }
         LoaderKind::Forge | LoaderKind::NeoForge => {
             forge::check_home(paths, req.kind, game)?;
-            let list = list_versions(dl.client(), ep, req.kind, game).await?;
-            let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
-            let (installer, sha1) =
-                forge::fetch_installer(dl, paths, req.kind, game, &version.maven, ep).await?;
+            // A named build needs no version list, so an installed one starts offline.
+            let (version, installer, sha1, list_from_cache) = match &req.version {
+                Some(requested) => {
+                    let (version, installer, sha1) =
+                        forge::fetch_named(dl, paths, ep, req.kind, game, requested).await?;
+                    (version, installer, sha1, false)
+                }
+                None => {
+                    let (list, cached) = list_saved(dl, paths, ep, req.kind, game).await?;
+                    let version = pick_version(&list, None, req.kind, game)?.clone();
+                    let (installer, sha1) =
+                        forge::fetch_installer(dl, paths, req.kind, game, &version.maven, ep)
+                            .await?;
+                    (version, installer, sha1, cached)
+                }
+            };
             let (p, kind, g, maven) = (
                 paths.clone(),
                 req.kind,
@@ -208,9 +223,79 @@ pub async fn prepare_loader(
                 child: fi.contents.version.clone(),
                 extra_downloads,
                 forge: Some(fi),
+                list_from_cache,
             })
         }
     }
+}
+
+/// The service could not be reached or failed on its side (not "this does not exist").
+fn is_unreachable(e: &Error) -> bool {
+    match e {
+        Error::Http { .. } => true,
+        Error::Status { status, .. } => *status >= 500 || *status == 429,
+        _ => false,
+    }
+}
+
+/// Where the last successful version list of a loader for a game version is kept.
+fn saved_list_path(paths: &Paths, kind: LoaderKind, game: &str) -> Result<std::path::PathBuf> {
+    crate::paths::validate_id(game)?;
+    Ok(paths
+        .loader_dir(kind.slug())
+        .join(format!("versions-{game}.json")))
+}
+
+/// The version list from the service, saved after each success; when the service is unreachable,
+/// the saved list (validated like remote data) with `true`.
+async fn list_saved(
+    dl: &Downloader,
+    paths: &Paths,
+    ep: &LoaderEndpoints,
+    kind: LoaderKind,
+    game: &str,
+) -> Result<(Vec<LoaderVersion>, bool)> {
+    let file = saved_list_path(paths, kind, game)?;
+    match list_versions(dl.client(), ep, kind, game).await {
+        Ok(list) => {
+            // Best effort: a list that cannot be saved only means no offline fallback.
+            if let Ok(bytes) = serde_json::to_vec(&list) {
+                let _ = write_atomic(&file, &bytes).await;
+            }
+            Ok((list, false))
+        }
+        Err(e) if is_unreachable(&e) => {
+            let saved = tokio::fs::read(&file)
+                .await
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Vec<LoaderVersion>>(&b).ok())
+                .filter(|l| {
+                    !l.is_empty()
+                        && l.iter().all(|v| {
+                            crate::paths::validate_id(&v.id).is_ok()
+                                && crate::paths::validate_id(&v.maven).is_ok()
+                        })
+                });
+            match saved {
+                Some(list) => Ok((list, true)),
+                None => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(dir) = file.parent() {
+        tokio::fs::create_dir_all(dir).await?;
+    }
+    let tmp = crate::paths::unique_temp(file);
+    tokio::fs::write(&tmp, bytes).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, file).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    Ok(())
 }
 
 /// An empty segment counts as the number 0, so it equals a missing one.
@@ -443,6 +528,73 @@ mod tests {
         sort_newest_first(&mut list);
         let ids: Vec<_> = list.iter().map(|x| x.id.as_str()).collect();
         assert_eq!(ids, ["0.31.0-beta.6", "0.30.2", "0.9.0"]);
+    }
+
+    #[tokio::test]
+    async fn version_list_is_saved_and_used_when_the_service_fails_on_its_side() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let serve = |status: u16| async move {
+            let server = MockServer::start().await;
+            for (p, body) in [
+                (
+                    "/f/maven-metadata.json",
+                    r#"{"1.20.1": ["1.20.1-47.4.28"]}"#,
+                ),
+                ("/f/promotions_slim.json", r#"{"promos": {}}"#),
+            ] {
+                Mock::given(method("GET"))
+                    .and(path(p))
+                    .respond_with(ResponseTemplate::new(status).set_body_string(body))
+                    .mount(&server)
+                    .await;
+            }
+            server
+        };
+        let ep_for = |s: &MockServer| LoaderEndpoints {
+            forge_files: format!("{}/f", s.uri()),
+            ..LoaderEndpoints::default()
+        };
+        let up = serve(200).await;
+        let (list, cached) = list_saved(&dl, &paths, &ep_for(&up), LoaderKind::Forge, "1.20.1")
+            .await
+            .unwrap();
+        assert!(!cached);
+        assert_eq!(list[0].maven, "1.20.1-47.4.28");
+        assert!(saved_list_path(&paths, LoaderKind::Forge, "1.20.1")
+            .unwrap()
+            .starts_with(paths.root().join("meta")));
+        for status in [503, 429] {
+            let down = serve(status).await;
+            let (again, cached) =
+                list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1")
+                    .await
+                    .unwrap();
+            assert!(cached, "{status}");
+            assert_eq!(again, list);
+        }
+        // "Does not exist" is an answer, not an outage: no fallback.
+        let missing = serve(404).await;
+        assert!(
+            list_saved(&dl, &paths, &ep_for(&missing), LoaderKind::Forge, "1.20.1")
+                .await
+                .is_err()
+        );
+        // A damaged saved list is not used.
+        let file = saved_list_path(&paths, LoaderKind::Forge, "1.20.1").unwrap();
+        std::fs::write(
+            &file,
+            r#"[{"id": "../x", "maven": "../x", "stable": true}]"#,
+        )
+        .unwrap();
+        let down = serve(503).await;
+        assert!(matches!(
+            list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1").await,
+            Err(Error::Status { status: 503, .. })
+        ));
     }
 
     #[test]

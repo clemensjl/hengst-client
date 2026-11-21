@@ -55,6 +55,8 @@ pub struct Prepared {
     pub game_dir: PathBuf,
     pub version_id: String,
     pub loader: Option<ResolvedLoader>,
+    /// The loader build was picked from the saved version list (its service was unreachable).
+    pub loader_list_from_cache: bool,
     account: Account,
 }
 
@@ -82,6 +84,7 @@ impl std::fmt::Debug for Prepared {
             .field("game_dir", &self.game_dir)
             .field("version_id", &self.version_id)
             .field("loader", &self.loader)
+            .field("loader_list_from_cache", &self.loader_list_from_cache)
             .field("account", &self.account)
             .finish()
     }
@@ -232,6 +235,7 @@ pub async fn prepare_with_runner(
         args: build_args(&merged, &ctx),
         game_dir,
         version_id: merged.id.clone(),
+        loader_list_from_cache: setup.as_ref().is_some_and(|s| s.list_from_cache),
         loader: setup.map(|s| s.resolved),
         account: opts.account.clone(),
     })
@@ -288,6 +292,7 @@ mod tests {
             game_dir: PathBuf::from("game"),
             version_id: "1.21".into(),
             loader: None,
+            loader_list_from_cache: false,
             account,
         }
     }

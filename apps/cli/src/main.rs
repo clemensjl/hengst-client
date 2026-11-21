@@ -230,6 +230,16 @@ async fn main() -> anyhow::Result<()> {
             if let Some(resolved) = prepared
                 .loader
                 .as_ref()
+                .filter(|_| prepared.loader_list_from_cache)
+            {
+                eprintln!(
+                    "note: the {} version service is unreachable; picked {} from the last saved list",
+                    resolved.kind, resolved.version.id
+                );
+            }
+            if let Some(resolved) = prepared
+                .loader
+                .as_ref()
                 .filter(|r| note_applies(loader_version.as_deref(), r))
             {
                 // The note is cosmetic: a failed lookup skips it silently.
