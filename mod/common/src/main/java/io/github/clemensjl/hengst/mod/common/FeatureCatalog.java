@@ -10,6 +10,8 @@ import io.github.clemensjl.hengst.mod.common.hud.modules.DirectionModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.KeystrokesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.MemoryModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.PingModule;
+import io.github.clemensjl.hengst.mod.common.hud.modules.ServerAddressModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.SpeedModule;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.ArrayList;
@@ -28,7 +30,9 @@ public final class FeatureCatalog {
         all.add(new KeystrokesModule());
         all.add(new CoordinatesModule());
         all.add(new DirectionModule());
+        all.add(new PingModule());
         all.add(new ClockModule());
+        all.add(new ServerAddressModule());
         all.add(new MemoryModule());
         all.add(new SpeedModule());
         return all;

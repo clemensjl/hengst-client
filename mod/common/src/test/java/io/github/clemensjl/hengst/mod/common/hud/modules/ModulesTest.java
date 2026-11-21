@@ -57,7 +57,9 @@ class ModulesTest {
         assertIdentity(new CoordinatesModule(), "coordinates", 6);
         assertIdentity(new DirectionModule(), "direction", 7);
         assertIdentity(new SpeedModule(), "speed", 15);
+        assertIdentity(new PingModule(), "ping", 8);
         assertIdentity(new ClockModule(), "clock", 9);
+        assertIdentity(new ServerAddressModule(), "server_address", 10);
         assertIdentity(new MemoryModule(), "memory", 11);
     }
 
@@ -584,7 +586,23 @@ class ModulesTest {
     }
 
     @Test
-    void default_places_of_the_eight_modules_do_not_overlap_at_320_by_240() {
+    void ping_and_server_address_options_defaults_and_places() {
+        assertTrue(new PingModule().options().isEmpty());
+        List<OptionSpec> sa = new ServerAddressModule().options();
+        assertEquals(1, sa.size());
+        assertEquals("show_port", sa.get(0).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, sa.get(0).kind());
+        assertEquals(Boolean.FALSE, sa.get(0).defaultValue());
+        for (io.github.clemensjl.hengst.mod.common.hud.HudModule m : new io.github.clemensjl.hengst.mod.common.hud.HudModule[] {new PingModule(), new ServerAddressModule()}) {
+            assertEquals(io.github.clemensjl.hengst.mod.common.layout.Anchor.TOP_RIGHT, m.defaultAnchor());
+            assertEquals(-2, m.defaultOffsetX());
+        }
+        assertEquals(52, new PingModule().defaultOffsetY());
+        assertEquals(80, new ServerAddressModule().defaultOffsetY());
+    }
+
+    @Test
+    void default_places_of_the_ten_modules_do_not_overlap_at_320_by_240() {
         assertDefaultPlacesApart("en_us");
         assertDefaultPlacesApart("de_de");
     }
@@ -598,6 +616,8 @@ class ModulesTest {
         platform.playerX = 12345.6789;
         platform.playerY = 120.5;
         platform.playerZ = -12345.6789;
+        platform.serverAddress = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"; // 60 chars, shown as 19 W, .., 19 W
+        platform.pingMillis = 12345; // shown as "9999 ms"
         platform.memoryUsed = 16384L << 20; // worst case: "RAM 100% 16384/16384 MB"
         platform.memoryMax = 16384L << 20;
         io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock wall =
@@ -607,7 +627,7 @@ class ModulesTest {
         wallCtx.setI18n(io.github.clemensjl.hengst.mod.common.I18n.load(language));
         io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
             new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),
-            new ClockModule(), new MemoryModule()};
+            new ClockModule(), new MemoryModule(), new PingModule(), new ServerAddressModule()};
         FakeCanvas canvas = new FakeCanvas();
         io.github.clemensjl.hengst.mod.common.layout.MutableRect[] rects =
                 new io.github.clemensjl.hengst.mod.common.layout.MutableRect[all.length];
@@ -619,11 +639,18 @@ class ModulesTest {
             c.setOption("decimals", 2);
             c.setOption("seconds", true);
             c.setOption("format", "12h");
+            c.setOption("show_port", true);
             all[i].tick(wallCtx, c);
             if (all[i] instanceof SpeedModule) {
                 platform.playerX += 5; // the largest counted step: 100 m/s
                 all[i].tick(wallCtx, c);
                 assertEquals("100.00 m/s", ((SpeedModule) all[i]).text());
+            }
+            if (all[i] instanceof PingModule) {
+                assertEquals("9999 ms", ((PingModule) all[i]).text());
+            }
+            if (all[i] instanceof ServerAddressModule) {
+                assertEquals(40, ((ServerAddressModule) all[i]).text().length());
             }
             if (all[i] instanceof DirectionModule) {
                 assertEquals("NW 337°", ((DirectionModule) all[i]).text());

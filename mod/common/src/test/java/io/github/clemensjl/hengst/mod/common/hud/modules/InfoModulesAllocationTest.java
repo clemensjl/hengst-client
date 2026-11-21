@@ -332,4 +332,152 @@ class InfoModulesAllocationTest {
         assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
         assertTrue(maxChange <= MEMORY_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (MEMORY_STRING + SLACK));
     }
+
+    // Ping and server address, through the real renderer.
+
+    /**
+     * Ping text "1234 ms" (the shown values of the test have 4 digits, the longest text "9999 ms" has the same length)
+     * is 7 Latin-1 chars: a 24-byte String object plus a byte[7] of 16 + 7 rounded up to 8 = 24 bytes: 48 bytes. Address
+     * texts: "hostNN.example.net" is 18 chars: 24 + (16 + 18 rounded up to 8 = 40) = 64 bytes; dropping the port
+     * ("hostNN.example.net:25565") is one substring, the only String built. The bound is that size plus 16 bytes of
+     * slack, less than a second String of either size, so a second String fails it. An address that needs the middle
+     * cut builds up to four short temporaries once per new address (a server join), which is not bounded here.
+     */
+    private static final long PING_STRING = 24 + ((16 + 7 + 7) & ~7);
+
+    private static final long ADDRESS_STRING = 24 + ((16 + 18 + 7) & ~7);
+
+    private PingModule ping;
+    private ServerAddressModule address;
+    private HudRenderer netRenderer;
+
+    private void startNet(String addr, int pingMs) {
+        platform.serverAddress = addr;
+        platform.pingMillis = pingMs;
+        ping = new PingModule();
+        address = new ServerAddressModule();
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(ping);
+        reg.register(address);
+        Profile p = new Profile();
+        ModuleConfig a = p.module("ping");
+        a.setEnabled(true);
+        a.setAnchor(Anchor.TOP_LEFT);
+        ModuleConfig b = p.module("server_address");
+        b.setEnabled(true);
+        b.setAnchor(Anchor.BOTTOM_RIGHT);
+        netRenderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        netRenderer.rebuild(p);
+        for (int i = 0; i < 3000; i++) {
+            ctx.frames().onFrame();
+            netRenderer.tick(ctx);
+            netRenderer.render(canvas, ctx);
+        }
+    }
+
+    @Test
+    void ping_and_address_with_unchanged_values_allocate_nothing_in_frames_and_ticks() {
+        String a1 = "play.example.net:25565";
+        String a2 = new String(a1); // equal but a different instance: the equals path runs every interval
+        startNet(a1, 42);
+        int n = 20000;
+        long frameBytes = 0;
+        long tickBytes = 0;
+        for (int i = 0; i < n; i++) {
+            platform.serverAddress = (i & 1) == 0 ? a1 : a2;
+            long before = allocated();
+            netRenderer.tick(ctx);
+            tickBytes += allocated() - before;
+            before = allocated();
+            ctx.frames().onFrame();
+            netRenderer.render(canvas, ctx);
+            frameBytes += allocated() - before;
+        }
+        assertEquals("42 ms", ping.text());
+        assertEquals("play.example.net", address.text());
+        assertEquals(0, frameBytes, "allocated " + frameBytes + " bytes in " + n + " frames");
+        assertEquals(0, tickBytes, "allocated " + tickBytes + " bytes in " + n + " ticks");
+        assertTrue(canvas.texts > 0);
+    }
+
+    @Test
+    void an_unknown_ping_and_a_hidden_state_allocate_nothing() {
+        startNet("play.example.net", -1);
+        assertEquals("? ms", ping.text());
+        long before = allocated();
+        for (int i = 0; i < 20000; i++) {
+            netRenderer.tick(ctx);
+        }
+        assertEquals(0, allocated() - before);
+        platform.serverAddress = null;
+        netRenderer.tick(ctx);
+        assertEquals("", ping.text());
+        before = allocated();
+        for (int i = 0; i < 20000; i++) {
+            netRenderer.tick(ctx);
+            ctx.frames().onFrame();
+            netRenderer.render(canvas, ctx);
+        }
+        assertEquals(0, allocated() - before);
+    }
+
+    @Test
+    void a_ping_change_allocates_one_string_and_nothing_else() {
+        startNet("play.example.net", 1000);
+        long maxChange = 0;
+        long quiet = 0;
+        int changes = 0;
+        String last = ping.text();
+        for (int i = 0; i < 20000; i++) {
+            if (i % 20 == 19) {
+                platform.pingMillis = 1000 + (i / 20) % 9000; // always 4 digits
+            }
+            long before = allocated();
+            netRenderer.tick(ctx);
+            long used = allocated() - before;
+            if (ping.text() != last) {
+                last = ping.text();
+                changes++;
+                maxChange = Math.max(maxChange, used);
+            } else {
+                quiet += used;
+            }
+        }
+        System.out.println("ALLOC ping bytes per change: max " + maxChange + " (one String of 7 chars = " + PING_STRING + ")");
+        assertTrue(changes >= 900, "too few changes to prove anything: " + changes);
+        assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
+        assertTrue(maxChange <= PING_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (PING_STRING + SLACK));
+    }
+
+    @Test
+    void an_address_change_allocates_one_string_and_nothing_else() {
+        String[] addresses = new String[64];
+        for (int i = 0; i < addresses.length; i++) {
+            addresses[i] = "host" + (10 + i) + ".example.net:25565";
+        }
+        startNet(addresses[0], 42);
+        long maxChange = 0;
+        long quiet = 0;
+        int changes = 0;
+        String last = address.text();
+        for (int i = 0; i < 20000; i++) {
+            if (i % 20 == 19) {
+                platform.serverAddress = addresses[(i / 20) % addresses.length];
+            }
+            long before = allocated();
+            netRenderer.tick(ctx);
+            long used = allocated() - before;
+            if (address.text() != last) {
+                last = address.text();
+                changes++;
+                maxChange = Math.max(maxChange, used);
+            } else {
+                quiet += used;
+            }
+        }
+        System.out.println("ALLOC address bytes per change: max " + maxChange + " (one String of 18 chars = " + ADDRESS_STRING + ")");
+        assertTrue(changes >= 900, "too few changes to prove anything: " + changes);
+        assertEquals(0, quiet, "ticks without a change allocated " + quiet + " bytes");
+        assertTrue(maxChange <= ADDRESS_STRING + SLACK, "a change allocated " + maxChange + " bytes, bound " + (ADDRESS_STRING + SLACK));
+    }
 }
