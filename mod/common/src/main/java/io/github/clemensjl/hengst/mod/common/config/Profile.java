@@ -15,7 +15,7 @@ public final class Profile {
     // id -> ModuleConfig, or the raw parsed JSON value of an entry that was not accessed yet
     private final Map<String, Object> entries = new LinkedHashMap<String, Object>();
     // root keys other than "schema" and "modules", kept so that a newer version's data is written back
-    private final Map<String, Object> extras = new LinkedHashMap<String, Object>();
+    final Map<String, Object> extras = new LinkedHashMap<String, Object>();
 
     /** The module's config; creates the defaults if there is none (or the stored entry is not an object). */
     public ModuleConfig module(String id) {

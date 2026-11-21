@@ -276,29 +276,93 @@ class ProfileStoreTest {
         assertTrue(json.contains("\"extra\": true"));
         assertTrue(json.contains("\"zIndex\": 7"));
     }
+    private static final String NESTED = "{\"m\":{\"k\":1},\"l\":[1,[2]]}";
 
-    @Test void an_in_memory_copy_is_deep_for_unknown_keys() throws Exception {
-        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"extra\":{\"a\":[1]},\"modules\":{\"fps\":{\"zIndex\":{\"k\":1}}}}".getBytes(UTF_8));
-        Profile p = store().load("default");
-        p.module("fps");
-        Profile c = p.copy();
-        store().save("a", c);
-        store().save("b", p);
-        assertEquals(read("a.json"), read("b.json"));
-        assertTrue(read("a.json").contains("\"zIndex\""));
-        assertTrue(read("a.json").contains("\"extra\""));
+    @SuppressWarnings("unchecked")
+    private static void mutateNested(Object unknown) {
+        Map<String, Object> m = (Map<String, Object>) unknown;
+        ((Map<String, Object>) m.get("m")).put("k", 2L);
+        ((List<Object>) m.get("l")).add("added");
+        ((List<Object>) ((List<Object>) m.get("l")).get(1)).add(3L);
     }
 
-    @Test void m1a_profile_uses_only_keys_an_m0_build_preserves() throws Exception {
+    private Profile loadedWithNestedUnknowns() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"extra\":" + NESTED + ",\"modules\":{\"fps\":{\"zIndex\":" + NESTED + "}}}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps");
+        return p;
+    }
+
+    @Test void a_profile_copy_is_deep_for_unknown_data_at_root_and_entry_level_in_both_directions() throws Exception {
+        Profile a = loadedWithNestedUnknowns();
+        Profile b = a.copy();
+        String before = Json.write(a.toJson());
+        assertEquals(before, Json.write(b.toJson()));
+        // the original is mutated: the copy stays as it was
+        mutateNested(a.extras.get("extra"));
+        mutateNested(a.module("fps").extras.get("zIndex"));
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        // the copy is mutated: a fresh original stays as it was
+        Profile c = loadedWithNestedUnknowns();
+        Profile d = c.copy();
+        mutateNested(d.extras.get("extra"));
+        mutateNested(d.module("fps").extras.get("zIndex"));
+        assertNotEquals(before, Json.write(d.toJson()));
+        assertEquals(before, Json.write(c.toJson()));
+    }
+
+    @Test void a_module_copy_is_deep_for_unknown_entry_keys() throws Exception {
+        ModuleConfig a = loadedWithNestedUnknowns().module("fps");
+        ModuleConfig b = a.copy();
+        String before = Json.write(a.toJson());
+        mutateNested(a.extras.get("zIndex"));
+        assertEquals(before, Json.write(b.toJson()));
+        String afterA = Json.write(a.toJson());
+        mutateNested(b.extras.get("zIndex"));
+        assertNotEquals(before, Json.write(b.toJson()));
+        assertEquals(afterA, Json.write(a.toJson()));
+    }
+
+    @Test void the_writer_never_emits_null_or_non_finite_option_values() throws Exception {
         Profile p = new Profile();
-        p.module("stopwatch").setEnabled(true);
-        p.module("fps").setOption("new_option", true);
+        ModuleConfig fps = p.module("fps");
+        fps.setOption("keep", 1L);
+        fps.setOption("gone", "x");
+        fps.setOption("gone", null);
+        fps.setOption("nan_f", Float.NaN);
+        fps.setOption("inf_f", Float.POSITIVE_INFINITY);
+        fps.setOption("nan_d", Double.NaN);
+        fps.setOption("ninf_d", Double.NEGATIVE_INFINITY);
         store().save("default", p);
-        Map<String, Object> root = JsonObjects.object(Json.parse(read("default.json")));
-        assertEquals(new HashSet<>(Arrays.asList("schema", "modules")), root.keySet());
-        Set<String> m0Keys = new HashSet<>(Arrays.asList("enabled", "anchor", "x", "y", "scale", "background", "shadow", "textColor", "options"));
-        for (Object entry : JsonObjects.object(root.get("modules")).values()) {
-            assertTrue(m0Keys.containsAll(JsonObjects.object(entry).keySet()), "module keys " + entry);
-        }
+        Map<String, Object> options = JsonObjects.object(JsonObjects.object(JsonObjects.object(
+                JsonObjects.object(Json.parse(read("default.json"))).get("modules")).get("fps")).get("options"));
+        assertEquals(Collections.singletonMap("keep", 1L), options);
+    }
+
+    @Test void a_null_option_value_is_dropped_on_read_and_not_written_back() throws Exception {
+        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"modules\":{\"fps\":{\"options\":{\"a\":null,\"b\":2}}}}".getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps");
+        store().save("default", p);
+        assertFalse(read("default.json").contains("\"a\""));
+        assertTrue(read("default.json").contains("\"b\": 2"));
+    }
+
+    @Test void number_forms_in_unknown_data_after_a_round_trip() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"modules\":{},\"max\":9223372036854775807,\"min\":-9223372036854775808,"
+                + "\"big\":9223372036854775808,\"huge\":12345678901234567890123,\"int\":1,\"dec\":1.0,\"exp\":1e2}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        store().save("default", p);
+        Map<String, Object> back = JsonObjects.object(Json.parse(read("default.json")));
+        assertEquals(Long.MAX_VALUE, back.get("max"));                       // exact: still a long
+        assertEquals(Long.MIN_VALUE, back.get("min"));
+        assertEquals(Long.valueOf(1L), back.get("int"));                      // 1 stays an integer
+        assertEquals(Double.valueOf(1.0), back.get("dec"));                   // 1.0 stays a decimal, not 1
+        assertEquals(Double.valueOf(100.0), back.get("exp"));                 // exponent form becomes 100.0
+        assertEquals(Double.valueOf(9.223372036854775808E18), back.get("big")); // beyond long: a double (exact here, 2^63)
+        assertEquals(Double.valueOf(1.2345678901234568E22), back.get("huge")); // beyond long: a double, digits beyond 17 are lost
+        assertTrue(read("default.json").contains("\"dec\": 1.0"));
+        assertTrue(read("default.json").contains("\"int\": 1,") || read("default.json").contains("\"int\": 1\n"));
     }
 }

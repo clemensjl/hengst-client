@@ -29,7 +29,7 @@ public final class ModuleConfig {
     // Raw values as read from the file or set by the UI; the option spec coerces them on every read.
     private final Map<String, Object> options = new LinkedHashMap<String, Object>();
     // entry keys this version does not know, kept so that a newer version's data is written back
-    private final Map<String, Object> extras = new LinkedHashMap<String, Object>();
+    final Map<String, Object> extras = new LinkedHashMap<String, Object>();
 
     private ModuleConfig() {}
 
