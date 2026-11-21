@@ -15,6 +15,7 @@ import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.hud.HudRenderer;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
+import io.github.clemensjl.hengst.mod.common.ui.ScreenClose;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
@@ -68,7 +69,17 @@ class HudEditorScreenTest {
     }
 
     private HudEditorScreen closingScreen() {
-        return screen(new HudEditorClose(model, store, ProfileStore.DEFAULT, profile, renderer, platform));
+        return screen(editorClose(ProfileStore.DEFAULT, profile));
+    }
+
+    /** The close the core builds for the editor: save only a changed layout, rebuild, close. */
+    private Runnable editorClose(String profileName, Profile p) {
+        return new ScreenClose(() -> {
+            if (model.dirty()) {
+                store.save(profileName, p);
+                model.markSaved();
+            }
+        }, () -> renderer.rebuild(p), platform, "the HUD editor (profile " + profileName + ")");
     }
 
     @Test
@@ -147,7 +158,7 @@ class HudEditorScreenTest {
         assertEquals(offsetX, profile.module("a").offsetX());
         // the next attempt, with the directory fixed, saves the kept layout
         Files.delete(dir.resolve("profiles"));
-        new HudEditorClose(model, store, ProfileStore.DEFAULT, profile, renderer, platform).run();
+        editorClose(ProfileStore.DEFAULT, profile).run();
         assertTrue(Files.exists(defaultFile()));
         assertFalse(model.dirty());
     }
@@ -423,7 +434,7 @@ class HudEditorScreenTest {
         model.press(5, 5);
         model.drag(100, 100);
         model.release();
-        new HudEditorClose(model, store, "bad/name", profile, renderer, platform).run();
+        editorClose("bad/name", profile).run();
         assertEquals(1, platform.closeCount);
         assertEquals(1, platform.warnings.size());
         assertTrue(model.dirty());
@@ -431,7 +442,7 @@ class HudEditorScreenTest {
 
     @Test
     void close_still_closes_when_rebuild_throws() {
-        new HudEditorClose(model, store, ProfileStore.DEFAULT, null, renderer, platform).run();
+        editorClose(ProfileStore.DEFAULT, null).run();
         assertEquals(1, platform.closeCount);
         assertEquals(1, platform.warnings.size());
     }

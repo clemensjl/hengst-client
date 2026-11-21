@@ -16,6 +16,16 @@ public final class FpsModule extends TextHudModule {
     }
 
     @Override
+    public int defaultOffsetX() {
+        return 2;
+    }
+
+    @Override
+    public int defaultOffsetY() {
+        return 2;
+    }
+
+    @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
         int fps = ctx.frames().fps();
         if (fps != last) {

@@ -4,6 +4,7 @@ import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
+import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameKey;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
@@ -46,6 +47,21 @@ public final class KeystrokesModule extends HudModule {
 
     public KeystrokesModule() {
         super("keystrokes", 3, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
+    }
+
+    @Override
+    public Anchor defaultAnchor() {
+        return Anchor.BOTTOM_LEFT;
+    }
+
+    @Override
+    public int defaultOffsetX() {
+        return 2;
+    }
+
+    @Override
+    public int defaultOffsetY() {
+        return -2;
     }
 
     @Override

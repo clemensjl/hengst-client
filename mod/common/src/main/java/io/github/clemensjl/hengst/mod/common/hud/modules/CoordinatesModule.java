@@ -35,6 +35,16 @@ public final class CoordinatesModule extends TextHudModule {
     }
 
     @Override
+    public int defaultOffsetX() {
+        return 2;
+    }
+
+    @Override
+    public int defaultOffsetY() {
+        return 30;
+    }
+
+    @Override
     public List<OptionSpec> options() {
         return OPTIONS;
     }

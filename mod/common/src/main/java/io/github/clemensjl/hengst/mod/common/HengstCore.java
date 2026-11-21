@@ -5,33 +5,36 @@ import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.config.Settings;
 import io.github.clemensjl.hengst.mod.common.config.SettingsStore;
-import io.github.clemensjl.hengst.mod.common.editor.HudEditorClose;
 import io.github.clemensjl.hengst.mod.common.editor.HudEditorModel;
 import io.github.clemensjl.hengst.mod.common.editor.HudEditorScreen;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGate;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
+import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
 import io.github.clemensjl.hengst.mod.common.hud.CpsCounter;
 import io.github.clemensjl.hengst.mod.common.hud.FrameCounter;
 import io.github.clemensjl.hengst.mod.common.hud.HudContext;
+import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.hud.HudRenderer;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.KeystrokesModule;
-import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
-import io.github.clemensjl.hengst.mod.common.ui.SettingsClose;
+import io.github.clemensjl.hengst.mod.common.ui.ScreenClose;
 import io.github.clemensjl.hengst.mod.common.ui.SettingsModel;
 import io.github.clemensjl.hengst.mod.common.ui.SettingsScreen;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.Set;
 
 /**
  * The one object the game adapters talk to. It owns the registry, the stored settings and profile, the HUD renderer
@@ -53,7 +56,8 @@ import java.time.Clock;
  * <li>The platform's screen host: see {@link #onOpenSettingsKey} and {@link Platform#closeScreen()} for the removal
  * rule. The screens handed to {@link Platform#openScreen} never throw.</li>
  * <li>First start: the four M0 modules are enabled in memory at their default places and nothing is written until
- * the first change. A broken profile file that was moved aside as a backup counts as a first start; an unreadable
+ * the first change. Every other HUD module without an entry in the loaded profile gets one at its default place,
+ * switched off. A broken profile file that was moved aside as a backup counts as a first start; an unreadable
  * file or one from a newer version does not (nothing is written over it, no module is enabled).</li>
  * </ul>
  */
@@ -69,12 +73,14 @@ public final class HengstCore {
     private static final int SITE_SAVE = 5;
     private static final int SITE_FRAME = 6;
     private static final int SITE_SETTINGS = 7;
-    private static final int SITES = 8;
+    private static final int SITE_CONFIG = 8;
+    private static final int SITES = 9;
     private static final int MAX_KINDS = 4;
 
     private final Platform platform;
     private final TimeSource time;
     private final FeatureRegistry registry = new FeatureRegistry();
+    private final FeatureGate gate;
     private final SettingsStore settingsStore;
     private final ProfileStore profileStore;
     private final Settings settings;
@@ -97,9 +103,10 @@ public final class HengstCore {
     private long lastSaveNanos;
     private Session current;
 
-    private HengstCore(Platform platform, TimeSource time, Clock clock) {
+    private HengstCore(Platform platform, TimeSource time, Clock clock, RestrictionPolicy policy) {
         this.platform = platform;
         this.time = time;
+        gate = new FeatureGate(platform.version(), policy);
         registry.register(new FpsModule());
         registry.register(new CpsModule());
         registry.register(new KeystrokesModule());
@@ -114,6 +121,7 @@ public final class HengstCore {
                 && profileStore.loadedFromDefaults()
                 && !profileStore.loadFailed(profileName)
                 && !settingsStore.settingsLoadFailed();
+        addDefaultEntries();
         if (firstStart) {
             applyFirstStartDefaults(profile);
             unwritten = true;
@@ -121,8 +129,8 @@ public final class HengstCore {
         frames = new FrameCounter(time);
         cps = new CpsCounter(time);
         ctx = new HudContext(platform, time, frames, cps);
-        renderer = new HudRenderer(registry, platform.version());
-        renderer.rebuild(profile);
+        renderer = new HudRenderer(registry, gate);
+        applyConfig();
         lastSaveNanos = time.nanoTime();
         registry.seal();
     }
@@ -133,22 +141,58 @@ public final class HengstCore {
     }
 
     static HengstCore start(Platform platform, TimeSource time, Clock clock) {
-        return new HengstCore(platform, time, clock);
+        return start(platform, time, clock, RestrictionPolicy.NONE);
     }
 
-    /** The four M0 modules, on, at their default places. Memory only: nothing is written until the first change. */
+    static HengstCore start(Platform platform, TimeSource time, Clock clock, RestrictionPolicy policy) {
+        return new HengstCore(platform, time, clock, policy);
+    }
+
+    /** The four M0 modules, on (their places come from {@link #addDefaultEntries}). Memory only: nothing is written until the first change. */
     private static void applyFirstStartDefaults(Profile p) {
-        place(p.module("fps"), Anchor.TOP_LEFT, 2, 2);
-        place(p.module("cps"), Anchor.TOP_LEFT, 2, 16);
-        place(p.module("coordinates"), Anchor.TOP_LEFT, 2, 30);
-        place(p.module("keystrokes"), Anchor.BOTTOM_LEFT, 2, -2);
+        p.module("fps").setEnabled(true);
+        p.module("cps").setEnabled(true);
+        p.module("coordinates").setEnabled(true);
+        p.module("keystrokes").setEnabled(true);
     }
 
-    private static void place(ModuleConfig c, Anchor anchor, int x, int y) {
-        c.setEnabled(true);
-        c.setAnchor(anchor);
-        c.setOffsetX(x);
-        c.setOffsetY(y);
+    /**
+     * Gives every HUD module of this version that the loaded profile has no entry for one at its default place,
+     * switched off. Memory only: it is written with the next save.
+     */
+    private void addDefaultEntries() {
+        Set<String> known = profile.moduleIds();
+        for (Feature f : registry.supportedOn(platform.version())) {
+            if (f instanceof HudModule && !known.contains(f.id())) {
+                HudModule m = (HudModule) f;
+                ModuleConfig c = profile.module(m.id());
+                c.setEnabled(false);
+                c.setAnchor(m.defaultAnchor());
+                c.setOffsetX(m.defaultOffsetX());
+                c.setOffsetY(m.defaultOffsetY());
+            }
+        }
+    }
+
+    /**
+     * Applies the loaded profile: rebuilds the renderer, rewrites the feature state and tells every supported feature
+     * its configuration. Cold path; the one place that follows a configuration change.
+     */
+    private void applyConfig() {
+        renderer.rebuild(profile);
+        FeatureState.rewrite(registry.all(), profile, gate);
+        boolean failed = false;
+        for (Feature f : registry.supportedOn(platform.version())) {
+            try {
+                f.onConfigChanged(profile.module(f.id()));
+            } catch (RuntimeException e) {
+                failed = true;
+                failure(SITE_CONFIG, "the configuration of " + f.id(), e);
+            }
+        }
+        if (!failed) {
+            ok(SITE_CONFIG);
+        }
     }
 
     // ---- hooks for the adapters ----
@@ -334,7 +378,12 @@ public final class HengstCore {
         return registry;
     }
 
-    /** Test access only, not for adapters or features: registers an extra feature after start and rebuilds the HUD. */
+    /** Test access only, not for adapters or features: applies the loaded profile as a close of the settings does. */
+    public void applyConfigForTest() {
+        applyConfig();
+    }
+
+    /** Test access only, not for adapters or features: registers an extra feature after start and applies the config. */
     public void registerForTest(Feature feature) {
         registry.unseal();
         try {
@@ -342,7 +391,7 @@ public final class HengstCore {
         } finally {
             registry.seal();
         }
-        renderer.rebuild(profile);
+        applyConfig();
     }
 
     // ---- screens ----
@@ -357,14 +406,21 @@ public final class HengstCore {
                 platform::logWarning);
         model.setSettingsLoadFailedCheck(settingsStore::settingsLoadFailed);
         Session session = new Session(null);
-        session.delegate = new SettingsClose(model, renderer, () -> profile, platform);
+        session.delegate = new ScreenClose(model::saveIfDirty, this::applyConfig, platform, "the settings");
         show(session, new SettingsScreen(model, I18n.load(platform.languageCode()), session));
     }
 
     private void openEditor() {
         HudEditorModel model = new HudEditorModel(renderer.activeModules(), renderer.activeConfigs());
         Session session = new Session(model);
-        session.delegate = new HudEditorClose(model, profileStore, profileName, profile, renderer, platform);
+        final String name = profileName;
+        final Profile edited = profile;
+        session.delegate = new ScreenClose(() -> {
+            if (model.dirty()) {
+                profileStore.save(name, edited);
+                model.markSaved();
+            }
+        }, this::applyConfig, platform, "the HUD editor (profile " + name + ")");
         show(session, new HudEditorScreen(model, ctx, I18n.load(platform.languageCode()), session));
     }
 
@@ -376,7 +432,7 @@ public final class HengstCore {
         }
         current = null;
         try {
-            renderer.rebuild(profile);
+            applyConfig();
             openEditor();
         } catch (RuntimeException e) {
             if (old != null) {
@@ -434,14 +490,14 @@ public final class HengstCore {
 
     private void closeEditor(Session s) {
         HudEditorModel model = s.editorModel;
-        // Changes made in the settings screen that could not be saved before: HudEditorClose only saves the layout.
+        // Changes made in the settings screen that could not be saved before: the editor close only saves the layout.
         if (!model.dirty() && dirty) {
             trySave();
         }
         boolean layoutPending = model.dirty();
         s.delegate.run();
         if (layoutPending) {
-            // HudEditorClose saved it (no longer dirty) or failed (still dirty: the tick retries).
+            // The close saved it (no longer dirty) or failed (still dirty: the tick retries).
             dirty = model.dirty();
             if (!dirty) {
                 unwritten = false;
@@ -479,7 +535,8 @@ public final class HengstCore {
         profileName = name;
         dirty = false;
         unwritten = false;
-        renderer.rebuild(profile);
+        addDefaultEntries();
+        applyConfig();
     }
 
     /** The settings model's save hook: an IO failure goes up as a RuntimeException, the state stays dirty. */

@@ -147,7 +147,7 @@ class SettingsScreenTest {
         FakePlatform platform = new FakePlatform(dir);
         HudRenderer renderer = new HudRenderer(reg(), GameVersion.V1_8_9);
         renderer.rebuild(active[0]);
-        SettingsClose close = new SettingsClose(model, renderer, () -> active[0], platform);
+        ScreenClose close = new ScreenClose(model::saveIfDirty, () -> renderer.rebuild(active[0]), platform, "the settings");
         screen = new SettingsScreen(model, I18n.load("en_us"), close);
         screen.render(canvas, 0, 0, 0f);
         screen.mouseClicked(12, 46, 0);
@@ -164,7 +164,7 @@ class SettingsScreenTest {
         HudRenderer renderer = new HudRenderer(reg(), GameVersion.V1_8_9);
         model.markChanged();
         failSave = true;
-        new SettingsClose(model, renderer, () -> active[0], platform).run();
+        new ScreenClose(model::saveIfDirty, () -> renderer.rebuild(active[0]), platform, "the settings").run();
         assertTrue(model.dirty());
         assertEquals(1, warnings.size());
         assertEquals(1, platform.closeCount);
@@ -172,8 +172,7 @@ class SettingsScreenTest {
 
     @Test void unchecked_failure_while_closing_is_logged_and_the_screen_still_closes() {
         FakePlatform platform = new FakePlatform(dir);
-        HudRenderer renderer = new HudRenderer(reg(), GameVersion.V1_8_9);
-        new SettingsClose(model, renderer, () -> { throw new IllegalStateException("boom"); }, platform).run();
+        new ScreenClose(model::saveIfDirty, () -> { throw new IllegalStateException("boom"); }, platform, "the settings").run();
         assertEquals(1, platform.warnings.size());
         assertEquals(1, platform.closeCount);
     }

@@ -5,10 +5,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
@@ -125,6 +128,94 @@ class HengstCoreTest {
         core.activeProfile().module("future").setEnabled(true);
         core.registerForTest(new FixedSizeModule("future", 99, 10, 10, EnumSet.of(GameVersion.V26_3)));
         assertEquals(4, core.renderer().activeCount());
+    }
+
+    @Test void the_feature_state_follows_enabled_supported_and_restricted() {
+        core = HengstCore.start(platform, time, clock, (f, server) -> f.id().equals("cps"));
+        assertTrue(FeatureState.on(1)); assertFalse(FeatureState.on(2)); assertTrue(FeatureState.on(3)); assertTrue(FeatureState.on(6));
+        assertFalse(FeatureState.on(7)); assertFalse(FeatureState.on(0)); assertFalse(FeatureState.on(-1)); assertFalse(FeatureState.on(999));
+        assertEquals(3, core.renderer().activeCount());
+    }
+
+    @Test void the_feature_state_is_rewritten_when_the_settings_close() {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(FPS_SWITCH_X, FPS_SWITCH_Y, 0);   // FPS off
+        assertTrue(FeatureState.on(1));
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        assertFalse(FeatureState.on(1));
+        assertEquals(3, core.renderer().activeCount());
+    }
+
+    @Test void the_feature_state_is_rewritten_when_the_editor_closes() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("fps").setEnabled(false);
+        assertTrue(FeatureState.on(1));
+        core.onOpenHudEditorKey();
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        assertFalse(FeatureState.on(1));
+    }
+
+    @Test void a_toggle_persists_through_the_batched_save() {
+        core = start(); platform.inWorld = true;
+        core.onOpenSettingsKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(FPS_SWITCH_X, FPS_SWITCH_Y, 0);
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        core = start();
+        assertFalse(core.activeProfile().module("fps").enabled());
+        assertFalse(FeatureState.on(1));
+    }
+
+    @Test void an_unsupported_feature_is_off_in_the_state() {
+        core = start();
+        core.activeProfile().module("future").setEnabled(true);
+        core.registerForTest(new FixedSizeModule("future", 49, 10, 10, EnumSet.of(GameVersion.V26_3)));
+        assertFalse(FeatureState.on(49));
+    }
+
+    private static class RecordingFeature extends TestFeature {
+        int calls;
+        ModuleConfig last;
+
+        RecordingFeature(String id, int number) { super(id, number, EnumSet.allOf(GameVersion.class)); }
+
+        @Override public void onConfigChanged(ModuleConfig cfg) { calls++; last = cfg; }
+    }
+
+    @Test void on_config_changed_reaches_each_supported_feature_with_its_own_config() {
+        core = start(); platform.inWorld = true;
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        assertEquals(1, rec.calls);
+        core.onOpenSettingsKey();
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        assertEquals(2, rec.calls);
+        assertSame(core.activeProfile().module("rec"), rec.last);
+    }
+
+    @Test void an_exception_from_on_config_changed_is_logged_and_breaks_nothing() {
+        core = start(); platform.inWorld = true;
+        core.registerForTest(new RecordingFeature("bad", 47) {
+            @Override public void onConfigChanged(ModuleConfig cfg) { throw new IllegalStateException("boom"); }
+        });
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        assertEquals(1, rec.calls);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("boom"));
+        assertEquals(4, core.renderer().activeCount());
+    }
+
+    @Test void a_module_without_an_entry_gets_its_default_place_and_stays_off() throws Exception {
+        Files.createDirectories(profiles());
+        Files.write(defaultFile(), "{\"schema\":1,\"modules\":{\"fps\":{\"enabled\":true,\"anchor\":\"TOP_RIGHT\",\"x\":-2,\"y\":2}}}".getBytes(UTF_8));
+        core = start();
+        ModuleConfig cps = core.activeProfile().module("cps");
+        assertFalse(cps.enabled()); assertEquals(Anchor.TOP_LEFT, cps.anchor()); assertEquals(2, cps.offsetX()); assertEquals(16, cps.offsetY());
+        assertEquals(Anchor.TOP_RIGHT, core.activeProfile().module("fps").anchor());
+        assertEquals(1, core.renderer().activeCount());
     }
 
     // ---- rendering ----

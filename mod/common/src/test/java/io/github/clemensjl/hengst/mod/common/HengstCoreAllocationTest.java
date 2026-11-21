@@ -3,6 +3,7 @@ package io.github.clemensjl.hengst.mod.common;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
 import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -69,6 +70,40 @@ class HengstCoreAllocationTest {
         assertEquals(0, renderBytes, "frame and render hooks allocated " + renderBytes + " bytes");
         assertEquals(0, tickBytes, "tick hook allocated " + tickBytes + " bytes");
         assertTrue(counting.texts > 0);
+    }
+
+    /** A disabled feature costs nothing: no module in the arrays, no allocation, and the state read allocates nothing. */
+    @Test void disabled_features_cost_nothing_and_a_toggle_applies_without_a_restart() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("keystrokes").setEnabled(false);
+        core.activeProfile().module("coordinates").setEnabled(false);
+        core.applyConfigForTest();
+        assertEquals(2, core.renderer().activeCount());
+        assertEquals(false, FeatureState.on(3));
+        assertEquals(true, FeatureState.on(2));
+        CountingCanvas counting = new CountingCanvas();
+        for (int i = 0; i < 3000; i++) { core.onClientTick(); frame(counting); }
+        int calls = 20000;
+        boolean sink = false;
+        long before = allocated();
+        for (int i = 0; i < calls; i++) { frame(counting); sink ^= FeatureState.on(3) ^ FeatureState.on(2) ^ FeatureState.on(-1) ^ FeatureState.on(999); }
+        long renderBytes = allocated() - before;
+        before = allocated();
+        for (int i = 0; i < calls; i++) { core.onClientTick(); }
+        long tickBytes = allocated() - before;
+        System.out.println("HengstCore disabled-features allocation over " + calls + " calls: frame+render+state " + renderBytes
+                + " bytes, tick " + tickBytes + " bytes (" + sink + ")");
+        assertEquals(0, renderBytes);
+        assertEquals(0, tickBytes);
+        // switching one on again takes effect at the next applyConfig, without a restart
+        core.activeProfile().module("coordinates").setEnabled(true);
+        core.applyConfigForTest();
+        assertEquals(3, core.renderer().activeCount());
+        assertEquals(true, FeatureState.on(6));
+        for (int i = 0; i < 3000; i++) { core.onClientTick(); frame(counting); }
+        before = allocated();
+        for (int i = 0; i < calls; i++) { frame(counting); }
+        assertEquals(0, allocated() - before);
     }
 
     /** A value change builds one short string: header, fields and the backing array, with room to spare. */

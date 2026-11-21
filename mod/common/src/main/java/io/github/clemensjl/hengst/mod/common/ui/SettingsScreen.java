@@ -22,7 +22,7 @@ import java.util.function.Supplier;
 /**
  * The settings screen: feature list with switches on the left, the options of the selected feature on the right,
  * profile controls on top. Drawn by common; the adapters only forward input. It does not close itself:
- * {@code onClose} (see {@link SettingsClose}) saves, rebuilds the renderer and closes the game screen.
+ * {@code onClose} (see {@link ScreenClose}) saves, rebuilds the renderer and closes the game screen.
  * Labels, layout and fitted texts are built on open, on profile or option changes and on resize, not per frame.
  */
 public final class SettingsScreen implements UiScreen {

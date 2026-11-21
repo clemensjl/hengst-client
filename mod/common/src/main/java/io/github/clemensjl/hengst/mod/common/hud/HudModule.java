@@ -3,6 +3,7 @@ package io.github.clemensjl.hengst.mod.common.hud;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
+import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.EnumSet;
@@ -11,6 +12,19 @@ import java.util.EnumSet;
 public abstract class HudModule extends Feature {
     protected HudModule(String id, int number, EnumSet<GameVersion> versions) {
         super(id, number, FeatureGroup.HUD, versions);
+    }
+
+    /** Where the module sits when a profile has no entry for it. */
+    public Anchor defaultAnchor() {
+        return Anchor.TOP_LEFT;
+    }
+
+    public int defaultOffsetX() {
+        return 0;
+    }
+
+    public int defaultOffsetY() {
+        return 0;
     }
 
     /** Called at 20 Hz while the module is active, also outside a world: tolerate that. Rebuild cached text here. */

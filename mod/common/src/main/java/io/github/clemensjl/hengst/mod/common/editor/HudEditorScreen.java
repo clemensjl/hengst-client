@@ -12,7 +12,7 @@ import io.github.clemensjl.hengst.mod.common.ui.TextFit;
 
 /**
  * The HUD editor screen. Drawn by common; the adapters only forward mouse and key events. It does not close itself:
- * {@code onClose} (see {@link HudEditorClose}) saves, rebuilds the renderer and closes the game screen.
+ * {@code onClose} (see {@link io.github.clemensjl.hengst.mod.common.ui.ScreenClose}) saves, rebuilds the renderer and closes the game screen.
  */
 public final class HudEditorScreen implements UiScreen {
     private static final int DIM = 0x80000000;

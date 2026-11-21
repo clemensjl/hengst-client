@@ -1,5 +1,6 @@
 package io.github.clemensjl.hengst.mod.common.feature;
 
+import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -37,4 +38,11 @@ public abstract class Feature {
     public List<OptionSpec> options() {
         return Collections.emptyList();
     }
+
+    /**
+     * Called by the core with this feature's own configuration at start, after the settings and the HUD editor
+     * close, on a profile switch and on a server change. Features without a HUD copy their options into primitive
+     * fields here; HUD modules keep reading in {@code tick}. An exception is logged and stops nothing.
+     */
+    public void onConfigChanged(ModuleConfig cfg) {}
 }

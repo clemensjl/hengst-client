@@ -3,7 +3,9 @@ package io.github.clemensjl.hengst.mod.common.hud;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGate;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
+import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
 import io.github.clemensjl.hengst.mod.common.layout.LayoutMath;
 import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -21,7 +23,7 @@ public final class HudRenderer {
     private static final ModuleConfig[] NO_CONFIGS = new ModuleConfig[0];
 
     private final FeatureRegistry registry;
-    private final GameVersion version;
+    private final FeatureGate gate;
     private final MutableRect rect = new MutableRect();
     private HudModule[] modules = NO_MODULES;
     private ModuleConfig[] configs = NO_CONFIGS;
@@ -29,21 +31,26 @@ public final class HudRenderer {
     private boolean[] failed = new boolean[0];
     private boolean suppressed;
 
+    /** Without restrictions. */
     public HudRenderer(FeatureRegistry registry, GameVersion version) {
-        this.registry = registry;
-        this.version = version;
+        this(registry, new FeatureGate(version, RestrictionPolicy.NONE));
     }
 
-    /** Collects the enabled, supported modules in number order. Allocates; call only on configuration changes. */
+    public HudRenderer(FeatureRegistry registry, FeatureGate gate) {
+        this.registry = registry;
+        this.gate = gate;
+    }
+
+    /** Collects the modules the gate lets run, in number order. Allocates; call only on configuration changes. */
     public void rebuild(Profile profile) {
-        List<Feature> supported = registry.supportedOn(version);
+        List<Feature> supported = registry.supportedOn(gate.version());
         HudModule[] m = new HudModule[supported.size()];
         ModuleConfig[] c = new ModuleConfig[supported.size()];
         int n = 0;
         for (Feature f : supported) {
             if (f instanceof HudModule) {
                 ModuleConfig cfg = profile.module(f.id());
-                if (cfg.enabled()) {
+                if (gate.active(f, cfg)) {
                     m[n] = (HudModule) f;
                     c[n] = cfg;
                     n++;

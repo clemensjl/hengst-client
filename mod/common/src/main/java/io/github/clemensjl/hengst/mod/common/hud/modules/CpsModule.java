@@ -24,6 +24,16 @@ public final class CpsModule extends TextHudModule {
     }
 
     @Override
+    public int defaultOffsetX() {
+        return 2;
+    }
+
+    @Override
+    public int defaultOffsetY() {
+        return 16;
+    }
+
+    @Override
     public List<OptionSpec> options() {
         return OPTIONS;
     }
