@@ -1,13 +1,14 @@
-//! App start: debug arguments, plugins, the main window and its saved state.
+//! App start: debug arguments, plugins, navigation guard, the main window and its saved state.
 
 use crate::state::AppState;
-use crate::window_state::{self, Size, WindowState, DEFAULT_SIZE};
+use crate::window_state::{self, MonitorArea, Placement, Size, Tracker, WindowState, DEFAULT_SIZE};
 use hengst_core::launch::Endpoints;
 use hengst_core::paths::Paths;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 use tauri::window::Color;
 use tauri::{
-    AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, WebviewUrl, WebviewWindow,
+    AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, Url, WebviewUrl, WebviewWindow,
     WebviewWindowBuilder, WindowEvent,
 };
 
@@ -67,6 +68,34 @@ pub fn parse_size(text: &str) -> Option<Size> {
     })
 }
 
+/// Release builds are single-instance. A debug build takes part in the lock only when it works on
+/// the default data folder: a start with an explicit, different `--home` (an e2e run next to a
+/// development instance) is its own instance.
+pub fn single_instance_enabled(debug: bool, home: Option<&Path>, default_root: &Path) -> bool {
+    !debug || home.is_none_or(|h| h == default_root)
+}
+
+/// The single-instance lock is named after the identifier, so a debug build gets its own and never
+/// hands over to an installed release build.
+pub fn app_identifier(base: &str, debug: bool) -> String {
+    if debug {
+        format!("{base}.dev")
+    } else {
+        base.to_string()
+    }
+}
+
+/// The main window may only show the app's own pages: the local app origin and, in debug builds,
+/// the dev server. Every other navigation (a remote site, `file:`, `javascript:`) is refused.
+pub fn navigation_allowed(url: &Url, dev_url: Option<&Url>) -> bool {
+    let own = match url.scheme() {
+        "tauri" => url.host_str() == Some("localhost"),
+        "http" | "https" => url.host_str() == Some("tauri.localhost"),
+        _ => false,
+    };
+    own || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+}
+
 fn logical(size: u32, scale: f64) -> u32 {
     (f64::from(size) / scale).round() as u32
 }
@@ -79,7 +108,8 @@ fn logical_size(width: u32, height: u32, scale: f64) -> Size {
 }
 
 /// Window frame (outer minus inner size) in logical pixels.
-fn frame_of(window: &WebviewWindow, scale: f64) -> tauri::Result<Size> {
+fn frame_of(window: &WebviewWindow) -> tauri::Result<Size> {
+    let scale = window.scale_factor()?;
     let (outer, inner) = (window.outer_size()?, window.inner_size()?);
     Ok(logical_size(
         outer.width.saturating_sub(inner.width),
@@ -88,29 +118,48 @@ fn frame_of(window: &WebviewWindow, scale: f64) -> tauri::Result<Size> {
     ))
 }
 
-/// Whether the saved window still overlaps a connected monitor. The saved size is logical, so it
-/// is turned into physical pixels with each monitor's own scale factor.
-fn saved_fits(saved: &WindowState, monitors: &[Monitor]) -> bool {
-    monitors.iter().any(|m| {
-        let scale = m.scale_factor();
-        let physical = WindowState {
-            width: (f64::from(saved.width) * scale).round() as u32,
-            height: (f64::from(saved.height) * scale).round() as u32,
-            ..saved.clone()
-        };
-        window_state::fits_on_a_monitor(
-            &physical,
-            &[(
-                m.position().x,
-                m.position().y,
-                m.size().width,
-                m.size().height,
-            )],
-        )
-    })
+fn area_of(m: &Monitor) -> MonitorArea {
+    let work = m.work_area();
+    MonitorArea {
+        x: work.position.x,
+        y: work.position.y,
+        width: work.size.width,
+        height: work.size.height,
+        scale: m.scale_factor(),
+    }
 }
 
-fn create_window(app: &AppHandle, args: &StartupArgs, paths: &Paths) -> tauri::Result<()> {
+/// The rectangle of a window that is neither maximized nor minimized; `None` otherwise.
+fn normal_rectangle(window: &WebviewWindow) -> tauri::Result<Option<WindowState>> {
+    if window.is_minimized()? || window.is_maximized()? {
+        return Ok(None);
+    }
+    // Windows parks a minimized window at -32000.
+    if window.outer_position()?.x <= -30000 {
+        return Ok(None);
+    }
+    let size = logical_size(
+        window.inner_size()?.width,
+        window.inner_size()?.height,
+        window.scale_factor()?,
+    );
+    let position = window.outer_position()?;
+    Ok(Some(WindowState {
+        format: 1,
+        width: size.width,
+        height: size.height,
+        x: position.x,
+        y: position.y,
+        maximized: false,
+    }))
+}
+
+fn create_window(
+    app: &AppHandle,
+    args: &StartupArgs,
+    paths: &Paths,
+    dev_url: Option<Url>,
+) -> tauri::Result<()> {
     let restore = window_state::should_restore(args.window_size.is_some(), cfg!(feature = "e2e"));
     let saved = if restore {
         window_state::load(paths)
@@ -133,137 +182,121 @@ fn create_window(app: &AppHandle, args: &StartupArgs, paths: &Paths) -> tauri::R
         )
         .background_color(Color(243, 244, 246, 255))
         .devtools(cfg!(debug_assertions))
+        .on_navigation(move |url| navigation_allowed(url, dev_url.as_ref()))
         .build()?;
 
     let monitors = window.available_monitors()?;
-    let placed = match &saved {
-        Some(s) if saved_fits(s, &monitors) => {
-            window.set_position(PhysicalPosition::new(s.x, s.y))?;
-            true
-        }
-        _ => false,
-    };
-    // The monitor of the saved position, otherwise the primary monitor.
-    let monitor = if placed {
-        window.current_monitor()?
-    } else {
-        None
-    }
-    .or(window.primary_monitor()?);
-
-    if let Some(monitor) = monitor {
-        let scale = monitor.scale_factor();
-        let area = monitor.work_area();
-        let work = logical_size(area.size.width, area.size.height, scale);
-        let frame = frame_of(&window, window.scale_factor()?)?;
-        let size = window_state::startup_size(
-            args.window_size,
-            saved.as_ref().map(|s| Size {
-                width: s.width,
-                height: s.height,
-            }),
-            restore,
-            work,
-            frame,
-        );
-        let min = window_state::min_size(work, frame);
+    let areas: Vec<MonitorArea> = monitors.iter().map(area_of).collect();
+    let mut normal: Option<WindowState> = None;
+    let mut start_maximized = false;
+    if !areas.is_empty() {
+        // The target monitor: the one the saved window lands on, otherwise the primary monitor.
+        let frame = frame_of(&window)?;
+        let restoring = saved
+            .as_ref()
+            .and_then(|s| window_state::restore_monitor(s, frame, &areas))
+            .zip(saved.as_ref());
+        let primary = window
+            .primary_monitor()?
+            .and_then(|p| monitors.iter().position(|m| m.position() == p.position()))
+            .unwrap_or(0);
+        let target = restoring.map_or(primary, |(i, _)| i);
+        // Move the invisible window into the target monitor first, so the frame, the scale and the
+        // sizes below are those of that monitor.
+        window.set_position(PhysicalPosition::new(areas[target].x, areas[target].y))?;
+        let frame = frame_of(&window)?;
+        let placement: Placement = match restoring {
+            Some((i, s)) => window_state::restored(s, &areas, i, frame),
+            None => window_state::first_start(&areas, target, args.window_size, frame),
+        };
+        let min = window_state::min_size(areas[target].work(), frame);
         window.set_min_size(Some(LogicalSize::new(
             f64::from(min.width),
             f64::from(min.height),
         )))?;
         window.set_size(LogicalSize::new(
-            f64::from(size.width),
-            f64::from(size.height),
+            f64::from(placement.inner.width),
+            f64::from(placement.inner.height),
         ))?;
-        if !placed {
-            let outer = window.outer_size()?;
-            let x = area.position.x + (area.size.width as i32 - outer.width as i32) / 2;
-            let y = area.position.y + (area.size.height as i32 - outer.height as i32) / 2;
-            window.set_position(PhysicalPosition::new(
-                x.max(area.position.x),
-                y.max(area.position.y),
-            ))?;
-        }
+        window.set_position(PhysicalPosition::new(placement.x, placement.y))?;
+        normal = Some(WindowState {
+            format: 1,
+            width: placement.inner.width,
+            height: placement.inner.height,
+            x: placement.x,
+            y: placement.y,
+            maximized: false,
+        });
+        start_maximized = restoring.is_some_and(|(_, s)| s.maximized);
     }
-    if restore && saved.as_ref().is_some_and(|s| s.maximized) {
+    if start_maximized {
         window.maximize()?;
     }
     window.show()?;
 
-    if restore {
+    if let (true, Some(normal)) = (restore, normal) {
+        // The last normal rectangle of this session, see `Tracker`; only the maximized flag is
+        // taken from the window at close.
+        let tracker = Arc::new(Mutex::new(Tracker::new(normal)));
         let watched = window.clone();
         let paths = paths.clone();
         window.on_window_event(move |event| {
-            if matches!(event, WindowEvent::CloseRequested { .. }) {
-                save_state(&watched, &paths);
+            let mut tracker = tracker.lock().unwrap_or_else(|p| p.into_inner());
+            match event {
+                WindowEvent::Moved(_) => {
+                    tracker.on_moved(normal_rectangle(&watched).ok().flatten());
+                }
+                WindowEvent::Resized(_) => {
+                    let now = normal_rectangle(&watched).ok().flatten();
+                    let special = now.is_none();
+                    tracker.on_resized(now, special);
+                }
+                WindowEvent::CloseRequested { .. } => {
+                    let state = tracker.saved(watched.is_maximized().unwrap_or(false));
+                    if let Err(e) = window_state::save(&paths, &state) {
+                        eprintln!("could not save the window state: {e}");
+                    }
+                }
+                _ => {}
             }
         });
     }
     Ok(())
 }
 
-/// Remembers size and position when the window closes. A maximized window keeps the size and
-/// position saved before (only the flag changes), a minimized one is not saved. Failures are
-/// logged, never fatal.
-fn save_state(window: &WebviewWindow, paths: &Paths) {
-    let result = (|| -> Result<(), Box<dyn std::error::Error>> {
-        if window.is_minimized()? {
-            return Ok(());
-        }
-        let state = if window.is_maximized()? {
-            let base = window_state::load(paths).unwrap_or(WindowState {
-                format: 1,
-                width: DEFAULT_SIZE.width,
-                height: DEFAULT_SIZE.height,
-                x: 0,
-                y: 0,
-                maximized: true,
-            });
-            WindowState {
-                maximized: true,
-                ..base
-            }
-        } else {
-            let scale = window.scale_factor()?;
-            let inner = window.inner_size()?;
-            let position = window.outer_position()?;
-            let size = logical_size(inner.width, inner.height, scale);
-            WindowState {
-                format: 1,
-                width: size.width,
-                height: size.height,
-                x: position.x,
-                y: position.y,
-                maximized: false,
-            }
-        };
-        Ok(window_state::save(paths, &state)?)
-    })();
-    if let Err(e) = result {
-        eprintln!("could not save the window state: {e}");
-    }
-}
-
 pub fn run() {
     let args = StartupArgs::from_env();
     let paths = Paths::new(args.home.clone().unwrap_or_else(Paths::default_root));
     let state = AppState::new(paths.clone(), Endpoints::default());
-    tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+    let mut context = tauri::generate_context!();
+    let debug = cfg!(debug_assertions);
+    let identifier = app_identifier(&context.config().identifier, debug);
+    context.config_mut().identifier = identifier;
+    let dev_url = if debug {
+        context.config().build.dev_url.clone()
+    } else {
+        None
+    };
+    let mut builder = tauri::Builder::default();
+    if single_instance_enabled(debug, args.home.as_deref(), &Paths::default_root()) {
+        // Must be the first plugin.
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
                 let _ = window.unminimize();
                 let _ = window.show();
                 let _ = window.set_focus();
             }
-        }))
+        }));
+    }
+    builder
         .plugin(tauri_plugin_opener::init())
         .manage(state)
         .invoke_handler(with_commands!(handler))
         .setup(move |app| {
-            create_window(app.handle(), &args, &paths)?;
+            create_window(app.handle(), &args, &paths, dev_url)?;
             Ok(())
         })
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("error while running the Hengst Client");
 }
 
@@ -273,6 +306,10 @@ mod tests {
 
     fn parse(args: &[&str]) -> StartupArgs {
         StartupArgs::parse(args.iter().map(|a| a.to_string()))
+    }
+
+    fn url(text: &str) -> Url {
+        text.parse().unwrap()
     }
 
     #[test]
@@ -302,5 +339,61 @@ mod tests {
         assert_eq!(parse(&["--window-size", "10x"]).window_size, None);
         assert_eq!(parse(&["--home"]).home, None);
         assert_eq!(parse(&["--unknown", "x"]), StartupArgs::default());
+    }
+
+    #[test]
+    fn single_instance_decision() {
+        let default = Path::new("C:\\data\\HengstClient");
+        let other = Path::new("C:\\tmp\\e2e");
+        // release: always one instance, whatever the arguments
+        assert!(single_instance_enabled(false, None, default));
+        assert!(single_instance_enabled(false, Some(other), default));
+        // debug: the default data folder takes part, an explicit different one does not
+        assert!(single_instance_enabled(true, None, default));
+        assert!(single_instance_enabled(true, Some(default), default));
+        assert!(!single_instance_enabled(true, Some(other), default));
+    }
+
+    #[test]
+    fn debug_builds_have_their_own_identifier() {
+        let base = "io.github.clemensjl.hengst-client";
+        assert_eq!(app_identifier(base, false), base);
+        assert_ne!(app_identifier(base, true), base);
+    }
+
+    #[test]
+    fn only_the_app_origin_and_in_debug_the_dev_server_may_be_shown() {
+        let dev = url("http://localhost:1420");
+        for ok in [
+            "http://tauri.localhost/",
+            "https://tauri.localhost/index.html",
+            "tauri://localhost/",
+        ] {
+            assert!(navigation_allowed(&url(ok), None), "{ok}");
+        }
+        for bad in [
+            "https://example.com/",
+            "http://tauri.localhost.evil.example/",
+            "http://evil.example/tauri.localhost",
+            "file:///C:/Windows/win.ini",
+            "javascript:alert(1)",
+            "http://localhost:1420/",
+            "data:text/html,x",
+            "about:blank",
+        ] {
+            assert!(!navigation_allowed(&url(bad), None), "{bad}");
+        }
+        assert!(navigation_allowed(
+            &url("http://localhost:1420/x"),
+            Some(&dev)
+        ));
+        assert!(!navigation_allowed(
+            &url("http://localhost:1421/"),
+            Some(&dev)
+        ));
+        assert!(!navigation_allowed(
+            &url("https://example.com/"),
+            Some(&dev)
+        ));
     }
 }

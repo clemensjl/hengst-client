@@ -18,6 +18,9 @@ path = "src/main.rs"
 
 [features]
 dev-offline = ["hengst-core/dev-offline"]
+# Makes the app load its embedded pages instead of the dev server. `tauri build` turns it on; a
+# release build without it fails to compile (see lib.rs).
+custom-protocol = ["tauri/custom-protocol"]
 # Task 7 adds dep:hengst-testkit.
 e2e = []
 

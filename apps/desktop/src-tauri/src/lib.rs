@@ -17,6 +17,14 @@ macro_rules! handler {
     };
 }
 
+// Without `custom-protocol` the window loads `devUrl` (localhost:1420) with full IPC access. That
+// is fine in a debug build under `tauri dev`, never in a release build. `dev` is the cfg alias
+// tauri-build sets from the tauri crate being built without `custom-protocol`.
+#[cfg(all(dev, not(debug_assertions)))]
+compile_error!("a release build needs the `custom-protocol` feature, which `pnpm tauri build` adds; without it the app would load the dev server URL");
+
+#[cfg(test)]
+mod acl_tests;
 pub mod commands;
 pub mod dto;
 pub mod error;

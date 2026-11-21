@@ -52,6 +52,7 @@ jobs:
       - run: pnpm -C apps/desktop typecheck
       - run: pnpm -C apps/desktop test
       - run: pnpm -C apps/desktop format:check
+      - run: pnpm -C apps/desktop build
 
   prepare-matrix:
     # Hits live third-party services and "latest" moves upstream: weekly and on demand only.

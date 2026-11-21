@@ -309,7 +309,7 @@ async fn list_saved(
         Ok(list) => {
             // Best effort: a list that cannot be saved only means no offline fallback.
             if let Ok(bytes) = serde_json::to_vec(&list) {
-                let _ = write_atomic(&file, &bytes).await;
+                let _ = crate::paths::write_atomic(&file, &bytes).await;
             }
             Ok((list, false))
         }
@@ -350,19 +350,6 @@ async fn read_bounded(file: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
         .await
         .ok()?;
     (buf.len() as u64 <= limit).then_some(buf)
-}
-
-async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = file.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    let tmp = crate::paths::unique_temp(file);
-    tokio::fs::write(&tmp, bytes).await?;
-    if let Err(e) = tokio::fs::rename(&tmp, file).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// An empty segment counts as the number 0, so it equals a missing one.

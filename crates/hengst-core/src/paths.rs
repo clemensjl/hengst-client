@@ -133,6 +133,22 @@ pub fn unique_temp(dest: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+/// Writes `bytes` to `file` through a temp file next to it and a rename, so a reader never sees a
+/// partial file. Creates the parent folder; a failed rename removes the temp file. No fsync: the
+/// callers write caches that are fetched again when they are missing or damaged.
+pub(crate) async fn write_atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = unique_temp(file);
+    tokio::fs::write(&tmp, bytes).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, file).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
 /// How long a temp file of another process must have been untouched before it counts as left over
 /// by a crashed run. Real writes finish within seconds.
 const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);

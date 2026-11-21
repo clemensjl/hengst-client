@@ -1,4 +1,4 @@
-use crate::paths::{remove_stale_temps, unique_temp, validate_sha1};
+use crate::paths::{remove_stale_temps, unique_temp, validate_sha1, write_atomic};
 use crate::progress::{self, Progress, ProgressSink, Transfer};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -312,22 +312,9 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
     if let Some(file) = cache_file {
         // Best effort: the hash is verified in memory; a locked or unwritable cache only means
         // it is asked for again next time.
-        let _ = write_cache_entry(&file, &hash).await;
+        let _ = write_atomic(&file, hash.as_bytes()).await;
     }
     Ok((hash, false))
-}
-
-async fn write_cache_entry(file: &Path, hash: &str) -> std::io::Result<()> {
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp = unique_temp(file);
-    tokio::fs::write(&tmp, hash).await?;
-    if let Err(e) = tokio::fs::rename(&tmp, file).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// Fetches JSON metadata (at most `MAX_JSON_BYTES`).

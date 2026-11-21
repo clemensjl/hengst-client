@@ -364,4 +364,16 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(server.received_requests().await.unwrap().len(), 1);
     }
+
+    #[tokio::test]
+    async fn offline_with_a_damaged_saved_list_is_a_network_error_with_retry() {
+        let dir = tempfile::tempdir().unwrap();
+        let (state, _) = state_for(dir.path(), closed_port_url());
+        write_cache(&state.paths, "{");
+        let dto = game_versions_impl(&state, only_release())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::Network);
+        assert_eq!(dto.action, Some(crate::dto::error::ErrorAction::Retry));
+    }
 }

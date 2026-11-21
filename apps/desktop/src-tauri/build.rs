@@ -1,5 +1,5 @@
 use std::path::Path;
-use tauri_build::{AppManifest, Attributes};
+use tauri_build::{AppManifest, Attributes, WindowsAttributes};
 
 include!("src/command_list.rs");
 
@@ -22,26 +22,25 @@ fn main() {
         )
         .expect("write placeholder index.html");
     }
-    // The test executables (unit and integration) link the Tauri runtime, which needs Common
-    // Controls v6; without a manifest they fail to load (STATUS_ENTRYPOINT_NOT_FOUND). Cargo has no
-    // link argument for unit tests only, so every target gets the manifest and the app binary
-    // opts out below.
+    // One manifest for every executable of this package (the app and the unit and integration
+    // test executables): the Common Controls v6 dependency that tauri-build's default manifest
+    // holds (nothing else), which the Tauri runtime needs to load at all. tauri-build is told not
+    // to add its own copy below. Cargo has no link argument for unit tests only, hence the generic
+    // `rustc-link-arg`.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
         println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
-        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{manifest}/windows-test.manifest");
-        // The app binary already carries tauri-build's manifest as a resource; embedding a second
-        // one is a link error.
-        println!("cargo:rustc-link-arg-bins=/MANIFEST:NO");
-        println!("cargo:rustc-link-arg-bins=/IGNORE:4075");
-        println!("cargo:rerun-if-changed=windows-test.manifest");
+        println!("cargo:rustc-link-arg=/MANIFESTINPUT:{manifest}/windows.manifest");
+        println!("cargo:rerun-if-changed=windows.manifest");
     }
     println!("cargo:rerun-if-changed=src/command_list.rs");
     println!("cargo:rerun-if-changed=../dist");
     tauri_build::try_build(
-        Attributes::new().app_manifest(AppManifest::new().commands(with_commands!(names))),
+        Attributes::new()
+            .windows_attributes(WindowsAttributes::new_without_app_manifest())
+            .app_manifest(AppManifest::new().commands(with_commands!(names))),
     )
     .expect("failed to run tauri-build");
 }

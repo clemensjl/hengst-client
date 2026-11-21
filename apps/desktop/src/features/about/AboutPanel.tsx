@@ -26,10 +26,18 @@ export function AboutPanel() {
   }, []);
 
   useEffect(() => {
-    void load();
-    void subscribeEvents((e) => {
+    let cancelled = false;
+    // Subscribe first: an event emitted while the first load is running must not be lost.
+    subscribeEvents((e) => {
       if (e.event === "dataChanged" && e.data.scope === "versions") void load();
-    }).catch(() => {});
+    })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) void load();
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [load]);
 
   if (state.kind === "loading") return <p>Loading</p>;
