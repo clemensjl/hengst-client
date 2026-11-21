@@ -30,7 +30,7 @@ public final class CpsModule extends TextHudModule {
 
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
-        boolean showRight = (Boolean) cfg.option(SHOW_RIGHT);
+        boolean showRight = cfg.bool(SHOW_RIGHT);
         int left = ctx.cps().cps(0);
         int right = showRight ? ctx.cps().cps(1) : 0;
         if (left != lastLeft || right != lastRight || showRight != lastShowRight) {

@@ -39,7 +39,7 @@ public final class KeystrokesModule extends HudModule {
     private final String[] shown = {"", "", "", "", "LMB", "RMB"};
     private final int[] labelWidths = {-1, -1, -1, -1, -1, -1};
     private int refreshIn;
-    // The options, read in tick (boxed by the config) so height and render read primitives.
+    // The options, read in tick (typed reads, no boxing) so height and render read primitives.
     private boolean showMouse = true;
     private boolean showSpace = true;
 
@@ -54,8 +54,8 @@ public final class KeystrokesModule extends HudModule {
 
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
-        showMouse = (Boolean) cfg.option(SHOW_MOUSE);
-        showSpace = (Boolean) cfg.option(SHOW_SPACE);
+        showMouse = cfg.bool(SHOW_MOUSE);
+        showSpace = cfg.bool(SHOW_SPACE);
         if (--refreshIn > 0) {
             return;
         }

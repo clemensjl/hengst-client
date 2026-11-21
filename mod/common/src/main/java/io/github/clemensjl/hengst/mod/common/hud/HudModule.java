@@ -23,8 +23,9 @@ public abstract class HudModule extends Feature {
     public abstract int height(Canvas c, ModuleConfig cfg);
 
     /**
-     * Must not allocate. Options returned by {@link ModuleConfig#option} are boxed, so read them in
-     * {@link #tick} and cache them in primitive fields.
+     * Must not allocate. Read options in {@link #tick} through the typed accessors
+     * ({@link ModuleConfig#bool}, {@link ModuleConfig#integer}, {@link ModuleConfig#decimal},
+     * {@link ModuleConfig#choice}) and cache them in primitive fields.
      */
     public abstract void render(Canvas c, ModuleConfig cfg, HudContext ctx);
 }

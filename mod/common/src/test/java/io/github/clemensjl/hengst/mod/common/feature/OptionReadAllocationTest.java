@@ -50,4 +50,21 @@ class OptionReadAllocationTest {
         System.out.println("float option read from a file value: " + used + " bytes over " + READS + " reads");
         assertTrue(used <= READS * MAX_BYTES_PER_READ_FROM_FILE_VALUE, "allocated " + used);
     }
+
+    @Test
+    void typed_reads_allocate_nothing() {
+        OptionSpec t = OptionSpec.toggle("t", true), i = OptionSpec.intRange("i", 0, 0, 1000),
+                f = OptionSpec.floatRange("f", 1f, 0.5f, 3f, 0.1f), c = OptionSpec.choice("c", "a", "a", "b");
+        ModuleConfig m = ModuleConfig.defaults();
+        m.setOption("t", Boolean.TRUE);
+        m.setOption("i", 500L);
+        m.setOption("f", 1.26);
+        m.setOption("c", "b");
+        long sink = 0;
+        for (int k = 0; k < 1000; k++) { sink += (m.bool(t) ? 1 : 0) + m.integer(i) + (int) m.decimal(f) + m.choice(c); }
+        long before = allocated();
+        for (int k = 0; k < 10000; k++) { sink += (m.bool(t) ? 1 : 0) + m.integer(i) + (int) m.decimal(f) + m.choice(c); }
+        assertEquals(0, allocated() - before);
+        assertTrue(sink > 0);
+    }
 }

@@ -47,7 +47,7 @@ public final class CoordinatesModule extends TextHudModule {
             setText("");
             return;
         }
-        int decimals = (Integer) cfg.option(DECIMALS);
+        int decimals = cfg.integer(DECIMALS);
         long x = scaled(game.playerX(), decimals);
         long y = scaled(game.playerY(), decimals);
         long z = scaled(game.playerZ(), decimals);

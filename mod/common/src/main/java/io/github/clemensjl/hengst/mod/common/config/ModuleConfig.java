@@ -100,6 +100,24 @@ public final class ModuleConfig {
         return spec.coerce(options.get(spec.key()));
     }
 
+    /** Typed reads: like {@link #option} but primitive, without allocation. Throw if the spec is of another kind. */
+    public boolean bool(OptionSpec spec) {
+        return spec.coerceBool(options.get(spec.key()));
+    }
+
+    public int integer(OptionSpec spec) {
+        return spec.coerceInt(options.get(spec.key()));
+    }
+
+    public float decimal(OptionSpec spec) {
+        return spec.coerceFloat(options.get(spec.key()));
+    }
+
+    /** Index into {@link OptionSpec#value(int)}. */
+    public int choice(OptionSpec spec) {
+        return spec.coerceChoice(options.get(spec.key()));
+    }
+
     /** Stores the value as given (null removes it); it is coerced when read through {@link #option}. */
     public void setOption(String key, Object value) {
         if (value == null) {
