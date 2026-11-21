@@ -925,6 +925,7 @@ mod tests {
     use std::process::Command;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
+    use std::time::Duration;
 
     const MAVEN: &str = "1.20.1-1.0";
     const ID: &str = "1.20.1-forge-1.0";
@@ -1044,7 +1045,7 @@ mod tests {
     }
 
     impl ProcessRunner for Patcher {
-        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+        fn run(&self, cmd: &mut Command, _: Duration) -> std::io::Result<Option<i32>> {
             let now = self.active.fetch_add(1, Ordering::SeqCst) + 1;
             self.max_active.fetch_max(now, Ordering::SeqCst);
             self.runs.fetch_add(1, Ordering::SeqCst);
@@ -1060,7 +1061,7 @@ mod tests {
             std::fs::create_dir_all(Path::new(out).parent().unwrap())?;
             std::fs::write(out, b"patched")?;
             self.active.fetch_sub(1, Ordering::SeqCst);
-            Ok(0)
+            Ok(Some(0))
         }
     }
 
@@ -1068,7 +1069,7 @@ mod tests {
     struct NoStart;
 
     impl ProcessRunner for NoStart {
-        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+        fn run(&self, cmd: &mut Command, _: Duration) -> std::io::Result<Option<i32>> {
             panic!("no process may start: {:?}", cmd.get_program());
         }
     }

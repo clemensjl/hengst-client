@@ -14,6 +14,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -479,7 +480,7 @@ fn made(file: &str) -> Vec<u8> {
 }
 
 impl ProcessRunner for FakeJava {
-    fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+    fn run(&self, cmd: &mut Command, _: Duration) -> std::io::Result<Option<i32>> {
         let args: Vec<String> = cmd
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -505,7 +506,7 @@ impl ProcessRunner for FakeJava {
                 })
                 .collect(),
         });
-        Ok(0)
+        Ok(Some(0))
     }
 }
 
@@ -513,7 +514,7 @@ impl ProcessRunner for FakeJava {
 struct NoStart;
 
 impl ProcessRunner for NoStart {
-    fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+    fn run(&self, cmd: &mut Command, _: Duration) -> std::io::Result<Option<i32>> {
         panic!(
             "no processor may run: {:?}",
             cmd.get_args().collect::<Vec<_>>()

@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::time::Duration;
 
 use super::installer::{extract_files, ModernProfile, Processor};
 use crate::download::sha1_file;
@@ -673,8 +674,9 @@ pub fn install_state_valid(
 /// Starts one prepared processor command and waits for it. Injected so tests can run the loop
 /// without a JVM.
 pub trait ProcessRunner: Send + Sync {
-    /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none).
-    fn run(&self, cmd: &mut Command) -> std::io::Result<i32>;
+    /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none), or
+    /// `None` when it did not finish within `timeout` and was killed.
+    fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>>;
 
     /// Tells the user about a wait (another launch is installing the same version).
     fn notice(&self, message: &str) {
@@ -686,10 +688,28 @@ pub trait ProcessRunner: Send + Sync {
 pub struct SystemRunner;
 
 impl ProcessRunner for SystemRunner {
-    fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
-        Ok(cmd.status()?.code().unwrap_or(-1))
+    fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>> {
+        // Deferred to Phase 4 (desktop app): put the child into a Windows job object so that it
+        // is also killed when the launcher itself is killed. Today such a child keeps running.
+        let mut child = cmd.spawn()?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            if let Some(status) = child.try_wait()? {
+                return Ok(Some(status.code().unwrap_or(-1)));
+            }
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Ok(None);
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
     }
 }
+
+/// How long one processor may run. The slowest real one (remapping the client jar) takes about a
+/// minute; a hung one must not hold the install lock forever.
+pub const PROCESSOR_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Variables a JVM reads options or a classpath from; never inherited by a processor.
 pub const CLEARED_JAVA_ENV: [&str; 4] = [
@@ -725,7 +745,8 @@ fn processor_command(java: &Path, c: &ProcessorCommand, cwd: &Path) -> Result<Co
 /// Runs the commands one after another. stdout and stderr of every processor go to `log`
 /// (truncated first), each preceded by a header line naming the processor and its arguments.
 /// Right before each start the jar and classpath are checked against their declared SHA-1, and
-/// after a zero exit the declared outputs. Any failure stops the run with an error naming the
+/// after a zero exit the declared outputs. A processor running longer than `PROCESSOR_TIMEOUT`
+/// is killed. Any failure stops the run with an error naming the
 /// processor and the log; a non-zero exit is `Error::Processor`.
 pub fn run_processors(
     runner: &dyn ProcessRunner,
@@ -733,6 +754,18 @@ pub fn run_processors(
     cmds: &[ProcessorCommand],
     cwd: &Path,
     log: &Path,
+) -> Result<()> {
+    run_processors_with(runner, java, cmds, cwd, log, PROCESSOR_TIMEOUT)
+}
+
+/// `run_processors` with an explicit per-processor timeout.
+fn run_processors_with(
+    runner: &dyn ProcessRunner,
+    java: &Path,
+    cmds: &[ProcessorCommand],
+    cwd: &Path,
+    log: &Path,
+    timeout: Duration,
 ) -> Result<()> {
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir)?;
@@ -747,13 +780,20 @@ pub fn run_processors(
         out.flush()?;
         let mut cmd = processor_command(java, c, cwd)?;
         cmd.stdout(out.try_clone()?).stderr(out.try_clone()?);
-        let code = runner.run(&mut cmd).map_err(|e| {
+        let code = runner.run(&mut cmd, timeout).map_err(|e| {
             bad(format!(
                 "{name}: could not start {}: {e}; see {}",
                 java.display(),
                 see()
             ))
         })?;
+        let Some(code) = code else {
+            return Err(bad(format!(
+                "{name} did not finish within {} s and was stopped; see {}",
+                timeout.as_secs_f32(),
+                see()
+            )));
+        };
         if code != 0 {
             return Err(Error::Processor {
                 jar: name,
@@ -1542,7 +1582,7 @@ mod tests {
     }
 
     impl ProcessRunner for Recorder {
-        fn run(&self, cmd: &mut Command) -> std::io::Result<i32> {
+        fn run(&self, cmd: &mut Command, _: std::time::Duration) -> std::io::Result<Option<i32>> {
             let mut calls = self.calls.lock().unwrap();
             let i = calls.len();
             calls.push(Call {
@@ -1565,7 +1605,7 @@ mod tests {
             if let Some(effect) = &self.effect {
                 effect(i);
             }
-            Ok(self.codes.get(i).copied().unwrap_or(0))
+            Ok(Some(self.codes.get(i).copied().unwrap_or(0)))
         }
     }
 
@@ -1731,6 +1771,78 @@ mod tests {
         assert!(
             m.contains("processor 0") && m.contains("install.log"),
             "{m}"
+        );
+    }
+
+    /// Sleeps instead of running; honours the timeout like a real runner would (kills and reports
+    /// `None` when the work takes longer).
+    struct Sleeper(std::time::Duration);
+
+    impl ProcessRunner for Sleeper {
+        fn run(
+            &self,
+            _: &mut Command,
+            timeout: std::time::Duration,
+        ) -> std::io::Result<Option<i32>> {
+            std::thread::sleep(self.0.min(timeout));
+            Ok((self.0 <= timeout).then_some(0))
+        }
+    }
+
+    #[test]
+    fn hung_processor_is_stopped_at_the_timeout_and_named() {
+        let (_t, env, plan) = two_step();
+        let log = env.root.join("logs/install.log");
+        let err = run_processors_with(
+            &Sleeper(std::time::Duration::from_secs(60)),
+            Path::new("java"),
+            &plan.commands,
+            &env.work,
+            &log,
+            std::time::Duration::from_millis(200),
+        )
+        .unwrap_err();
+        let m = err.to_string();
+        assert!(
+            m.contains("processor 0")
+                && m.contains("install.log")
+                && m.contains("did not finish within"),
+            "{m}"
+        );
+        // Quick enough processors pass.
+        run_processors_with(
+            &Sleeper(std::time::Duration::from_millis(10)),
+            Path::new("java"),
+            &plan.commands,
+            &env.work,
+            &log,
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        assert_eq!(PROCESSOR_TIMEOUT, std::time::Duration::from_secs(15 * 60));
+    }
+
+    #[test]
+    fn system_runner_kills_a_child_at_the_timeout() {
+        // ping waits a second between echoes: about 30 s if not stopped.
+        let mut cmd = Command::new("ping");
+        cmd.args(["-n", "30", "127.0.0.1"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let start = std::time::Instant::now();
+        let outcome = SystemRunner
+            .run(&mut cmd, std::time::Duration::from_millis(500))
+            .unwrap();
+        assert_eq!(outcome, None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(10));
+        // A child that ends in time reports its code.
+        let mut ok = Command::new("cmd");
+        ok.args(["/C", "exit 3"]);
+        assert_eq!(
+            SystemRunner
+                .run(&mut ok, std::time::Duration::from_secs(30))
+                .unwrap(),
+            Some(3)
         );
     }
 
