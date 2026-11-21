@@ -64,6 +64,8 @@ final class ModernInput {
         // Ten events of 0.1 sum to 0.9999999999999999 in double: count that as a full notch.
         private static final double EPSILON = 1e-9;
         private static final double MAX_EVENT = 1_000_000.0;
+        /** At most this many notches per event; the rest of a garbage delta is dropped. */
+        static final int MAX_NOTCHES = 100;
         private double remainder;
 
         /** Adds one scroll event and returns the signed number of whole notches it completes (often 0). */
@@ -74,6 +76,10 @@ final class ModernInput {
             remainder += amount;
             int notches = (int) (remainder + (remainder > 0 ? EPSILON : -EPSILON));
             remainder -= notches;
+            if (notches > MAX_NOTCHES || notches < -MAX_NOTCHES) {
+                remainder = 0.0;
+                return notches > 0 ? MAX_NOTCHES : -MAX_NOTCHES;
+            }
             return notches;
         }
 

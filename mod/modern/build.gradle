@@ -76,19 +76,23 @@ loom {
     }
 }
 
-def gameTestRunDir = file('build/run/clientGameTest')
-def muteGameTestSound = tasks.register('muteGameTestSound') {
-    description = 'Sets the master volume to 0 in the client gametest run directory before the game starts.'
-    mustRunAfter 'deleteGameTestRunDir'
-    outputs.upToDateWhen { false }
-    doLast {
-        gameTestRunDir.mkdirs()
-        def options = new File(gameTestRunDir, 'options.txt')
-        def lines = options.exists() ? options.readLines('UTF-8').findAll { !it.startsWith('soundCategory_master:') } : []
-        lines << 'soundCategory_master:0.0'
-        options.write(lines.join('\n') + '\n', 'UTF-8')
+// Writes soundCategory_master:0.0 into a run directory's options.txt, keeping its other lines.
+def registerMuteTask = { String name, File runDir ->
+    tasks.register(name) {
+        description = "Sets the master volume to 0 in ${runDir.name} before the game starts."
+        outputs.upToDateWhen { false }
+        doLast {
+            runDir.mkdirs()
+            def options = new File(runDir, 'options.txt')
+            def lines = options.exists() ? options.readLines('UTF-8').findAll { !it.startsWith('soundCategory_master:') } : []
+            lines << 'soundCategory_master:0.0'
+            options.write(lines.join('\n') + '\n', 'UTF-8')
+        }
     }
 }
+
+def muteGameTestSound = registerMuteTask('muteGameTestSound', file('build/run/clientGameTest'))
+muteGameTestSound.configure { mustRunAfter 'deleteGameTestRunDir' }
 tasks.named('runClientGameTest') {
     dependsOn muteGameTestSound
 }
@@ -100,6 +104,42 @@ tasks.register('clientGameTests') {
     group = 'verification'
     description = 'Runs the in-game test twice: fresh run directory, then a restart with the saved layout.'
     dependsOn 'runClientGameTest', 'runClientGameTestRestart'
+}
+
+// Production check: the built mod jar (remapJar on 1.21.11, jar on 26.3) with the Fabric API jar from Maven, in
+// Loom's production launch (intermediary names on 1.21.11, as a launcher runs it). Run directory
+// build/run/prodClient. Options: -PwithGameTest also loads the in-game test as a jar (remapped like the mod on
+// 1.21.11) and runs it, which ends the game; -PmixinVerbose logs every applied mixin. The test jars go to build/gametest-libs, never to build/libs.
+dependencies {
+    productionRuntimeMods "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+def gametestJar = tasks.register('gametestJar', Jar) {
+    from sourceSets.gametest.output
+    archiveClassifier = 'gametest-dev'
+    destinationDirectory = layout.buildDirectory.dir('gametest-libs')
+}
+def prodGametestJar = gametestJar
+if (remap) {
+    prodGametestJar = tasks.register('remapGametestJar', net.fabricmc.loom.task.RemapJarTask) {
+        inputFile = gametestJar.flatMap { it.archiveFile }
+        archiveClassifier = 'gametest'
+        destinationDirectory = layout.buildDirectory.dir('gametest-libs')
+        addNestedDependencies = false
+    }
+}
+def prodRunDir = file('build/run/prodClient')
+def muteProdSound = registerMuteTask('muteProductionSound', prodRunDir)
+tasks.register('runProductionClient', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+    description = 'Starts the built mod jar with Fabric API in a production (intermediary) environment.'
+    dependsOn muteProdSound
+    runDir = prodRunDir
+    if (project.hasProperty('withGameTest')) {
+        mods.from(prodGametestJar.flatMap { it.archiveFile })
+        jvmArgs.add('-Dfabric.client.gametest')
+    }
+    if (project.hasProperty('mixinVerbose')) {
+        jvmArgs.add('-Dmixin.debug.verbose=true')
+    }
 }
 
 tasks.withType(JavaCompile).configureEach {

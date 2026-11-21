@@ -22,4 +22,6 @@ Single targets: `./gradlew :modern:1.21.11:build`, `./gradlew :modern:26.3:build
 
 In-game test of the modern mod (starts the game in a window, not part of `build` or `buildAll`): `./gradlew -p modern :<node>:clientGameTests` with `<node>` `1.21.11` or `26.3`. It runs `runClientGameTest` (fresh run directory) and then `runClientGameTestRestart` (same directory, checks the saved layout); screenshots land in `modern/versions/<node>/build/run/clientGameTest/screenshots/`.
 
+Production check (the built jar with Fabric API in Loom's production launch, intermediary names on 1.21.11): `./gradlew -p modern :<node>:runProductionClient -PwithGameTest` runs the same in-game test against the shipped jar; without `-PwithGameTest` it only starts the game.
+
 Result: `dist/hengst-mod-0.1.0+1.8.9.jar`, `dist/hengst-mod-0.1.0+1.21.11.jar`, `dist/hengst-mod-0.1.0+26.3.jar`.

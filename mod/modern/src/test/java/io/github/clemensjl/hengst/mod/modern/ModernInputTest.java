@@ -106,6 +106,16 @@ class ModernInputTest {
     }
 
     @Test
+    void oneEventEmitsAtMostOneHundredNotches() {
+        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
+        assertEquals(100, s.add(500.25));
+        assertEquals(0, s.add(0.0));
+        assertEquals(-100, s.add(-1e5));
+        assertEquals(0, s.add(0.0));
+        assertEquals(1, s.add(1.0));
+    }
+
+    @Test
     void resetDropsTheRemainderAndBadValuesAreIgnored() {
         ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
         assertEquals(0, s.add(0.9));

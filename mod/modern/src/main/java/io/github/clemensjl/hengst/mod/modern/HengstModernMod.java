@@ -3,6 +3,7 @@ package io.github.clemensjl.hengst.mod.modern;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
+import java.util.function.Supplier;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -30,10 +31,20 @@ public final class HengstModernMod implements ClientModInitializer {
     /** The mod's HUD element in Fabric's HUD registry. */
     public static final Identifier HUD_ID = Identifier.fromNamespaceAndPath("hengst", "hud");
 
+    // Hook sites for failure logging.
+    static final int SITE_HUD = 0;
+    static final int SITE_TICK = 1;
+    static final int SITE_STOP = 2;
+    static final int SITE_FRAME = 3;
+    static final int SITE_MOUSE = 4;
+    private static final String[] SITE_NAMES = {"HUD", "client tick", "client stop", "frame", "mouse button"};
+    private static final int MAX_KINDS = 4;
+    private static final Class<?>[][] LOGGED_KINDS = new Class<?>[SITE_NAMES.length][MAX_KINDS];
+    private static final int[] LOGGED_COUNT = new int[SITE_NAMES.length];
+
     /** Set once, as the last step of a successful start. Read first by every hook and mixin. */
     public static boolean ENABLED;
     private static HengstCore core;
-    private static boolean hookFailureLogged;
 
     public static HengstCore core() {
         return core;
@@ -41,10 +52,8 @@ public final class HengstModernMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        ModernPlatform platform = new ModernPlatform();
-        LOGGER.info("[hengst] loaded on {}", platform.version().id());
         ModernKeys.register();
-        core = startCore(platform);
+        core = startCore(ModernPlatform::new);
         if (core == null) {
             return;
         }
@@ -59,11 +68,16 @@ public final class HengstModernMod implements ClientModInitializer {
     }
 
     /**
-     * {@link HengstCore#start}, or null after logging why. Failures of the core and of its classes (a broken or
-     * missing common jar: NoClassDefFoundError, ExceptionInInitializerError) are caught; VM errors are not.
+     * Creates the platform, logs the load line and starts the core; null after logging why. Caught: runtime
+     * exceptions and linkage errors raised while the platform and the core are created (a common class that fails
+     * its static initializer or references something missing). Not caught: VM errors. A common jar that is missing
+     * as a whole cannot be caught here: this class itself refers to common types, so the game reports the
+     * entrypoint as failed before this method runs (common ships inside the mod jar, so that needs a damaged jar).
      */
-    static HengstCore startCore(Platform platform) {
+    static HengstCore startCore(Supplier<? extends Platform> platformFactory) {
         try {
+            Platform platform = platformFactory.get();
+            LOGGER.info("[hengst] loaded on {}", platform.version().id());
             return HengstCore.start(platform, TimeSource.SYSTEM);
         } catch (RuntimeException | LinkageError e) {
             LOGGER.error("[hengst] core failed to start; the mod stays inactive and its key bindings do nothing", e);
@@ -83,7 +97,7 @@ public final class HengstModernMod implements ClientModInitializer {
             CANVAS.begin(graphics);
             core.onHudRender(CANVAS, delta.getGameTimeDeltaPartialTick(false));
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(e);
+            hookFailed(SITE_HUD, e);
         }
     }
 
@@ -95,7 +109,7 @@ public final class HengstModernMod implements ClientModInitializer {
             ModernKeys.dispatch(client);
             core.onClientTick();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(e);
+            hookFailed(SITE_TICK, e);
         }
     }
 
@@ -106,7 +120,7 @@ public final class HengstModernMod implements ClientModInitializer {
         try {
             core.shutdown();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(e);
+            hookFailed(SITE_STOP, e);
         }
     }
 
@@ -115,7 +129,7 @@ public final class HengstModernMod implements ClientModInitializer {
         try {
             core.onFrame();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(e);
+            hookFailed(SITE_FRAME, e);
         }
     }
 
@@ -127,15 +141,36 @@ public final class HengstModernMod implements ClientModInitializer {
                 core.onMouseButton(button, pressed);
             }
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(e);
+            hookFailed(SITE_MOUSE, e);
         }
     }
 
-    /** Cold path: nothing thrown by the mod reaches the game; the first failure is logged. */
-    private static void hookFailed(Throwable e) {
-        if (!hookFailureLogged) {
-            hookFailureLogged = true;
-            LOGGER.error("[hengst] a game hook failed; later hook failures are not logged", e);
+    /**
+     * Cold path; nothing thrown by the mod reaches the game. A linkage error (the game or Fabric API does not have
+     * what the adapter was built against) would repeat on every call: the mod disables itself and logs once. Other
+     * failures are logged once per site and exception class (the first four classes of a site).
+     */
+    static void hookFailed(int site, Throwable e) {
+        if (e instanceof LinkageError) {
+            if (ENABLED) {
+                ENABLED = false;
+                LOGGER.error("[hengst] the {} hook does not match this game; the mod is disabled", SITE_NAMES[site], e);
+            }
+            return;
         }
+        Class<?> kind = e.getClass();
+        int n = LOGGED_COUNT[site];
+        for (int i = 0; i < n; i++) {
+            if (LOGGED_KINDS[site][i] == kind) {
+                return;
+            }
+        }
+        if (n == MAX_KINDS) {
+            return;
+        }
+        LOGGED_KINDS[site][n] = kind;
+        LOGGED_COUNT[site] = n + 1;
+        LOGGER.error("[hengst] the {} hook failed; further {} there are not logged", SITE_NAMES[site],
+                kind.getSimpleName(), e);
     }
 }
