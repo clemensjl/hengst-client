@@ -1,0 +1,40 @@
+[package]
+name = "hengst-desktop"
+version = "0.1.0"
+edition.workspace = true
+# tauri 2.12 needs Rust 1.90; the core and the CLI keep the workspace value.
+rust-version = "1.90"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "hengst_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "hengst-desktop"
+path = "src/main.rs"
+
+[features]
+dev-offline = ["hengst-core/dev-offline"]
+# Task 7 adds dep:hengst-testkit.
+e2e = []
+
+[build-dependencies]
+tauri-build = { version = "=2.7.6", features = [] }
+
+[dependencies]
+hengst-core = { path = "../../../crates/hengst-core" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "=2.12.7", features = [] }
+tauri-plugin-opener = "=2.7.3"
+tauri-plugin-single-instance = "=2.5.5"
+tokio.workspace = true
+ts-rs = "=12.0.1"
+
+[dev-dependencies]
+tauri = { version = "=2.12.7", features = ["test"] }
+tempfile.workspace = true
+wiremock.workspace = true

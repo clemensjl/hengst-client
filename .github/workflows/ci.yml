@@ -26,6 +26,33 @@ jobs:
       - run: cargo test --workspace --all-features
       - run: cargo test -p hengst-core --lib
 
+  msrv:
+    # The core and the CLI promise Rust 1.89; the desktop crate needs 1.90 and is left out.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p hengst-core -p hengst-cli
+
+  desktop-frontend:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: apps/desktop/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: apps/desktop/.nvmrc
+      - run: pnpm -C apps/desktop install --frozen-lockfile
+      - run: pnpm -C apps/desktop typecheck
+      - run: pnpm -C apps/desktop test
+      - run: pnpm -C apps/desktop format:check
+
   prepare-matrix:
     # Hits live third-party services and "latest" moves upstream: weekly and on demand only.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
