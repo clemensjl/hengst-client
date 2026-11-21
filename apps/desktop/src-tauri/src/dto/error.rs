@@ -36,6 +36,11 @@ pub enum ErrorCode {
     LoginDeclined,
     LoginExpired,
     DeviceCodeExpired,
+    BrowserLoginTimedOut,
+    /// The core could not listen on the loopback address; the sign-in dialog offers the code instead.
+    LoopbackUnavailable,
+    /// `params.code` is the sanitized `error` of the authorization response.
+    BrowserLoginFailed,
     NoXboxAccount,
     XboxRegionBlocked,
     XboxAdultVerification,

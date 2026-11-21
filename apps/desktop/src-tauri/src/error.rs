@@ -76,6 +76,12 @@ pub fn error_dto(e: &Error) -> ErrorDto {
             AuthError::MissingClientId => (ErrorCode::MissingClientId, None),
             AuthError::DeviceCodeExpired => (ErrorCode::DeviceCodeExpired, Some(SignIn)),
             AuthError::LoginDeclined => (ErrorCode::LoginDeclined, Some(SignIn)),
+            AuthError::BrowserLoginTimedOut => (ErrorCode::BrowserLoginTimedOut, Some(SignIn)),
+            AuthError::LoopbackUnavailable => (ErrorCode::LoopbackUnavailable, None),
+            AuthError::BrowserLoginFailed { code } => {
+                put("code", code.clone());
+                (ErrorCode::BrowserLoginFailed, Some(SignIn))
+            }
             AuthError::AppMisconfigured { .. } => (ErrorCode::AppMisconfigured, None),
             AuthError::LoginExpired { name } => {
                 put("name", name.clone());
@@ -581,6 +587,24 @@ mod mapping_tests {
                 Some(SignIn),
             ),
             auth(
+                AuthError::BrowserLoginTimedOut,
+                ErrorCode::BrowserLoginTimedOut,
+                Some(SignIn),
+            ),
+            auth(
+                AuthError::LoopbackUnavailable,
+                ErrorCode::LoopbackUnavailable,
+                None,
+            ),
+            row(
+                Error::Auth(AuthError::BrowserLoginFailed {
+                    code: "server_error".into(),
+                }),
+                ErrorCode::BrowserLoginFailed,
+                Some(SignIn),
+                &[("code", "server_error")],
+            ),
+            auth(
                 AuthError::AppMisconfigured {
                     code: "AADSTS1".into(),
                 },
@@ -819,6 +843,9 @@ mod mapping_tests {
             ErrorCode::LoginDeclined => "loginDeclined",
             ErrorCode::LoginExpired => "loginExpired",
             ErrorCode::DeviceCodeExpired => "deviceCodeExpired",
+            ErrorCode::BrowserLoginTimedOut => "browserLoginTimedOut",
+            ErrorCode::LoopbackUnavailable => "loopbackUnavailable",
+            ErrorCode::BrowserLoginFailed => "browserLoginFailed",
             ErrorCode::NoXboxAccount => "noXboxAccount",
             ErrorCode::XboxRegionBlocked => "xboxRegionBlocked",
             ErrorCode::XboxAdultVerification => "xboxAdultVerification",
@@ -834,7 +861,7 @@ mod mapping_tests {
         }
     }
 
-    const ALL_CODES: [ErrorCode; 37] = [
+    const ALL_CODES: [ErrorCode; 40] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -860,6 +887,9 @@ mod mapping_tests {
         ErrorCode::LoginDeclined,
         ErrorCode::LoginExpired,
         ErrorCode::DeviceCodeExpired,
+        ErrorCode::BrowserLoginTimedOut,
+        ErrorCode::LoopbackUnavailable,
+        ErrorCode::BrowserLoginFailed,
         ErrorCode::NoXboxAccount,
         ErrorCode::XboxRegionBlocked,
         ErrorCode::XboxAdultVerification,

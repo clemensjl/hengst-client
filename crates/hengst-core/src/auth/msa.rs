@@ -43,7 +43,7 @@ pub(crate) fn next_interval(current: Duration, error: &str) -> Duration {
 /// Read the `error` code of a failed token response (HTTP 400, or 401 as Entra
 /// answers `invalid_client`). The free-text
 /// `error_description` is deliberately ignored.
-async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
+pub(super) async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
     let status = resp.status().as_u16();
     let body = resp.bytes().await.map_err(http_error(url))?;
     match serde_json::from_slice::<ErrorResponse>(&body) {
@@ -57,14 +57,14 @@ async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
 
 /// `invalid_client` / `unauthorized_client` mean a misconfigured app;
 /// everything else falls back to `other`.
-fn map_client_error(code: String, other: Error) -> Error {
+pub(super) fn map_client_error(code: String, other: Error) -> Error {
     match code.as_str() {
         "invalid_client" | "unauthorized_client" => AuthError::AppMisconfigured { code }.into(),
         _ => other,
     }
 }
 
-async fn parse_tokens(resp: reqwest::Response, url: &str) -> Result<MsaTokens> {
+pub(super) async fn parse_tokens(resp: reqwest::Response, url: &str) -> Result<MsaTokens> {
     let t: TokenResponse = resp.json().await.map_err(http_error(url))?;
     Ok(MsaTokens {
         access_token: t.access_token,

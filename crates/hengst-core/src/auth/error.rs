@@ -8,6 +8,14 @@ pub enum AuthError {
     DeviceCodeExpired,
     #[error("the sign-in was declined in the browser")]
     LoginDeclined,
+    #[error("the browser sign-in was not completed within 5 minutes")]
+    BrowserLoginTimedOut,
+    #[error("the launcher cannot listen on localhost for the sign-in answer")]
+    LoopbackUnavailable,
+    /// `code` is the sanitized `error` of the authorization response: at most 64 characters of
+    /// `[A-Za-z0-9_.-]`, never its free-text description.
+    #[error("the browser sign-in failed ({code})")]
+    BrowserLoginFailed { code: String },
     #[error("Microsoft rejected the client id ({code}); the Azure app must allow personal accounts and public client flows")]
     AppMisconfigured { code: String },
     #[error("the saved login for {name} is no longer valid; run \"hengst login\" again")]

@@ -96,6 +96,9 @@ const ALL_CODES = [
   "loginDeclined",
   "loginExpired",
   "deviceCodeExpired",
+  "browserLoginTimedOut",
+  "loopbackUnavailable",
+  "browserLoginFailed",
   "noXboxAccount",
   "xboxRegionBlocked",
   "xboxAdultVerification",
@@ -277,8 +280,6 @@ describe("copy of DESIGN.md 11.5 and 11.6", () => {
       const body = pair(bodyCell);
       if (!title || !body) continue;
       for (const code of [...codeCell.matchAll(/`([a-zA-Z]+)`/g)].map((m) => m[1])) {
-        // Task 5 adds its own three codes to ErrorCode; they are checked once they exist.
-        if (!(code in errorKeys)) continue;
         const d = describeError(dto(code as ErrorDto["code"]), de, "signIn");
         const e = describeError(dto(code as ErrorDto["code"]), en, "signIn");
         expect(d.title, `${code} title de`).toBe(title[0]);
@@ -288,9 +289,10 @@ describe("copy of DESIGN.md 11.5 and 11.6", () => {
         checked++;
       }
     }
-    // network, offline, loginDeclined, deviceCodeExpired, appMisconfigured, noXboxAccount,
-    // gameNotOwned, noProfile, credentialStore
-    expect(checked).toBeGreaterThanOrEqual(9);
+    // network, offline, loginDeclined, browserLoginTimedOut, deviceCodeExpired,
+    // loopbackUnavailable, browserLoginFailed, appMisconfigured, noXboxAccount, gameNotOwned,
+    // noProfile, credentialStore
+    expect(checked).toBeGreaterThanOrEqual(12);
   });
 
   it("missingClientId and appNotApproved carry the texts of 11.6", () => {
