@@ -1,205 +1,236 @@
 # Hengst Client design
 
-Design specification for the desktop app (`apps/desktop`, Tauri 2, React, Tailwind CSS v4, shadcn/ui on Base UI). Every UI task builds against this file. Values here are decisions, not suggestions. If a value has to change, change it here in the same commit as the code.
+Design specification for the desktop app (`apps/desktop`, Tauri 2, React, Tailwind CSS v4, shadcn/ui on Base UI). Every UI task builds against this file, and the plan defers to it for every value. Values here are decisions, not suggestions. If a value has to change, change it here in the same commit as the code. Appendix A collects implementation notes that are not part of the design itself.
 
-Scope: v0.1 (phase 4a and 4b). Windows 10/11 x64 only.
+Scope: v0.1 (phase 4a and 4b). Windows 10/11 x64 only. English is US spelling.
 
 ## 1. Direction
 
-Hengst Client is a calm, fast tool that people open several times a day to start a game, often for less than ten seconds. It should feel like a well-made Windows utility: quiet surfaces, readable text, one obvious action, and an immediate response to every click. It must not feel like a game menu, a store or a marketing site: no promotions, no decorative motion, no artwork from the game, nothing that competes with the Play button.
+Hengst Client is a calm, fast tool that people open several times a day to start a game, often for less than ten seconds. It should feel like a well-made Windows utility: quiet surfaces, readable text, one obvious next action, and an immediate response to every click. It must not feel like a game menu, a store or a marketing site: no promotions, no decorative motion, no artwork from the game, nothing that competes with the Play button.
+
+Five lines of direction (design-unslop, step 4):
+
+- **Product:** a launcher that gets a chosen game version running in under ten seconds and shows what it is doing while it works.
+- **Character:** a quiet Windows utility. Native fonts and title bar, mouse-first density, no ornament.
+- **World:** the game's data, not its art: version ids, loader builds, file counts, installer steps, log lines. These are shown exactly as they come, in a typography that makes them easy to scan.
+- **Moments:** two. The Play button that turns from Play into Cancel into Stop while the panel under it shows the real phase and the real file count ("3,402 of 4,118 files", "Step 3 of 6: jarsplitter"); and the live log, readable in both themes at 10,000 lines.
+- **Signature:** the petrol accent marks the single next action on a screen and nothing else. A screen has one accent-filled button at most; the only other accent marks are the active navigation icon and the focus ring.
 
 Rules that follow from this:
 
 - One place may stand out: the start page (4b) with the instance name in large type and the Play button. Everything else stays still.
 - Surfaces are separated by background steps and 1 px lines, not by shadows. No grid of shadowed cards, no gradients, no glass, no glow.
 - No uppercase labels, no eyebrow labels above headings, no numbered markers (01, 02) unless the content is a real sequence (installer steps are), no "→" on buttons or links, no meta strings joined with middle dots.
-- One accent colour, used for the primary action, the selected state and focus. Nowhere else.
+- The accent is used on exactly three kinds of element: the primary action, the selected state of the navigation, and the focus ring (section 2.2).
 - No emojis anywhere. Icons from one set (lucide) are fine.
-- No assets from the game or from other launchers: no Minecraft fonts, textures, blocks, logos, skin renders or colour schemes, and nothing modelled on Lunar Client, Feather, Badlion, Prism Launcher or Modrinth App.
+- No assets from the game or from other launchers: no Minecraft fonts, textures, blocks, logos, skin renders or color schemes, and nothing modeled on Lunar Client, Feather, Badlion, Prism Launcher or Modrinth App.
 
 Mode: this is app UI (design-unslop mode A). It uses a real design system, shadcn/ui, with its tokens remapped to the values below. No marketing "taste" style.
 
-## 2. Colour tokens
+## 2. Color tokens
 
-All colours are CSS custom properties on `:root` (light) and `.dark` (dark) in `apps/desktop/src/styles/index.css` (Task 3). Hex values are authoritative. Neither theme uses pure black or pure white for a surface or for text.
+All colors are CSS custom properties on `:root` (light) and `.dark` (dark) in `apps/desktop/src/styles/index.css` (Task 3). Hex values are authoritative. Neither theme uses pure black or pure white for a surface or for text. `:root` declares `color-scheme: light` and `.dark` declares `color-scheme: dark`, so native scrollbars, text selection handles and form controls follow the theme.
 
 ### 2.1 Token table
 
 | Token | Light | Dark | Use |
 |---|---|---|---|
-| `--bg` | `#F3F4F6` | `#121417` | Window background, sidebar, native window background colour at creation |
+| `--bg` | `#F3F4F6` | `#121417` | Window background, sidebar, native window background at creation |
 | `--surface` | `#FAFAFB` | `#1A1D21` | Content column (header and view), log area |
 | `--surface-raised` | `#FDFDFE` | `#22262B` | Inputs, dialogs, popovers, menus, toasts, error panels |
-| `--border` | `#D9DCE1` | `#2E333A` | Hairlines: sidebar edge, header line when scrolled, list header, panel outlines. Decorative, no contrast requirement |
-| `--border-strong` | `#858C96` | `#6E7680` | Boundaries of interactive controls: input, select trigger, checkbox, radio, secondary button, segment; dark-theme outline of level-1 layers |
-| `--text` | `#1A1D21` | `#E7E9EC` | Primary text, icons next to primary text |
-| `--text-muted` | `#59616D` | `#9AA3AE` | Secondary text, help lines, column labels, row meta, inactive nav, icons in nav |
+| `--border` | `#D9DCE1` | `#2E333A` | Decorative hairlines: sidebar edge, header line when scrolled, list column header, light-theme outline of floating layers, error panel outline |
+| `--border-strong` | `#B9BEC6` | `#454C55` | Decorative: dark-theme outline of floating layers, separators inside menus, scrollbar thumb |
+| `--border-control` | `#858C96` | `#6E7680` | The boundary of an interactive control when it is its only boundary: input, select and combobox trigger, checkbox, segment, secondary button, switch track (off), account chip |
+| `--text` | `#1A1D21` | `#E7E9EC` | Primary text, icons next to primary text, selected-row check, links, progress fill, checkbox and switch "on" fill |
+| `--text-muted` | `#59616D` | `#9AA3AE` | Secondary text, help lines, column labels, row meta, inactive nav, switch thumb (off) |
 | `--text-disabled` | `#8B929C` | `#6B737D` | Text and icons of disabled controls only |
-| `--accent` | `#1D6F80` | `#4FB0C2` | Primary button fill, selected check icon, active nav icon, links, progress fill, "Recommended" badge text |
+| `--accent` | `#1D6F80` | `#4FB0C2` | Primary button fill, active nav icon. Nothing else |
 | `--accent-hover` | `#185E6D` | `#69BECD` | Primary button hover |
 | `--accent-pressed` | `#134E5B` | `#86CCD8` | Primary button pressed |
-| `--on-accent` | `#F6FBFC` | `#0B1A1E` | Text and icons on `--accent`, `--accent-hover`, `--accent-pressed` |
+| `--on-accent` | `#F6FBFC` | `#0B1A1E` | Text and icons on the three accent fills |
 | `--focus` | `#1D6F80` | `#69BECD` | Focus outline |
-| `--danger` | `#B42318` | `#F0645A` | Destructive button fill, error text, error icons |
-| `--on-danger` | `#FFF7F6` | `#1F0A08` | Text on `--danger` |
+| `--danger` | `#B42318` | `#F4756B` | Destructive button fill, error text, error icons, "Delete" menu item |
+| `--danger-hover` | `#A62016` | `#FF6C61` | Destructive button hover |
+| `--danger-pressed` | `#971D14` | `#FF7468` | Destructive button pressed |
+| `--on-danger` | `#FFF7F6` | `#1F0A08` | Text and icons on the three danger fills |
 | `--warning` | `#8A5A00` | `#E0A93B` | Warning text and icons, warning badge text |
-| `--success` | `#2D7A4E` | `#5BB683` | Success icon in toasts, "Running" state dot |
-| `--hover` | `#EAECEF` | `#2A2F35` | Hover fill of ghost buttons, list rows, menu items, nav items; skeleton blocks; progress track |
-| `--selected` | `#E1EEF1` | `#1D3338` | Selected list row, active nav item, selected segment |
-| `--selection` | `#C4E0E6` | `#2C5560` | Text selection (`::selection`), selected log lines |
+| `--success` | `#2D7A4E` | `#5BB683` | Success icon in toasts, the "running" dot |
+| `--hover` | `#EAECEF` | `#2A2F35` | Hover fill of ghost buttons, list rows, menu items, nav items; skeleton blocks; progress track; disabled button fill |
+| `--selected` | `#E1E4E8` | `#2F343B` | Selected list row, active nav item, selected segment, open chip, pressed secondary and ghost buttons |
+| `--selection` | `#C4E0E6` | `#2C5560` | Text selection (`::selection`) |
 | `--highlight` | `#F6E3A1` | `#5C4A12` | Search hits in the log (`<mark>`) |
 | `--overlay` | `rgb(16 18 20 / 0.40)` | `rgb(0 0 0 / 0.60)` | Backdrop behind dialogs |
-| `--log-error` | `#B42318` | `#F0645A` | Log lines with level ERROR or FATAL (same value as `--danger`) |
-| `--log-warn` | `#8A5A00` | `#E0A93B` | Log lines with level WARN (same value as `--warning`) |
-| `--log-info` | `#1A1D21` | `#E7E9EC` | Log lines with level INFO and lines without a level (same value as `--text`) |
-| `--log-debug` | `#59616D` | `#9AA3AE` | Log lines with level DEBUG or TRACE (same value as `--text-muted`) |
+| `--elevation-1` | `0 8px 24px rgb(16 18 20 / 0.14)` | `0 8px 24px rgb(0 0 0 / 0.45)` | Shadow of floating layers (section 5) |
+| `--log-error` | `#B42318` | `#F4756B` | Log lines with level ERROR or FATAL (same as `--danger`) |
+| `--log-warn` | `#8A5A00` | `#E0A93B` | Log lines with level WARN (same as `--warning`) |
+| `--log-info` | `#1A1D21` | `#E7E9EC` | Log lines with level INFO and lines without a level (same as `--text`) |
+| `--log-debug` | `#59616D` | `#9AA3AE` | Log lines with level DEBUG or TRACE (same as `--text-muted`) |
 
-Two values differ from the plan's draft: `--border-strong` was `#B9BEC6` / `#454C55`, which gives 1.7:1 and 2.1:1 against `--bg` and fails the 3:1 rule for control boundaries (WCAG 1.4.11, produkt-regelwerk A4) and the Task 3 token test. The sharpened values pass (table 2.3).
+Border roles (plan, Task 1): `--border` and `--border-strong` are decorative. They separate regions, rows, panels and dialogs that are also recognizable by surface step, spacing or labels, carry no information on their own, and have no contrast requirement. Every line that is the only boundary of an interactive control uses `--border-control`, which reaches 3:1 against `--bg`, `--surface` and `--surface-raised` (WCAG 1.4.11). shadcn's `--input` points at `--border-control` and never at `--border` or `--border-strong`.
 
-Tokens added beyond the plan's list, because the screens need them: `--text-disabled`, `--hover`, `--selected`, `--selection`, `--highlight`, `--overlay`.
-
-Rules for colour on text inside tinted backgrounds:
-- On `--selection` and `--highlight`, text is always `--text`, whatever its level colour was. The log applies `color: var(--text)` to `::selection` and to `mark`.
-- Accent text (`--accent`) is allowed on `--bg`, `--surface`, `--surface-raised` and `--selected` only.
-- Warning and danger text sit on `--bg`, `--surface` or `--surface-raised` only.
+Rules for text on tinted backgrounds:
+- On `--selection` and `--highlight`, text is always `--text`, whatever its level color was (`::selection` and `mark` set `color: var(--text)`).
+- Warning and danger text sit on `--bg`, `--surface`, `--surface-raised`, `--hover` or `--selected` only.
 
 ### 2.2 Accent
 
-`--accent` is a petrol teal (light `#1D6F80`, HSL about 191°, 63 %, 31 %; dark `#4FB0C2`, desaturated and lighter for dark surfaces). Reason: a cool, technical colour that reads as "tool", stays calm at the low saturation the rules ask for (below 80 %), and keeps 4.5:1 for text both ways. It is deliberately not the grass or creeper greens associated with the game, not the bright green of Modrinth App, and not the saturated blues, purples or reds that other launchers use as their signature. It is also not the AI-default violet or the terracotta/cream pairing.
+`--accent` is a petrol teal (light `#1D6F80`, HSL about 191°, 63 %, 31 %; dark `#4FB0C2`, lighter and less saturated for dark surfaces). Reason: a cool, technical color that reads as "tool", stays calm at the low saturation the rules ask for (below 80 %), and keeps 4.5:1 for text on it in both themes. It is deliberately not the grass or creeper greens associated with the game, not the bright green of Modrinth App, and not the saturated blues, purples or reds that other launchers use as their signature. It is also not the AI-default violet or the terracotta-and-cream pairing.
 
-Where it appears: the primary button of a screen (at most one per screen), the active nav icon, the check icon of the selected row, the selected segment's outline, the focus ring, links, the progress fill and the "Recommended" badge. It never fills a large area, a header, a sidebar or a background.
+The accent appears on exactly three kinds of element (design-unslop F7):
+1. The primary action: the one primary button of a screen or dialog, including the Play button.
+2. The selected state of the navigation: the icon of the active nav item.
+3. The focus ring (`--focus`, the same hue).
+
+Everything that earlier drafts tinted with the accent uses neutral tokens: selected rows and segments (`--selected` fill plus a `--text` check), checkboxes and switches (`--text` fill), links (`--text`, underlined), progress (`--text` fill on `--hover`), and badges (section 10.14). The placeholder brand mark (section 14) is a static image in the accent color; it is not an interface element.
 
 ### 2.3 Contrast (calculated, WCAG 2.x relative luminance)
 
-Text pairs need 4.5:1, control boundaries and the focus ring 3:1. All values computed from the hex values in 2.1; nothing is estimated.
+Text pairs need 4.5:1; control boundaries, focus ring, icons and the progress fill need 3:1. Every value is computed from the hex values in 2.1 with (L1 + 0.05) / (L2 + 0.05).
 
 | Foreground | Background | Light | Dark | Requirement |
 |---|---|---|---|---|
 | `--text` | `--bg` | 15.37 | 15.17 | 4.5 |
 | `--text` | `--surface` | 16.21 | 13.90 | 4.5 |
 | `--text` | `--surface-raised` | 16.64 | 12.51 | 4.5 |
-| `--text` | `--hover` | 14.29 | 11.09 | 4.5 |
-| `--text` | `--selected` | 14.26 | 10.91 | 4.5 |
+| `--text` | `--hover` | 14.29 | 11.09 | 4.5 (also the progress fill on its track, 3) |
+| `--text` | `--selected` | 13.26 | 10.31 | 4.5 |
 | `--text` | `--selection` | 12.20 | 6.70 | 4.5 |
 | `--text` | `--highlight` | 13.23 | 7.07 | 4.5 |
 | `--text-muted` | `--bg` | 5.69 | 7.23 | 4.5 |
 | `--text-muted` | `--surface` | 6.00 | 6.62 | 4.5 |
 | `--text-muted` | `--surface-raised` | 6.16 | 5.96 | 4.5 |
 | `--text-muted` | `--hover` | 5.29 | 5.28 | 4.5 |
-| `--text-muted` | `--selected` | 5.28 | 5.20 | 4.5 |
-| `--text-disabled` | `--surface` | 3.01 | 3.52 | none (WCAG exempts disabled controls); kept at 3 for legibility |
-| `--text-disabled` | `--surface-raised` | 3.09 | 3.17 | as above |
+| `--text-muted` | `--selected` | 4.91 | 4.91 | 4.5 |
+| `--text-disabled` | `--surface` | 3.01 | 3.52 | exempt (WCAG 1.4.3 excludes disabled controls) |
+| `--text-disabled` | `--surface-raised` | 3.09 | 3.17 | exempt |
+| `--text-disabled` | `--hover` (disabled button) | 2.65 | 2.81 | exempt; legibility comes from the visible reason next to every disabled control (10.0) |
 | `--on-accent` | `--accent` | 5.53 | 7.05 | 4.5 |
 | `--on-accent` | `--accent-hover` | 7.03 | 8.34 | 4.5 |
 | `--on-accent` | `--accent-pressed` | 8.87 | 9.86 | 4.5 |
-| `--on-danger` | `--danger` | 6.23 | 6.04 | 4.5 |
-| `--accent` (as text) | `--bg` | 5.25 | 7.31 | 4.5 |
-| `--accent` (as text) | `--surface` | 5.53 | 6.70 | 4.5 |
-| `--accent` (as text) | `--surface-raised` | 5.68 | 6.03 | 4.5 |
-| `--accent` (as text) | `--selected` | 4.87 | 5.26 | 4.5 |
-| `--danger` | `--bg` | 5.97 | 5.87 | 4.5 |
-| `--danger` | `--surface` | 6.30 | 5.38 | 4.5 |
-| `--danger` | `--surface-raised` | 6.47 | 4.84 | 4.5 |
-| `--warning` | `--bg` | 5.39 | 8.71 | 4.5 |
-| `--warning` | `--surface` | 5.68 | 7.98 | 4.5 |
-| `--warning` | `--surface-raised` | 5.83 | 7.18 | 4.5 |
-| `--success` | `--bg` | 4.76 | 7.44 | 4.5 |
-| `--success` | `--surface` | 5.03 | 6.82 | 4.5 |
-| `--success` | `--surface-raised` | 5.16 | 6.13 | 4.5 |
-| `--border-strong` | `--bg` | 3.08 | 4.01 | 3 |
-| `--border-strong` | `--surface` | 3.25 | 3.68 | 3 |
-| `--border-strong` | `--surface-raised` | 3.34 | 3.31 | 3 |
+| `--on-danger` | `--danger` | 6.23 | 6.88 | 4.5 |
+| `--on-danger` | `--danger-hover` | 7.00 | 6.85 | 4.5 |
+| `--on-danger` | `--danger-pressed` | 7.95 | 7.19 | 4.5 |
+| `--accent` (nav icon) | `--selected` | 4.53 | 4.97 | 3 |
+| `--accent` (primary fill) | `--bg` | 5.25 | 7.31 | 3 (plan Task 3 test) |
+| `--accent` (primary fill) | `--surface` | 5.53 | 6.70 | 3 |
+| `--accent` (primary fill) | `--surface-raised` | 5.68 | 6.03 | 3 |
 | `--focus` | `--bg` | 5.25 | 8.65 | 3 |
 | `--focus` | `--surface` | 5.53 | 7.93 | 3 |
 | `--focus` | `--surface-raised` | 5.68 | 7.14 | 3 |
-| `--focus` | `--selected` | 4.87 | 6.22 | 3 |
+| `--focus` | `--hover` | 4.88 | 6.33 | 3 |
+| `--focus` | `--selected` | 4.53 | 5.88 | 3 |
+| `--border-control` | `--bg` | 3.08 | 4.01 | 3 |
+| `--border-control` | `--surface` | 3.25 | 3.68 | 3 |
+| `--border-control` | `--surface-raised` | 3.34 | 3.31 | 3 |
+| `--danger` | `--bg` | 5.97 | 6.68 | 4.5 |
+| `--danger` | `--surface` | 6.30 | 6.12 | 4.5 |
+| `--danger` | `--surface-raised` | 6.47 | 5.51 | 4.5 |
+| `--danger` | `--hover` (highlighted "Delete") | 5.55 | 4.89 | 4.5 |
+| `--danger` | `--selected` | 5.15 | 4.54 | 4.5 |
+| `--warning` | `--bg` | 5.39 | 8.71 | 4.5 |
+| `--warning` | `--surface` | 5.68 | 7.98 | 4.5 |
+| `--warning` | `--surface-raised` | 5.83 | 7.18 | 4.5 |
+| `--success` (icon, dot) | `--bg` | 4.76 | 7.44 | 3 |
+| `--success` | `--surface` | 5.03 | 6.82 | 3 |
+| `--success` | `--surface-raised` | 5.16 | 6.13 | 3 |
+| `--bg` (checkbox check, switch thumb on) | `--text` | 15.37 | 15.17 | 3 |
+| `--text-muted` (switch thumb off) | `--hover` | 5.29 | 5.28 | 3 |
+| Tooltip text `--bg` | `--text` | 15.37 | 15.17 | 4.5 |
+| Brand mark `#1D6F80` | `--bg` | 5.25 | 3.20 | 3 (graphic); the dark margin is small, the mark's own "H" carries it at 5.53 |
 
-The log colours are aliases of the values above, so their contrast on `--surface` (the log background) is the `--danger`, `--warning`, `--text` and `--text-muted` rows. The primary button and the accent icon on `--accent` are covered by the `--on-accent` rows. The focus outline sits 2 px outside the control, so it is measured against the surface around the control, never against the control fill.
+Log colors are aliases, so their contrast on `--surface` (the log background) is the `--danger`, `--warning`, `--text` and `--text-muted` rows (dark error 6.12). The focus outline sits 2 px outside the control and is measured against the surface around it, never against the control fill; inside menus it is drawn inset on the item and measured against `--hover` (row "`--focus` on `--hover`").
 
 ### 2.4 Mapping onto shadcn/ui
 
-shadcn/ui (current docs, https://ui.shadcn.com/docs/theming, read 21.11.2026) defines these variables on `:root` and `.dark`: `--radius`, `--background`, `--foreground`, `--card`, `--card-foreground`, `--popover`, `--popover-foreground`, `--primary`, `--primary-foreground`, `--secondary`, `--secondary-foreground`, `--muted`, `--muted-foreground`, `--accent`, `--accent-foreground`, `--destructive`, `--border`, `--input`, `--ring`, `--chart-1` to `--chart-5`, `--sidebar`, `--sidebar-foreground`, `--sidebar-primary`, `--sidebar-primary-foreground`, `--sidebar-accent`, `--sidebar-accent-foreground`, `--sidebar-border`, `--sidebar-ring`, and exposes them to Tailwind with `@theme inline { --color-background: var(--background); ... }`. The docs assume Tailwind v4 (`@import "tailwindcss"`, `@theme inline`, `@custom-variant dark`).
+shadcn/ui (https://ui.shadcn.com/docs/theming, read 21.11.2026) defines `--radius`, `--background`, `--foreground`, `--card`, `--card-foreground`, `--popover`, `--popover-foreground`, `--primary`, `--primary-foreground`, `--secondary`, `--secondary-foreground`, `--muted`, `--muted-foreground`, `--accent`, `--accent-foreground`, `--destructive`, `--border`, `--input`, `--ring`, `--chart-1` to `--chart-5` and `--sidebar-*` on `:root` and `.dark`, and exposes them to Tailwind with `@theme inline { --color-background: var(--background); ... }`. The docs assume Tailwind v4.
 
-Two names collide with ours: shadcn's `--accent` means "hover fill of menu items and ghost buttons", ours means the brand accent; `--border` means the same in both. Decision: the shadcn variable names are **not** declared on `:root`. Task 3 deletes the `:root` and `.dark` blocks that `shadcn init` writes and maps shadcn's colour utilities directly onto our tokens inside `@theme inline`. Components keep their class names (`bg-primary`, `bg-accent`, `border-input`, ...) and get our values:
+Generated components use both the utilities and, in places, the raw variables. So the shadcn names are declared on `:root` (they reference our tokens and need no `.dark` copy, because the tokens they point at change per theme), with one exception: `--accent` is our brand token, so shadcn's "accent" role (the hover fill of menu items and ghost buttons) exists only as the utility.
 
-| Tailwind theme variable (shadcn name) | Value | So that |
+| shadcn variable on `:root` | Value | Utility in `@theme inline` |
 |---|---|---|
-| `--color-background` | `var(--bg)` | |
-| `--color-foreground` | `var(--text)` | |
-| `--color-card` | `var(--surface)` | |
-| `--color-card-foreground` | `var(--text)` | |
-| `--color-popover` | `var(--surface-raised)` | |
-| `--color-popover-foreground` | `var(--text)` | |
-| `--color-primary` | `var(--accent)` | `bg-primary` is the Hengst accent |
-| `--color-primary-foreground` | `var(--on-accent)` | |
-| `--color-secondary` | `var(--surface-raised)` | |
-| `--color-secondary-foreground` | `var(--text)` | |
-| `--color-muted` | `var(--hover)` | skeleton, tracks |
-| `--color-muted-foreground` | `var(--text-muted)` | |
-| `--color-accent` | `var(--hover)` | shadcn's hover fill; `bg-accent` never means teal |
-| `--color-accent-foreground` | `var(--text)` | |
-| `--color-destructive` | `var(--danger)` | |
-| `--color-destructive-foreground` | `var(--on-danger)` | replaces the `text-white` that shadcn's destructive button uses |
-| `--color-border` | `var(--border)` | |
-| `--color-input` | `var(--border-strong)` | control boundaries reach 3:1 |
-| `--color-ring` | `var(--focus)` | |
+| `--background` | `var(--bg)` | `--color-background: var(--bg)` |
+| `--foreground` | `var(--text)` | `--color-foreground: var(--text)` |
+| `--card` | `var(--surface)` | `--color-card: var(--surface)` |
+| `--card-foreground` | `var(--text)` | `--color-card-foreground: var(--text)` |
+| `--popover` | `var(--surface-raised)` | `--color-popover: var(--surface-raised)` |
+| `--popover-foreground` | `var(--text)` | `--color-popover-foreground: var(--text)` |
+| `--primary` | `var(--accent)` | `--color-primary: var(--accent)` |
+| `--primary-foreground` | `var(--on-accent)` | `--color-primary-foreground: var(--on-accent)` |
+| `--secondary` | `var(--surface-raised)` | `--color-secondary: var(--surface-raised)` |
+| `--secondary-foreground` | `var(--text)` | `--color-secondary-foreground: var(--text)` |
+| `--muted` | `var(--hover)` | `--color-muted: var(--hover)` |
+| `--muted-foreground` | `var(--text-muted)` | `--color-muted-foreground: var(--text-muted)` |
+| (not declared: name taken) | | `--color-accent: var(--hover)` |
+| `--accent-foreground` | `var(--text)` | `--color-accent-foreground: var(--text)` |
+| `--destructive` | `var(--danger)` | `--color-destructive: var(--danger)` |
+| `--destructive-foreground` | `var(--on-danger)` | `--color-destructive-foreground: var(--on-danger)` |
+| `--border` | (our token, same name and meaning) | `--color-border: var(--border)` |
+| `--input` | `var(--border-control)` | `--color-input: var(--border-control)` |
+| `--ring` | `var(--focus)` | `--color-ring: var(--focus)` |
+| `--radius` | `var(--radius-panel)` | radius scale below |
 
-Our own tokens get their own utilities in the same block: `--color-bg`, `--color-surface`, `--color-surface-raised`, `--color-border-strong`, `--color-text`, `--color-text-muted`, `--color-text-disabled`, `--color-accent-hover`, `--color-accent-pressed`, `--color-on-accent`, `--color-focus`, `--color-danger`, `--color-on-danger`, `--color-warning`, `--color-success`, `--color-hover`, `--color-selected`, `--color-selection`, `--color-highlight`, `--color-overlay`, `--color-log-error`, `--color-log-warn`, `--color-log-info`, `--color-log-debug`. In hand-written code, the brand accent is `bg-primary` / `text-primary`; the `accent` utility name belongs to shadcn.
+Not declared: `--chart-*` (no charts in v0.1) and `--sidebar-*` (the sidebar is our own `Sidebar.tsx`). Our own tokens also get utilities in the same block (`--color-surface`, `--color-surface-raised`, `--color-border-strong`, `--color-border-control`, `--color-text`, `--color-text-muted`, `--color-text-disabled`, `--color-accent-hover`, `--color-accent-pressed`, `--color-on-accent`, `--color-focus`, `--color-danger`, `--color-danger-hover`, `--color-danger-pressed`, `--color-on-danger`, `--color-warning`, `--color-success`, `--color-hover`, `--color-selected`, `--color-selection`, `--color-highlight`, `--color-overlay`, `--color-log-error`, `--color-log-warn`, `--color-log-info`, `--color-log-debug`, `--color-bg`). In hand-written code the brand accent is `bg-primary`; the utility name `accent` belongs to shadcn and means the hover fill.
 
-Not mapped: `--chart-*` (no charts in v0.1) and `--sidebar-*` (the sidebar is our own `Sidebar.tsx`, not the shadcn Sidebar block).
+Radius, shadow and font scale in `@theme inline`:
+- `--radius-sm: var(--radius-control)`, `--radius-md: var(--radius-control)`, `--radius-lg: var(--radius-panel)`, `--radius-xl: var(--radius-panel)`, `--radius-2xl: var(--radius-panel)`, `--radius-3xl: var(--radius-panel)`, `--radius-4xl: var(--radius-panel)`.
+- `--shadow-xs: none`, `--shadow-sm: none`, `--shadow-md: var(--elevation-1)`, `--shadow-lg: var(--elevation-1)`, `--shadow-xl: var(--elevation-1)`.
+- `--font-sans`, `--font-display`, `--font-mono` (section 3), `--ease-out` (section 8), `--breakpoint-wide: 1200px`.
 
-Radius: shadcn derives `--radius-sm` to `--radius-xl` from `--radius`. Task 3 sets them explicitly in `@theme inline`: `--radius-sm: var(--radius-control)`, `--radius-md: var(--radius-control)`, `--radius-lg: var(--radius-panel)`, `--radius-xl: var(--radius-panel)`. Generated components that put `rounded-md` on a floating layer (popover, dropdown content, select content, command list container) are edited to `rounded-lg` after `shadcn add`, because floating layers are panels (section 5).
+Task 3 duties beyond declaring tokens (the plan lists these generated-component details as unverified, so they are checked when running `shadcn add`):
+1. Patch generated components where their defaults contradict this document. Known candidates (verify when running `shadcn add`): `focus-visible:ring-[3px] ring-ring/50` and `focus-visible:border-ring` (replace with the outline in section 9), `outline-ring/50` in the base layer, `hover:bg-primary/90` (use `--accent-hover`, `--accent-pressed`), `hover:bg-destructive/90` and `dark:bg-destructive/60` (use `--danger-hover`, `--danger-pressed`), `dark:bg-input/30` (inputs use `--surface-raised` in both themes), `text-white` on the destructive button (use `text-destructive-foreground`), `rounded-md` on floating layers (popover, dropdown, select and command content use `rounded-lg`), `animate-pulse` on the skeleton (remove), and the Sonner wrapper's style variables (`--normal-bg`, `--normal-text`, `--normal-border`, `--border-radius`; verify the names when running `shadcn add`, then point them at `--surface-raised`, `--text`, `--border` / `--border-strong` and `--radius-panel`).
+2. A gate in `src/styles/tokens.test.ts` that runs over `src/components/ui/**`: every `var(--x)` resolves to a property declared in `index.css` (or in Base UI's documented runtime variables such as `--transform-origin`), and none of `ring-ring/`, `outline-ring/`, `dark:`, `shadow-xs`, `shadow-sm` or `rounded-2xl`, `rounded-3xl`, `rounded-4xl` remains, and no raw `var(--accent)` appears (shadcn code that meant its hover role must use the utility).
+3. A lint rule (ESLint `no-restricted-syntax` on class strings, or a test) that bans `bg-accent`, `text-accent` and `border-accent` outside `src/components/ui/`, so hand-written code cannot use shadcn's hover role by mistake when it means the brand accent.
 
-Dark mode: class-based, `.dark` on `<html>`, Tailwind variant `@custom-variant dark (&:where(.dark, .dark *));` (https://tailwindcss.com/docs/dark-mode, as verified in the plan). The theme comes from the backend settings; no next-themes.
-
-Theme variables follow Tailwind v4's namespaces (`--color-*`, `--radius-*`, `--font-*`, `--ease-*`, `--breakpoint-*`; https://tailwindcss.com/docs/theme).
+Dark mode is class-based: `.dark` on `<html>`, Tailwind variant per https://tailwindcss.com/docs/dark-mode. The theme comes from the backend settings; no next-themes. Theme variables follow Tailwind v4's namespaces (https://tailwindcss.com/docs/theme).
 
 ## 3. Typography
 
 ### 3.1 Typefaces
 
-System fonts only. The app runs on Windows only and should feel like a Windows tool; no font file ships in the bundle and nothing is fetched at runtime (the CSP allows no font hosts anyway).
+System fonts only. The app runs on Windows only and should feel like a Windows tool; no font file ships in the bundle and nothing is fetched at runtime (the CSP allows no font hosts).
 
 | Role | Stack | Tailwind variable |
 |---|---|---|
 | UI text | `"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif` | `--font-sans` |
 | Headings 24 px and up | `"Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif` | `--font-display` |
-| Log, device code, error details | `"Cascadia Mono", Consolas, monospace` | `--font-mono` |
+| Log, device code, paths, error details | `"Cascadia Mono", Consolas, monospace` | `--font-mono` |
 
-Licence: Segoe UI Variable, Segoe UI, Cascadia Mono and Consolas are part of Windows (Cascadia Mono ships with Windows 11 and with Windows Terminal; on Windows 10 without it, Consolas applies). They are used from the system, not redistributed, so no licence file is needed. Windows 10 has no Segoe UI Variable; the stack falls back to Segoe UI with the same metrics class, and all sizes below work with both.
+License: Segoe UI Variable, Segoe UI, Cascadia Mono and Consolas are part of Windows (Cascadia Mono ships with Windows 11 and with Windows Terminal). They are used from the system, not redistributed, so no license file is needed. Windows 10 has no Segoe UI Variable and may lack Cascadia Mono; the stacks fall back to Segoe UI and Consolas. All sizes below work with both. The log grid uses `ch` columns, which are about 5 % narrower in Consolas than in Cascadia Mono; columns are sized in `ch` so they stay aligned in either font.
 
-Weights: 400 and 600 only. Hierarchy comes from size and colour. Letter spacing 0 everywhere, except the device code (`0.04em`).
+Weights: 400 and 600 only. Hierarchy comes from size and color. Letter spacing 0 everywhere, except the device code (`0.04em`).
 
 ### 3.2 Scale
 
 Sizes are set in `rem` (root 16 px) so WebView zoom scales them; the px values are at 100 %.
 
-| Role | Size / line height | Weight | Font | Colour | Where |
+| Role | Size / line height | Weight | Font | Color | Where |
 |---|---|---|---|---|---|
-| Start title | 32/40 (2rem/2.5rem) | 600 | display | `--text` | Instance name on the start page (4b), at most two lines, then ellipsis |
+| Start title | 32/40 (2rem/2.5rem) | 600 | display | `--text` | Instance name on the start page (4b); at most two lines, then ellipsis; long unbroken names break anywhere |
 | Page title (h1) | 24/32 (1.5rem/2rem) | 600 | display | `--text` | Header of every view |
 | Section title (h2), dialog title | 18/26 (1.125rem/1.625rem) | 600 | sans | `--text` | Settings sections, dialog titles, empty-state titles |
 | Body | 16/24 (1rem/1.5rem) | 400 | sans | `--text` | Paragraphs, list row name, input text (16 px in fields, FO15), dialog text |
-| Label | 14/20 (0.875rem/1.25rem) | 600 | sans | `--text` | Field labels, button text (default size) |
-| Secondary | 14/20 | 400 | sans | `--text-muted` | Row meta columns, help lines, inline errors (in `--danger`), nav labels, menu items (in `--text`) |
+| Label | 14/20 (0.875rem/1.25rem) | 600 | sans | `--text` | Field labels, button text (default size), ErrorPanel title is 16/24 600 |
+| Secondary | 14/20 | 400 | sans | `--text-muted` | Row meta, help lines, inline errors (in `--danger`), nav labels, menu items (in `--text`), segment labels (in `--text`) |
 | Caption | 13/18 (0.8125rem/1.125rem) | 400 | sans | `--text-muted` | Column labels, timestamps, tooltips, toast description |
 | Badge | 13/18 | 600 | sans | per badge | Badges |
 | Play button | 16/24 | 600 | sans | `--on-accent` | Play button only |
-| Log | 13/20 | 400 | mono | `--log-*` | Log lines, error details |
+| Log, paths, error details | 13/20 | 400 | mono | `--log-*` or `--text-muted` | Log lines, data folder and Java paths, ErrorPanel details |
 | Device code | 28/36 (1.75rem/2.25rem) | 600 | mono | `--text` | Sign-in code view |
 
 The window title is the native Windows title bar ("Hengst Client", plus " (Development build)" in dev builds); the app does not draw its own.
 
-Paragraph text is capped at 72 characters (`max-width: 72ch`). Headings use `text-wrap: balance`, paragraphs `text-wrap: pretty`. `lang` on `<html>` follows the UI language so German compounds hyphenate (`hyphens: auto` on headings and narrow cells).
+Paragraph text is capped at 72 characters (`max-width: 72ch`). Headings use `text-wrap: balance`, paragraphs `text-wrap: pretty`. `lang` on `<html>` follows the UI language; `hyphens: auto` is set on headings and narrow cells, but the layout must hold without hyphenation, because WebView2 may lack the dictionaries: long compounds and unbroken names are covered by `overflow-wrap: anywhere` wherever text can be longer than its box.
 
 ### 3.3 Numbers, dates, units
 
-- `font-variant-numeric: tabular-nums` on every number that changes or lines up: counts, file sizes, progress, memory, remaining time, version columns, timestamps.
-- Numbers through `Intl.NumberFormat` in the UI language: "3.402 Dateien" / "3,402 files". Never raw `toString()`.
-- Units with a non-breaking space: "2048 MB", "1,5 GB" / "1.5 GB". Memory is entered and stored in MB; the hint beside the field shows GB with one decimal.
-- Plurals through i18next plural keys ("1 Datei" / "2 Dateien").
-- Relative time through `Intl.RelativeTimeFormat` up to 6 days ("vor 2 Tagen", "2 days ago"), from 7 days the date via `Intl.DateTimeFormat` with `dateStyle: "medium"`. Never-played instances say "Noch nie gespielt" / "Never played".
-- Version ids and loader versions are shown exactly as the source gives them ("1.14 Pre-Release 1", "47.4.28"), never reformatted.
+- `font-variant-numeric: tabular-nums` on every number that changes or lines up: counts, file sizes, progress, memory, remaining time, version columns, timestamps (see Appendix A for the font check).
+- Numbers through `Intl.NumberFormat` in the UI language: "3.402 Dateien" / "3,402 files".
+- Units with a non-breaking space: "2048 MB", "1,5 GB" / "1.5 GB". Memory is entered and stored in MB; the hint shows GB with one decimal.
+- Plurals through i18next plural keys ("1 Datei" / "1 file").
+- Relative time through `Intl.RelativeTimeFormat` up to 6 days ("vor 2 Tagen" / "2 days ago"); from 7 days the date via `Intl.DateTimeFormat` with `dateStyle: "medium"`. Never-played instances say "Noch nie gespielt" / "Never played".
+- Clock times (game start) via `Intl.DateTimeFormat` with `timeStyle: "short"`: "Läuft seit 14:05" / "Running since 2:05 PM".
+- Remaining durations as minutes and seconds with a unit, never as a bare `mm:ss` that reads like a clock: "Noch 14:32 Min. gültig" / "14:32 left".
+- Version ids and loader versions exactly as the source gives them ("1.14 Pre-Release 1", "47.4.28").
 
 ## 4. Spacing
 
@@ -207,387 +238,431 @@ Paragraph text is capped at 72 characters (`max-width: 72ch`). Headings use `tex
 
 | Token | Value | Tailwind step | Use |
 |---|---|---|---|
-| `--space-1` | 4 px | `1` | Icon to badge, gap between nav items, menu padding |
-| `--space-2` | 8 px | `2` | Label to field, icon to label inside buttons, gap between buttons in a row |
-| `--space-3` | 12 px | `3` | Row and nav item horizontal padding, gap between icon and label in nav |
-| `--space-4` | 16 px | `4` | Button horizontal padding, field to field, gap between header items, between list columns |
-| `--space-5` | 24 px | `6` | Dialog padding, content padding below 1100 px, section title to its content |
-| `--space-6` | 32 px | `8` | Content padding from 1100 px, between groups on the start page |
+| `--space-1` | 4 px | `1` | Icon to badge, menu padding |
+| `--space-2` | 8 px | `2` | Label to field, icon to label in buttons, gap between buttons, gap between nav items, log column gap |
+| `--space-3` | 12 px | `3` | Row and nav item horizontal padding, icon to label in nav |
+| `--space-4` | 16 px | `4` | Button horizontal padding, field to field, gap between header items, list column gap |
+| `--space-5` | 24 px | `6` | Dialog padding, content padding below 1200 px |
+| `--space-6` | 32 px | `8` | Content padding from 1200 px, between groups on the start page |
 | `--space-7` | 48 px | `12` | Between settings sections, top padding of the start page block |
 
-Only these steps are used for layout. Half steps (`0.5`, `1.5`) only inside small controls (badge padding, checkbox). Inside a group the gap is smaller than between groups.
+Only these steps are used for layout. Half steps (`0.5`, `1.5`) only inside small controls (badge padding). Inside a group the gap is smaller than between groups.
 
 ## 5. Shape, borders, elevation
-
-Radii (two steps on purpose, plus pills):
 
 | Token | Value | Applies to |
 |---|---|---|
 | `--radius-control` | 6 px | Buttons, inputs, select triggers, segments, list rows, nav items, menu items, tooltips, the device-code box, skeleton blocks |
 | `--radius-panel` | 10 px | Dialogs, popovers, menus, select and combobox content, toasts, error panels, the log area |
-| `--radius-pill` | 999 px | Account chip, badges, progress bar and track, the initial circle |
+| `--radius-pill` | 999 px | Account chip, badges, progress bar and track, switch, the initial circle |
 
-Nesting: a panel (10) with 4 px padding contains items with 6; a dialog (10) with 24 px padding contains controls with 6.
+One exception: the checkbox box uses 4 px (6 px on a 20 px box reads as a circle). Nesting: a panel (10) with 4 px padding contains items with 6; a dialog (10) with 24 px padding contains controls with 6.
 
-Borders are 1 px. The focus outline is 2 px. The selected segment carries a 1 px inset outline in `--accent`.
+Borders are 1 px. The focus outline is 2 px. The selected segment carries a 1 px inset outline in `--text`.
 
 Elevation has two levels:
 
 | Level | What | Light | Dark |
 |---|---|---|---|
 | 0 | Sidebar, header, views, lists, the log area, inline panels | No shadow. Separation by `--bg` / `--surface` and 1 px `--border` | Same |
-| 1 | Popover, dropdown menu, select content, combobox, dialog, alert dialog, toast, tooltip | 1 px `--border` plus `0 8px 24px rgb(16 18 20 / 0.14)` | 1 px `--border-strong` plus `0 8px 24px rgb(0 0 0 / 0.45)` |
+| 1 | Popover, dropdown menu, select content, combobox, dialog, alert dialog, toast, tooltip | 1 px `--border` plus `--elevation-1` | 1 px `--border-strong` plus `--elevation-1` |
 
-Dialogs sit on `--overlay`. Tooltips use inverse colours (background `--text`, text `--bg`, contrast 15.37 / 15.17) and the level-1 shadow without border.
+Dialogs sit on `--overlay`. Tooltips use inverse colors (background `--text`, text `--bg`) and `--elevation-1` without a border.
 
 ## 6. Icons
 
-- Set: lucide (`lucide-react`, ISC licence), the set shadcn uses. No second icon library, no hand-drawn icon paths (the brand mark is the only custom SVG).
-- Stroke width 1.5 (`strokeWidth={1.5}`), set once through a wrapper or default props.
-- Sizes: 18 px for nav items, icon buttons and the Play button; 16 px inside text buttons, menu items, badges, inline errors and toasts. No other sizes.
-- Colour follows the text it sits next to (`currentColor`). Exceptions: the active nav icon and the selected-row check are `--accent`; error icons `--danger`; warning icons `--warning`.
+- Set: lucide (`lucide-react`, ISC license), the set shadcn uses. No second icon library, no hand-drawn icon paths (the brand mark is the only custom SVG).
+- Stroke width 1.5.
+- Sizes: 18 px for nav items, icon buttons and the Play button; 16 px everywhere else (inside text buttons, menu items, badges, inline messages, toasts, the checkbox check). No other sizes.
+- Color follows the text it sits next to (`currentColor`). Exceptions: the active nav icon is `--accent`; error icons `--danger`; warning icons `--warning`; the success icon `--success`.
 - Decorative icons next to a text label get `aria-hidden="true"`.
-- Icon names used: `house` (start page), `boxes` (instances), `scroll-text` (log), `settings` (settings), `play`, `square` (stop), `x` (cancel, close), `plus` (create), `ellipsis` (row actions), `folder-open`, `trash-2`, `check`, `chevron-down`, `chevron-up`, `log-in`, `log-out`, `user-plus`, `copy`, `external-link`, `circle-alert` (error), `triangle-alert` (warning), `info`, `search`, `arrow-down-to-line` (jump to end), `loader-circle` (spinner), `refresh-cw` (retry).
+- Icon names used: `house` (start page), `boxes` (instances), `scroll-text` (log), `settings`, `play`, `square` (stop), `x` (cancel, close), `plus` (create), `ellipsis` (row actions), `folder-open`, `trash-2`, `check`, `chevron-down`, `chevron-up`, `chevron-right` (submenu), `log-in`, `log-out`, `user-plus`, `copy`, `external-link`, `circle-alert` (error), `triangle-alert` (warning), `info`, `search`, `arrow-down-to-line` (jump to end), `loader-circle` (spinner), `refresh-cw` (retry), `wifi-off` (offline caption).
 
-When an icon needs a text label: always, except in these four places, where the icon button has an `aria-label` and a tooltip with the same text:
+An icon needs a text label always, except in these places, where the icon-only button has an `aria-label` and a tooltip with the same text:
 1. Nav items in the collapsed 64 px sidebar.
 2. The row action button ("Aktionen für {{name}}" / "Actions for {{name}}").
 3. The close button in dialog headers ("Schließen" / "Close").
-4. The search hit navigation in the log ("Vorheriger Treffer", "Nächster Treffer").
+4. The search hit navigation in the log ("Vorheriger Treffer" / "Previous match", "Nächster Treffer" / "Next match").
+5. The header primary action in the narrow layout (section 7.3).
 
 ## 7. Window and layout
 
 ### 7.1 Window
 
-- Native Windows title bar, one window, label `main`.
-- Minimum 960 × 600, default 1120 × 720 (logical px). `window-state` restores size and position.
-- The window is created with the background colour `--bg` of the resolved theme, so no white flash.
-- Sizes are in device-independent pixels; Windows display scaling (125 %, 150 %) scales the whole WebView. At 150 % the default window is 1680 × 1080 physical pixels.
+- Native Windows title bar, one window, label `main`. The title bar follows the resolved theme at creation and whenever the theme setting or the system theme changes at runtime (Tauri's window theme setter; check the exact API name in Tauri 2.12).
+- Sizes are the inner (client) size in logical pixels.
+- Minimum: `min(960 × 600, work area minus window frame)`. Default: `min(1120 × 720, 90 % of the work area)`. The saved size (window state) is clamped the same way on restore. So the app fits a 1366 × 768 screen at 125 % scaling (work area about 1093 × 580 logical): the minimum becomes about 960 × 549 and the content column scrolls where needed.
+- The window is created with the background color `--bg` of the resolved theme, so no white flash.
+- Windows display scaling (125 %, 150 %) scales the whole WebView: CSS pixels equal logical pixels, so the layout at a given logical width is identical at every scaling.
+- The layout holds from 720 CSS px wide (section 7.3). Narrower widths only occur through WebView zoom (Ctrl+Plus); zoom up to 150 % is guaranteed to reflow without clipping or horizontal scrolling at the minimum window size.
 
 ### 7.2 Frame
 
 ```
-+--------------------------------------------------------------------------------+
-| Hengst Client                                                    _  []  X      |  native title bar
-+------------------+-------------------------------------------------------------+
-| [H] Hengst Client|  Instanzen                         [+ Instanz anlegen] (S Steve v) |  header 56
-|                  |                                                             |
-|  (house) Spielen |  Name                    Version     Loader         Zuletzt gespielt |
-|  (boxes) Instanz.|  [v] Überleben 1.21      1.21.11     Fabric 0.17.3  vor 2 Tagen  (...) |
-|  (scroll) Log    |      1.20.1 Forge        1.20.1      Forge 47.4.28  Noch nie gespielt (...) |
-|                  |                                                             |
-|                  |                                                             |
-|                  |                                                             |
-|                  |                                                             |
-| (gear) Einstell. |                                                             |
-+------------------+-------------------------------------------------------------+
++---------------------------------------------------------------------------------------+
+| Hengst Client                                                           _  []  X      |  native title bar
++------------------+--------------------------------------------------------------------+
+| [H] Hengst Client|  Instanzen                         [+ Instanz anlegen] (M Mira_K v) |  header 56
+|                  |                                                                    |
+|  (house) Spielen |  Name                       Version     Loader         Zuletzt gespielt |
+|  (boxes) Instanz.|  [v] Überleben 1.21         1.21.11     Fabric 0.17.3  vor 2 Tagen   (...) |
+|  (scroll) Log    |      1.20.1 Forge           1.20.1      Forge 47.4.28  Noch nie gespielt (...) |
+|                  |                                                                    |
+|                  |                                                                    |
+| (gear) Einstell. |                                                                    |
++------------------+--------------------------------------------------------------------+
   sidebar 216, --bg   content column, --surface, padding 32, content max 1120, left-aligned
 ```
 
-1120 × 720 (wide). At 960 × 600 (compact):
+At 1200 px and wider (above). At 960 × 600 (compact):
 
 ```
-+----+---------------------------------------------------------------------------+
-| [H]|  Instanzen                               [+ Instanz anlegen] (S Steve v)   |  header 56
-|    |                                                                           |
-| (h)|  Name                  Version    Loader          Zuletzt gespielt         |
-| (b)|  [v] Überleben 1.21    1.21.11    Fabric 0.17.3   vor 2 Tagen         (...) |
-| (s)|      1.20.1 Forge      1.20.1     Forge 47.4.28   Noch nie gespielt   (...) |
-|    |                                                                           |
-| (g)|                                                                           |
-+----+---------------------------------------------------------------------------+
++----+----------------------------------------------------------------------------+
+| [H]|  Instanzen                                [+ Instanz anlegen] (M Mira_K v)  |  header 56
+|    |                                                                            |
+| (h)|  Name                         Version   Loader          Zuletzt gespielt    |
+| (b)|  [v] Überleben 1.21           1.21.11   Fabric 0.17.3   vor 2 Tagen    (...) |
+| (s)|      1.20.1 Forge             1.20.1    Forge 47.4.28   Noch nie gespielt (...) |
+|    |                                                                            |
+| (g)|                                                                            |
++----+----------------------------------------------------------------------------+
  64    content padding 24
 ```
 
-Breakpoint: one, at 1100 px window width, as Tailwind `--breakpoint-wide: 1100px` (variant `wide:`). Below it the sidebar collapses to 64 px and content padding drops to 24 px. Nothing else changes; there is no mobile layout.
-
 Sidebar:
 - Background `--bg`, 1 px `--border` on its right edge, full window height, does not scroll.
-- Top brand row 56 px high (aligned with the header): mark 24 px, 8 px gap, wordmark "Hengst Client" 16/24 weight 600 `--text`, padded 12 px left. Collapsed: mark only, centred. The brand row is not a button (there is no "home" beyond the first nav item).
-- `<nav aria-label="Hauptnavigation" / "Main">` below with 8 px padding: nav items as `<button>` with `aria-current="page"` on the active one; 40 px high, full width minus 16 px, radius 6, padding 0 12, icon 18 plus 12 px gap plus label 14/20. 4 px gap between items.
-- Order: in 4a "Instanzen", then (pinned to the bottom of the sidebar, 8 px from the edge) "Einstellungen". From 4b: "Spielen" (start page, first, the start view), "Instanzen", "Log", bottom "Einstellungen".
-- States: default label `--text-muted`, icon `--text-muted`; hover `--hover` fill, label `--text`; active `--selected` fill, label `--text` weight 600, icon `--accent`; focus outline. The active state is fill plus weight plus icon colour, not colour alone.
-- Collapsed: items 40 × 40 centred, icon only, `aria-label` and a tooltip to the right with the name.
-- In dev builds a badge "Entwicklungs-Build" / "Development build" sits above the settings item (wide: full badge; collapsed: hidden, the window title says it).
+- Brand row on top, 56 px (aligned with the header): mark 24 px, 8 px gap, wordmark "Hengst Client" 16/24 weight 600 `--text`, 12 px from the left. Collapsed: mark only, centered. The brand row is not a button.
+- `<nav aria-label="Hauptnavigation" / "Main navigation">` below, 8 px padding: nav items are buttons with `aria-current="page"` on the active one; 40 px high, full width minus 16 px, radius 6, padding 0 12, icon 18, 12 px gap, label 14/20. 8 px gap between items (T2).
+- Order: in 4a "Instanzen" / "Instances", then, pinned to the bottom 8 px from the edge, "Einstellungen" / "Settings". From 4b: "Spielen" / "Play" (start page, first, the start view), "Instanzen", "Log", bottom "Einstellungen".
+- States: default label and icon `--text-muted`; hover `--hover` fill, label `--text`; active `--selected` fill, label `--text` weight 600, icon `--accent` (fill, weight and icon color: not color alone); focus outline; pressed `--selected`.
+- Collapsed: items 40 × 40 centered, icon only, `aria-label` and a tooltip to the right with the name.
+- Dev builds: a badge "Entwicklungs-Build" / "Development build" above the settings item (wide only; collapsed, the window title says it).
 
 Header (top of the content column):
-- 56 px, background `--surface`, horizontal padding equal to the content padding. h1 (24/32) on the left, vertically centred, truncated with ellipsis.
-- On the right, in this order: the view's primary action (if any), 16 px gap, the account chip. The header is sticky; when the content below is scrolled, a 1 px `--border` line appears at its bottom (no shadow, no animation).
+- 56 px, background `--surface`, horizontal padding equal to the content padding. h1 on the left, vertically centered, one line with ellipsis (tooltip with the full title when truncated).
+- On the right: the view's primary action (if any), 16 px gap, the account chip. The h1 always keeps at least 160 px; the right group gives way first (section 7.3).
+- The header is sticky; when the content below is scrolled, a 1 px `--border` line appears at its bottom (no shadow, no animation).
 
 Content:
-- Background `--surface`, padding 32 px (24 below 1100) on left, right and bottom, 8 px from the header to the first content. Content width at most 1120 px, left-aligned (not centred), so wide windows grow empty space on the right instead of stretching rows to unreadable widths.
-- The content column scrolls vertically (`overflow-y: auto`, `overscroll-behavior: contain`); sidebar and header do not. The log view is the exception: the log area itself scrolls and the page does not.
+- Background `--surface`, padding 32 px (24 below 1200) on left, right and bottom, 8 px from the header to the first content. Content width at most 1120 px, left-aligned (not centered): wide windows get empty space on the right instead of rows stretched to unreadable widths.
+- The content column scrolls vertically; sidebar and header do not. The log view is the exception: the log area itself scrolls and the page does not.
 - Density: comfortable desktop density, mouse first. Buttons 40, rows 48, nav items 40, Play 56.
+
+### 7.3 Breakpoints
+
+Two thresholds on the inner window width in CSS px:
+
+| Width | Layout |
+|---|---|
+| 1200 and wider (`wide:`) | Sidebar 216 px, content padding 32 |
+| 720 to 1199 | Sidebar 64 px (icon rail), content padding 24 |
+| below 720 (only by zoom) | Narrow: as above, plus the instance list hides "Zuletzt gespielt" and shows version and loader as two separate spans under the name (16 px gap, no separator); the header primary action becomes icon-only (name in `aria-label` and tooltip); the account chip shows only the initial circle and chevron; the log toolbar stacks into three rows |
+
+Arithmetic at the two common widths (content width = window minus sidebar minus padding): 960 gives 848 px, 1200 gives 920 px. The instance row grid needs 600 px fixed (12 + 12 padding, slot 24, version 128, loader 168, last played 136, action 40, five 16 px gaps), so the name column is 248 px at 960 and 320 px at 1200.
 
 ## 8. Motion
 
-Product UI after `emil-design-eng` and produkt-regelwerk M1 to M8. One curve, few durations, motion only where it shows what changed.
+Product UI after `emil-design-eng` and produkt-regelwerk M1 to M8. One curve for everything that eases, few durations, motion only where it shows what changed.
 
 | Token | Value | For |
 |---|---|---|
-| `--ease-out` | `cubic-bezier(0.23, 1, 0.32, 1)` | Everything that animates, except progress |
-| `--dur-press` | 120 ms | Colour change on hover and release, Play button scale |
+| `--ease-out` | `cubic-bezier(0.23, 1, 0.32, 1)` | Everything that animates, except the three linear cases below |
+| `--dur-press` | 120 ms | Color change on hover and release, Play button scale, switch thumb |
 | `--dur-popover-in` | 160 ms | Popover, dropdown menu, select, combobox, tooltip enter |
 | `--dur-popover-out` | 120 ms | The same, exit (25 % shorter) |
 | `--dur-dialog-in` | 220 ms | Dialog and alert dialog enter, overlay fade in |
 | `--dur-dialog-out` | 160 ms | The same, exit (27 % shorter) |
-| `--dur-progress` | 200 ms, `linear` | Progress fill |
+| `--dur-progress` | 200 ms, linear | Progress fill |
 
-The curve differs from the plan's draft `cubic-bezier(0.2, 0, 0, 1)`: that curve starts with a flat tangent (dy/dx = 0 at t = 0), so it behaves like an ease-in at the start and delays the first visible movement, which M3 and `emil-design-eng` rule out for UI. `cubic-bezier(0.23, 1, 0.32, 1)` is the strong ease-out produkt-regelwerk M3 names.
+Exceptions to the one curve: the progress fill is linear (constant motion), the button spinner rotates linearly (800 ms per turn), and Sonner toasts keep Sonner's own easing and timing (occasional, its swipe needs its physics).
 
-What animates and how:
-- Pressed state: on `:active` the fill switches to the pressed colour immediately (0 ms, well inside the 100 ms of Z1); the return transitions `background-color, color, border-color` over `--dur-press`. Hover colour changes use the same transition. Never `transition: all`.
-- Play button only: `transform: scale(0.98)` while pressed, `--dur-press`, `--ease-out`.
-- Popover, menu, select, combobox, tooltip: `opacity 0 → 1` and `scale 0.97 → 1` from the trigger (`transform-origin: var(--transform-origin)`, which Base UI provides), `--dur-popover-in`; exit reverses with `--dur-popover-out`. Tooltips open after 500 ms of hover; once one tooltip has been shown, the next opens with no delay and no animation for 300 ms (skip-delay).
-- Dialog: overlay opacity, panel `opacity 0 → 1` and `scale 0.97 → 1` from the centre, `--dur-dialog-in`; exit `--dur-dialog-out`.
-- Progress fill: `transform: scaleX(fraction)` with `transform-origin: left`, `--dur-progress` linear (the plan's "width 200 ms linear", done with transform so only transform animates).
-- Toasts: Sonner's own enter, exit and swipe motion, unchanged (occasional, swipe needs its physics).
-- Button spinner: `loader-circle` rotating, 800 ms per turn, linear, only while a request is actually running.
+The curve differs from the plan's draft `cubic-bezier(0.2, 0, 0, 1)`: that curve starts with a flat tangent (its first control point is (0.2, 0), so dy/dx = 0 at t = 0) and delays the first visible movement, which M3 and `emil-design-eng` rule out for UI. `cubic-bezier(0.23, 1, 0.32, 1)` is the strong ease-out produkt-regelwerk M3 names.
+
+What animates:
+- Pressed state: the fill switches to the pressed color immediately on pointer-down (0 ms, inside the 100 ms of Z1); the return to rest or hover transitions `background-color, color, border-color` over `--dur-press`. Hover color changes use the same transition. Never `transition: all`.
+- Play button only: `scale(0.98)` while pressed, `--dur-press`.
+- Popover, menu, select, combobox, tooltip opened by pointer: opacity 0 to 1 and scale 0.97 to 1 from the trigger, `--dur-popover-in`; exit reverses over `--dur-popover-out`. Tooltips open after 500 ms of hover; once one has been shown, the next opens without delay and without animation for 300 ms.
+- Dialog opened by pointer: overlay opacity; panel opacity 0 to 1 and scale 0.97 to 1 from the center, `--dur-dialog-in`; exit over `--dur-dialog-out`.
+- Progress fill: `scaleX(fraction)` from the left edge over `--dur-progress`.
+- Switch thumb: `translateX` over `--dur-press` (pointer only).
+- Button spinner: rotates only while a request is actually running.
 
 What never animates:
-- View switches (sidebar navigation), the header border, list loads, list updates, sorting, selection of a row, the active nav item, theme and language switches, settings changes.
-- Anything opened by keyboard: a menu, popover or select opened with Enter, Space or arrow keys appears without transition. Implementation: `pointerdown` sets `data-input="pointer"` on `<html>`, `keydown` sets `data-input="keyboard"`; under `[data-input="keyboard"]` the popover and menu transitions are `none`. Dialogs keep their animation (they open rarely).
-- Skeletons: static blocks in `--hover`, no pulse, no shimmer. They appear only if loading takes longer than 200 ms (L2).
-- No loops other than the button spinner, no bounce, no spring overshoot, no entrance choreography, no stagger.
+- View switches, the header border, list loads, list updates, sorting, row selection, the active nav item, theme and language switches, settings changes, dialog height changes between sign-in phases.
+- Anything opened or toggled by keyboard: menus, popovers, selects, comboboxes, tooltips and dialogs opened with Enter, Space, arrow keys or the Delete key appear and disappear without transition; the switch thumb jumps.
+- Skeletons: static blocks in `--hover`, no pulse, no shimmer, shown only if loading takes longer than 200 ms (L2).
+- No loops other than the spinner, no bounce, no spring overshoot, no entrance choreography, no stagger.
 
-`prefers-reduced-motion: reduce`: all transforms are dropped (no scale on press, popovers and dialogs); popovers, menus, dialogs and the overlay only fade, 80 ms; the progress fill jumps without transition; the button spinner stands still (the button text already says what is happening); Sonner toasts fade only (CSS override on `[data-sonner-toast]`: `transition: opacity 80ms`).
+`prefers-reduced-motion: reduce`: all transforms are dropped (no press scale, no scale on popovers and dialogs, no thumb travel); popovers, menus, dialogs and the overlay only fade, 80 ms; the progress fill jumps; the button spinner is hidden (the button label already says what is happening); Sonner toasts only fade, 80 ms.
 
 Every new animation is checked with `~/.claude/skills/review-animations/SKILL.md` in the task that adds it.
 
 ## 9. Focus
 
-- `:focus-visible` shows `outline: 2px solid var(--focus); outline-offset: 2px;`. Never removed, never replaced by a colour change alone. Mouse clicks do not show it.
-- The outline sits outside the control, so it is visible on accent and danger fills too (measured against the surrounding surface, table 2.3).
-- Inside menus, comboboxes and selects the highlighted item is shown with `--hover` fill (keyboard and pointer alike); the outline is not drawn on items inside a listbox.
+- `:focus-visible` shows a 2 px solid `--focus` outline at 2 px offset. Never removed, never replaced by a color change alone. Pointer clicks do not show it.
+- The outline sits outside the control, so it is visible on accent and danger fills (measured against the surrounding surface, table 2.3).
+- Items inside menus, selects, comboboxes and command lists: the pointer highlight is a `--hover` fill. When the item is highlighted by keyboard, it additionally shows the 2 px `--focus` outline inset (offset -2 px), because the fill alone is 1.16:1 (light) and 1.13:1 (dark) against `--surface-raised` and fails 3:1.
 - List rows show the outline on the whole row.
-- Focus is never hidden under the sticky header: the content column has `scroll-padding-top: 64px`.
+- A focused element is never hidden under the sticky header (scroll padding equal to the header height plus 8 px).
 
 ## 10. Components
 
-Every element the screens need, its shadcn/ui source and its states. "Custom" means built in this repo from shadcn parts. Disabled controls use `--text-disabled` for text and icons and keep their layout; a disabled control always has a visible reason next to it (Z7) and `aria-disabled` plus `aria-describedby` on the reason.
+### 10.0 Common rules
+
+- Disabled controls use `--text-disabled` for text and icons and keep their layout. Every disabled control has a visible reason next to it (Z7), referenced with `aria-describedby`.
+- Hover styles apply only to devices with hover and a fine pointer.
+- Click guard: an action that starts a request blocks a second activation until it resolves (Z2). Where a button changes into an opposite action (Play into Cancel, Starting into Cancel), the new action ignores activations for 600 ms after the change, so the second click of a double click never triggers it.
 
 ### 10.1 Button (shadcn `button`)
 
-Variants and sizes. Height is fixed per size; width follows the text (`min-width`, never fixed `width`). Text 14/20 weight 600, icon 16 with 8 px gap, padding 0 16. Loading: the label changes to the verb with ellipsis ("Wird angelegt…"), a 16 px spinner replaces the leading icon, the width does not change (min-width set from the idle label), and a guard blocks the second click before the first `await` (Z2).
+Height is fixed per size; width follows the text (`min-width`, never a fixed `width`). Text 14/20 weight 600, icon 16 with 8 px gap, padding 0 16. Loading: the label changes to the verb with ellipsis ("Wird angelegt…"), a spinner (10.16) replaces the leading icon, the width does not shrink (min-width from the idle label).
 
 | Variant | Default | Hover | Pressed | Disabled |
 |---|---|---|---|---|
-| `primary` | `--accent` fill, `--on-accent` text | `--accent-hover` | `--accent-pressed` | `--hover` fill, `--text-disabled` text |
-| `secondary` | `--surface-raised` fill, 1 px `--border-strong`, `--text` | `--hover` fill | `--selected` fill | `--surface` fill, `--border` line, `--text-disabled` |
+| `primary` | `--accent` fill, `--on-accent` text | `--accent-hover` | `--accent-pressed` | `--hover` fill, 1 px `--border`, `--text-disabled` text |
+| `secondary` | `--surface-raised` fill, 1 px `--border-control`, `--text` | `--hover` fill | `--selected` fill | `--surface` fill, 1 px `--border`, `--text-disabled` |
 | `ghost` | transparent, `--text` | `--hover` fill | `--selected` fill | `--text-disabled` |
-| `destructive` | `--danger` fill, `--on-danger` text | `--danger` with `filter: brightness(0.92)` (light) / `brightness(1.08)` (dark) | `brightness(0.84)` / `brightness(1.16)` | as primary disabled |
-| `link` | `--accent` text, underline on hover | underline | `--accent-pressed` text | `--text-disabled` |
+| `destructive` | `--danger` fill, `--on-danger` text | `--danger-hover` | `--danger-pressed` | as primary disabled |
+| `link` | `--text`, underline 1 px at 3 px offset | underline 2 px | `--text-muted` | `--text-disabled`, no underline |
 
 | Size | Height | Use |
 |---|---|---|
-| `default` | 40 | All buttons |
+| `default` | 40 | All buttons (the `link` variant inside running text: section 10.15) |
 | `icon` | 40 × 40 | Icon-only buttons (section 6 list), icon 18 |
 | `lg` | 56 | Play button only |
 
-All variants: focus outline (section 9), hover styles only under `@media (hover: hover) and (pointer: fine)`.
-
-At most one `primary` button per screen or dialog. Button rows: secondary actions left of the primary, primary last (right); 8 px gap; rows wrap to two lines rather than truncate German labels (WD29).
+All variants show the focus outline. At most one `primary` button per screen or dialog. Button rows: secondary actions left of the primary, primary last (right), 8 px gap; a row that does not fit wraps to two lines rather than truncating a label (WD29).
 
 ### 10.2 Play button (custom on shadcn `button`, size `lg`)
 
-56 px high, min-width 240 px, radius 6, text 16/24 weight 600, icon 18. One button whose label and variant follow the game state; it never moves or changes height. The state comes from `AppEvent::GameState` and the account and instance state.
+56 px high, min-width 240 px, radius 6, text 16/24 weight 600, icon 18. One button whose label and variant follow the game state; it never moves or changes height.
 
-| State | Label (de / en) | Variant, icon | Action |
-|---|---|---|---|
-| No instance | "Instanz anlegen" / "Create instance" | primary, `plus` | Opens the create dialog |
-| No account | "Anmelden" / "Sign in" | primary, `log-in` | Opens the sign-in dialog |
-| Account needs sign-in again | "Erneut anmelden" / "Sign in again" | primary, `log-in` | Starts sign-in for that account |
-| Ready | "Spielen" / "Play" | primary, `play` | `play(instance_id)` |
-| Starting (click to first event) | "Wird gestartet…" / "Starting…" | primary, spinner, inert (`aria-disabled`) | none (guard) |
-| Preparing | "Abbrechen" / "Cancel" | secondary, `x` | `play_cancel(op)`; progress panel shows below (10.12) |
-| Running | "Beenden" / "Stop" | secondary, `square` | `game_stop()`; a status line above the button reads "Läuft seit 12:04" / "Running since 12:04" with an 8 px `--success` dot |
-| Stopping | "Wird beendet…" / "Stopping…" | secondary, spinner, inert | none |
-| Stopping for 10 s or more | "Wird beendet…" plus a second button "Sofort beenden" / "Force stop" | second button `destructive`, default size, to the right | `game_force_stop()` |
+State precedence, first match wins:
 
-Pressed: fill colour change plus scale 0.98 (section 8). Focus: outline. Disabled is never used on the Play button: every state either acts or explains itself in its label.
+| # | State | Label (de / en) | Variant, icon | On click |
+|---|---|---|---|---|
+| 1 | Stopping | "Wird beendet…" / "Stopping…" | secondary, spinner, inert | nothing; after 10 s a second button "Sofort beenden" / "Force stop" (`destructive`, default size) appears to the right |
+| 2 | Running | "Beenden" / "Stop" | secondary, `square` | stop the game gracefully; a status line above the button: 8 px `--success` dot plus "Läuft seit {{time}}" / "Running since {{time}}" |
+| 3 | Starting (click until the first progress event) | "Wird gestartet…" / "Starting…" | primary, spinner, inert | nothing |
+| 3 | Preparing | "Abbrechen" / "Cancel" | secondary, `x`; 600 ms click guard after the change | cancel the launch; the progress panel shows below (10.12) |
+| 4 | No instance | "Instanz anlegen" / "Create instance" | primary, `plus` | open the create dialog |
+| 5 | Selected instance unreadable or newer format | "Instanz wählen" / "Choose instance" | primary, `boxes` | open the instance switcher; above the button the caption "{{name}} lässt sich nicht starten." / "{{name}} cannot be started." |
+| 6 | No account | "Anmelden" / "Sign in" | primary, `log-in` | open the sign-in dialog; if this build cannot sign in, the dialog shows the explanation in 11.6 |
+| 7 | Account needs sign-in again | "Erneut anmelden" / "Sign in again" | primary, `log-in` | start sign-in for that account |
+| 8 | Ready | "Spielen" / "Play" | primary, `play` | start the selected instance |
+
+Selection fallback: when no instance is selected (first start, or the selected one was deleted), the most recently played instance is selected, else the first in list order.
+
+After the game exits: exit code 0 returns to Ready silently. A non-zero exit shows an ErrorPanel under the button: title "Das Spiel wurde unerwartet beendet" / "The game closed unexpectedly", body "Im Log steht, was passiert ist." / "The log shows what happened.", action "Log anzeigen" / "Show log". It stays until the next launch or until dismissed with "Schließen" / "Dismiss" (ghost).
+
+Pressed: fill change plus scale 0.98. Focus: outline. The Play button is never `disabled`: every state either acts or explains itself in its label.
 
 ### 10.3 Account chip and account menu (custom chip on shadcn `dropdown-menu`)
 
-Chip: a button, 40 px high, radius pill, `secondary` colours, padding 4 12 4 4: an initial circle (32 px, `--hover` fill, first letter of the player name, 14/20 weight 600 `--text`), 8 px gap, the player name 14/20 (`max-width: 16ch`, ellipsis; player names have at most 16 characters), 4 px gap, `chevron-down` 16. If the selected account needs sign-in again, a warning badge "Erneut anmelden" follows the name. `aria-label`: "Konto: {{name}}" / "Account: {{name}}"; `aria-haspopup="menu"`.
+Chip: a button, 40 px high, radius pill, `--surface-raised` fill, 1 px `--border-control`, padding 4 12 4 4: initial circle (32 px, `--hover` fill, first letter of the player name, 14/20 weight 600 `--text`), 8 px gap, the player name 14/20 (`max-width: 208px`, which fits 16 wide characters; ellipsis plus tooltip beyond), 4 px gap, `chevron-down` 16. If the selected account needs sign-in again, a warning badge "Erneut anmelden" / "Sign in again" follows the name. Accessible name "Konto: {{name}}" / "Account: {{name}}". States: hover `--hover`, pressed and open `--selected`, focus outline.
 
-No account: the chip is a plain `secondary` button "Anmelden" / "Sign in" with `log-in` icon, opening the sign-in dialog. If the build cannot sign in (`can_sign_in` false), the chip still opens the menu, where "Konto hinzufügen" is disabled and a caption below it explains: "In diesem Build ist keine Microsoft-Anmeldung eingerichtet." / "This build has no Microsoft sign-in configured."
+No account: the chip is a `secondary` button "Anmelden" / "Sign in" (`log-in`) that opens the sign-in dialog. If the build cannot sign in (`can_sign_in` false), it opens the menu instead, where "Konto hinzufügen" is disabled and a caption below explains: "In diesem Build ist keine Microsoft-Anmeldung eingerichtet." / "This build has no Microsoft sign-in configured."
 
-Menu (DropdownMenu, `align="end"`, width 280, radius 10, padding 4, items 40 px, radius 6):
-1. Radio group of accounts: name, `check` 16 in `--accent` on the selected one, warning badge "Erneut anmelden" where needed. Choosing an account selects it; choosing one that needs sign-in starts sign-in for it. The dev account (dev builds only) carries the badge "Entwicklungs-Build".
+Menu (DropdownMenu, aligned to the chip's right edge, `width: max-content`, `min-width: 280px`, `max-width: 360px`, radius 10, padding 4, items 40 px, radius 6, padding 0 12):
+1. Radio group of accounts: a 16 px check slot (check `--text` on the selected one), 8 px gap, name, warning badge "Erneut anmelden" where needed. Choosing an account selects it; choosing one that needs sign-in starts sign-in for it. The dev account (dev builds only) carries the badge "Entwicklungs-Build" / "Development build".
 2. Separator.
 3. "Konto hinzufügen" / "Add account" (`user-plus`).
-4. Submenu "Abmelden" / "Sign out" (`log-out`) listing one item per account; choosing one opens the remove dialog. Hidden when there are no accounts.
+4. Submenu "Abmelden" / "Sign out" (`log-out`, `chevron-right`) with one item per account; choosing one opens the remove dialog. Hidden when there are no accounts.
 
-States: chip default, hover, pressed, focus, open (`--selected` fill while the menu is open). Menu items: default, highlighted (`--hover`), disabled.
+Menu items are adjacent full-width targets without gaps; T2's 8 px spacing applies between separate controls, not between items of one list (menus, list rows).
 
 ### 10.4 Instance list row (custom `<li>` with a button)
 
-48 px high, radius 6, padding 0 12, full content width. The row is a `<button aria-pressed>` that selects the instance; the action button is a sibling, not nested.
+48 px high, radius 6, padding 0 12, full content width. The row is a button that selects the instance and carries `aria-current="true"` when selected; the action button is a sibling, not nested.
 
-Columns (CSS grid, 16 px column gap): selection slot 24 px (`check` 18 `--accent` when selected) | name, `minmax(0, 1fr)`, body 16/24 `--text`, one line, ellipsis, full name in `title` | version 140 px, secondary 14/20 tabular | loader 180 px, secondary ("Fabric 0.17.3", "Kein Loader" / "No loader", Forge version shown as "Forge 47.4.28") | last played 160 px, caption 13/18, right-aligned | action button 40 × 40 (`ghost`, `ellipsis`, `aria-label` "Aktionen für {{name}}").
+Columns (CSS grid, 16 px gap): check slot 24 px (`check` 18 in `--text` when selected) | name `minmax(0, 1fr)`, body 16/24 `--text`, one line, ellipsis, `overflow-wrap: anywhere`, the full name in a tooltip when truncated (keyboard focus shows it too) | version 128 px, secondary, tabular | loader 168 px, secondary ("Fabric 0.17.3", "Kein Loader" / "No loader", "Forge 47.4.28") | last played 136 px, caption, right-aligned | action button 40 × 40 (`ghost`, `ellipsis`, "Aktionen für {{name}}" / "Actions for {{name}}"). Narrow layout: section 7.3.
 
-Above the list a column header row (32 px, caption 13/18 `--text-muted`, same grid): "Name", "Version", "Loader", "Zuletzt gespielt", with a 1 px `--border` below. Plain text, not sortable in v0.1.
+Above the list a column header row (32 px, caption, same grid): "Name", "Version", "Loader", "Zuletzt gespielt" / "Last played", 1 px `--border` below. Not sortable in v0.1.
 
-States: default; hover `--hover`; selected `--selected` plus check icon (not colour alone) and `aria-pressed="true"`; focus outline on the row button; pressed `--selected`. Rows for `tooNew` and `broken` instances: name in `--text-muted`, the version and loader cells merged and holding a warning badge "Neuere Version" / "Newer format" or "Nicht lesbar" / "Unreadable", row not selectable (`aria-disabled`, the badge is the reason), action menu with only "Ordner öffnen".
+States: default; hover `--hover`; selected `--selected` plus check (not color alone); focus outline on the row button; pressed `--selected`. Rows for `tooNew` and `broken` instances: name in `--text-muted`, the version and loader cells merged and holding a warning badge "Neuere Version" / "Newer format" or "Nicht lesbar" / "Unreadable", the row is not selectable (`aria-disabled`, described by the badge), and its menu offers only "Ordner öffnen".
 
-Row action menu (DropdownMenu, `align="end"`): "Ordner öffnen" / "Open folder" (`folder-open`), separator, "Löschen" / "Delete" (`trash-2`, text `--danger`).
+Row action menu (DropdownMenu, aligned right): "Ordner öffnen" / "Open folder" (`folder-open`), separator, "Löschen" / "Delete" (`trash-2`, `--danger`). While this instance is preparing or running, "Löschen" is disabled and a caption under it says "Läuft gerade. Beende zuerst das Spiel." / "Currently running. Stop the game first."
 
-No instance cards in v0.1: the instance list is the only presentation (rows read faster and avoid the card-grid look).
+No instance cards in v0.1: the list is the only presentation.
 
 ### 10.5 Version picker (custom combobox on shadcn `popover` + `command`)
 
-Trigger: like an input (40 px, `--surface-raised`, 1 px `--border-strong`, radius 6, padding 0 12), showing the selected version id (16/24) and `chevron-down` 16 at the right; `role="combobox"`, `aria-expanded`. Label above ("Spielversion" / "Game version").
+Label above: "Spielversion" / "Game version". Trigger like an input (40 px, `--surface-raised`, 1 px `--border-control`, radius 6, padding 0 12): selected version id (16/24) and `chevron-down` 16 at the right; combobox role with expanded state.
 
-Popover content: width equals the trigger, radius 10, padding 4: a search input (40 px, `search` icon, placeholder "Suchen" / "Search"), then the list (max-height 320 px, scrolls), items 40 px: version id left, and for non-release entries a caption at the right ("Snapshot", "Beta", "Alpha"). Selected item has `check`. Empty search result: "Keine Version gefunden für „{{query}}“" / "No version matches “{{query}}”" with a ghost button "Filter zurücksetzen" / "Reset filters" when filters hide results.
+Popover content: width of the trigger, radius 10, padding 4: search input (40 px, `search` icon, placeholder "Suchen" / "Search", visible label is the field's own "Spielversion" via `aria-labelledby`), then the list (max-height 320 px, scrolls), items 40 px: version id left, a caption at the right for non-release entries ("Snapshot", "Beta", "Alpha"), check slot 16 px with the check on the selected item. Empty search: "Keine Version gefunden für „{{query}}“" / "No version matches “{{query}}”", plus ghost "Filter zurücksetzen" / "Reset filters" when filters hide results.
 
 Filters: four checkboxes in one row below the trigger (outside the popover, so the active filter stays visible): "Releases", "Snapshots", "Beta", "Alpha"; default Releases only.
 
-States: trigger default, hover (border `--text-muted`, as inputs), focus, open (border `--text-muted`, chevron turns to `chevron-up`), disabled (while versions load: label text "Versionen werden geladen…" / "Loading versions…" in the trigger), error (inline error below with a link button "Erneut versuchen" / "Try again").
+States:
+- Default, hover (border `--text-muted`), focus, open (border `--text-muted`, `chevron-up`).
+- Loading: trigger disabled with "Versionen werden geladen…" / "Loading versions…".
+- Offline or service unreachable with a cached list: the cached list is used; caption under the field with `wifi-off` 16: "Offline: gespeicherte Liste" / "Offline: saved list". Cached list but the refresh failed for another reason: "Gespeicherte Liste, nicht aktuell" / "Saved list, not current".
+- Offline without a cached list: inline error "Keine Verbindung. Die Versionsliste braucht beim ersten Mal Internet." / "No connection. The version list needs the internet the first time." with link button "Erneut versuchen" / "Try again"; the create button is disabled with this text as its reason.
+- Other load error: inline error with "Erneut versuchen".
 
 ### 10.6 Loader picker (custom segments on shadcn `radio-group`) and loader version (shadcn `select`)
 
-Loader: a radio group rendered as separate segments that wrap: "Kein Loader", "Fabric", "Quilt", "Legacy Fabric", "Forge", "NeoForge" (proper names are not translated). Each segment 40 px high, padding 0 16, radius 6, 8 px gap, wraps to a second line when needed. Unselected: `--surface-raised`, 1 px `--border-strong`, text `--text` 14/20 weight 400. Selected: `--selected` fill, 1 px inset `--accent` outline, text weight 600, `check` 16 before the label. Arrow keys move the selection (radio group behaviour), focus outline on the focused segment.
+Loader: a radio group shown as separate segments that wrap: "Kein Loader" / "No loader", "Fabric", "Quilt", "Legacy Fabric", "Forge", "NeoForge" (proper names are not translated). Each segment 40 px high, padding 0 16 0 12, radius 6, 8 px gap, label 14/20 weight 400 `--text` in both states, preceded by a 16 px check slot plus 8 px gap that is always reserved (empty when unselected), so a segment never changes width. Unselected: `--surface-raised`, 1 px `--border-control`. Selected: `--selected` fill, 1 px inset `--text` outline, check `--text` in the slot. Hover `--hover`. Arrow keys move the selection; one tab stop for the group; focus outline on the focused segment.
 
-Loader version: Select, trigger styled like the version picker. Items 40 px: version, then badges "Empfohlen" / "Recommended" or "Instabil" / "Unstable". Preselection: the recommended version. Hidden when "Kein Loader" is selected. Loading: trigger disabled with "Wird geladen…" / "Loading…". No builds for this game version: the select is replaced by the help text from `errors.noLoaderVersions` with its hint in `--warning` (icon `triangle-alert` 16), and the create button is disabled with `aria-describedby` pointing to that text. Fetch error: inline error with "Erneut versuchen".
+The same segment component serves Language and Theme in Settings.
+
+Loader version: Select with label "Loader-Version" / "Loader version", trigger as the version picker. Items 40 px: check slot, version, then a badge "Empfohlen" / "Recommended" or "Instabil" / "Unstable". Preselection: the recommended version. Hidden when "Kein Loader" is selected.
+- Loading: trigger disabled with "Wird geladen…" / "Loading…".
+- No builds for this game version: the select is replaced by the hint from `errors.noLoaderVersions` with `triangle-alert` 16 in `--warning`; the create button is disabled and described by that text.
+- Offline: "Keine Verbindung. Loader-Versionen können gerade nicht geladen werden." / "No connection. Loader versions cannot be loaded right now." with "Erneut versuchen".
+- Other error: inline error with "Erneut versuchen".
 
 ### 10.7 Form field (shadcn `input` + `label`)
 
 - Label above the field, 14/20 weight 600, 8 px gap. Never a placeholder as label.
-- Input 40 px, 16/24 text, padding 0 12, `--surface-raised` fill, 1 px `--border-strong`, radius 6. Hover: border `--text-muted`. Focus: outline. Invalid: border `--danger`, `aria-invalid="true"`. Disabled: `--surface` fill, `--border`, `--text-disabled`.
-- Below the field a help line with fixed height 20 px (14/20): help text in `--text-muted`, or the error in `--danger` with `circle-alert` 16 and `id` referenced by `aria-describedby`. Reserved height means nothing moves when an error appears (FO4).
+- Input 40 px, 16/24 text, padding 0 12, `--surface-raised` fill, 1 px `--border-control`, radius 6. Hover: border `--text-muted`. Focus: outline. Invalid: border `--danger` and `aria-invalid`. Disabled: `--surface` fill, `--border`, `--text-disabled`.
+- Help line below with a fixed height of 20 px: help text in `--text-muted`, or the error in `--danger` with `circle-alert` 16, referenced by `aria-describedby`. Nothing moves when an error appears (FO4).
 - Validation on blur; after the first error, live on each keystroke until fixed (FO2). Inputs keep their values after any error (FO13).
+- Commit: settings text fields save on blur and on Enter; Escape restores the saved value.
 - Character counter at the right of the help line from 80 % of the limit ("52/64"), tabular.
-- Numeric fields (memory, 4b): `type="text"` with `inputmode="numeric"`, never `type="number"`.
+- Required fields: every field is required unless its label ends with "(optional)" (FO10). The only optional field in v0.1 is the Java path (behind "Erweitert").
+- Name, search and memory fields: `spellcheck="false"`, `autocomplete="off"`. Numeric fields use `inputmode="numeric"`, never `type="number"`.
 
 ### 10.8 Checkbox (shadcn `checkbox`) and switch (shadcn `switch`)
 
-Checkbox: 16 px box with a 4 px radius (the single exception to the radius table: 6 px on a 16 px box reads as a circle), 1 px `--border-strong`, `--surface-raised` fill; checked: `--accent` fill with `check` 12 px in `--on-accent`. The box sits in a 40 px high clickable label row, label 14/20 to the right, 8 px gap. States: hover (border `--text-muted`), focus outline on the box, disabled (`--border`, `--text-disabled` label).
+Checkbox: 20 px box, radius 4, 1 px `--border-control`, `--surface-raised` fill; checked: `--text` fill with a 16 px `check` in `--bg`. Inside a 40 px high clickable label row, label 14/20 to the right, 8 px gap. States: hover (border `--text-muted`), focus outline on the box, disabled (`--border`, `--text-disabled`).
 
-Switch (settings, 4b: "Beim Spielstart in den Infobereich"): 36 × 20 track, pill; off: `--hover` track with 1 px `--border-strong`, thumb `--text-muted`; on: `--accent` track, thumb `--on-accent`. The whole row (label plus switch) is the target, 40 px high. Track colour transitions over `--dur-press`; the thumb moves with `transform` over `--dur-press` and `--ease-out` (pointer only; with reduced motion or keyboard it jumps).
+Switch: 36 × 20 track, pill. Off: `--hover` track, 1 px `--border-control`, thumb 14 px `--text-muted`. On: `--text` track, thumb `--bg`. The whole row (label plus switch) is the 40 px target. Track color over `--dur-press`; thumb movement per section 8.
 
 ### 10.9 Dialogs (shadcn `dialog`, `alert-dialog`)
 
-- Panel `--surface-raised`, radius 10, padding 24, level-1 elevation, on `--overlay`. Max-height `calc(100dvh - 48px)`; the body scrolls, title and footer stay.
-- Title 18/26 weight 600 as the dialog's accessible name; text 16/24, at most 72ch. Close button (`icon`, `x`, "Schließen") top right in `dialog`, not in `alert-dialog`.
-- Footer: buttons right-aligned, primary or destructive last, 8 px gap, 24 px above.
-- Widths: create instance 560, sign-in 480, confirmations 440.
-- Escape closes and cancels a running operation (sign-in), focus returns to the trigger. Initial focus: first field (create), primary action (sign-in idle), the safe button (confirmations).
-- Confirmations are a simple confirm with named buttons, no typing the name: deleting moves the folder to the Windows recycle bin and signing out leaves the Microsoft account untouched, so both are reversible and typing a name would only slow down a recoverable action. The dialog title is the concrete question, the text names the consequence, the buttons name both outcomes (Z5).
+- Panel `--surface-raised`, radius 10, padding 24, level-1 elevation, on `--overlay`. Max-height `calc(100dvh - 48px)`; the body scrolls, title and footer stay. Anything that appears in the body (an error) scrolls into view when it appears.
+- Title 18/26 weight 600 as the accessible name; long names in titles wrap (`overflow-wrap: anywhere`), never truncate. Text 16/24, at most 72ch. A close button (`icon`, `x`, "Schließen" / "Close") top right in `dialog`, not in `alert-dialog`.
+- Footer: at most two buttons, right-aligned, primary or destructive last, 8 px gap, 24 px above.
+- Widths: create instance 560, sign-in 560, third-party licenses 640, confirmations 440.
+- Closing: Escape closes; it cancels a running operation (sign-in). A pointer-down outside the panel never closes the create and sign-in dialogs (it closes confirmations). Focus returns to the trigger; if the trigger no longer exists, section 13 decides.
+- The create dialog keeps a draft: closing it with entered values and reopening it in the same session restores them (FO13); a successful create clears the draft.
+- Initial focus: first field (create), the primary action (sign-in idle), the safe button (confirmations).
+- Confirmations are a simple confirm with named buttons, no typing a name. Titles are the concrete question, the text names the consequence, the buttons name both outcomes (Z5).
 
 ### 10.10 Toast (shadcn `sonner`)
 
-- Position bottom right, offset 24, width 356, at most 3 visible, newest on top.
-- `--surface-raised`, radius 10, level-1 elevation, padding 12 16, title 14/20 weight 600 `--text`, description 13/18 `--text-muted`, icon 16 (success `check` in `--success`, info `info` in `--text-muted`).
-- Duration 4 s, paused while hovered or focused. `role="status"` (Sonner's live region).
-- Toasts confirm results ("{{name}} angelegt", "Angemeldet als {{name}}", "Einstellungen waren beschädigt und wurden zurückgesetzt"). Errors are never only a toast: an error is shown where it happened (inline or ErrorPanel). No undo action in v0.1 (deletion goes to the recycle bin).
+- Bottom right, 24 px from the edges, width 356, at most 3 visible, newest on top.
+- `--surface-raised`, radius 10, level-1 elevation, padding 12 16, title 14/20 weight 600 `--text`, description 13/18 `--text-muted`, icon 16 (success `check` in `--success`, info `info` in `--text-muted`). Names in toasts wrap, never truncate.
+- 4 s, paused while hovered or focused; Sonner's live region announces them.
+- Toasts confirm results ("{{name}} angelegt", "Angemeldet als {{name}}") and report background events that need no action (settings reset, a version-list refresh that fell back to the saved list). An error that needs the user to act is never only a toast: it appears where it happened. No undo in v0.1.
 
 ### 10.11 ErrorPanel (custom, Task 4) and inline error
 
-ErrorPanel: block, `--surface-raised`, 1 px `--border`, radius 10, padding 16, `role="alert"`. Row 1: `circle-alert` 18 `--danger`, 12 px gap, title 16/24 weight 600 `--text` (what happened). Row 2 (indented to the title): body 14/20 `--text-muted` (what to do). Row 3, 12 px below: actions: "Erneut versuchen" / "Try again" (`secondary`, `refresh-cw`) when `onRetry` is given, the action from `ErrorDto.action` as a second `secondary` button, and a `ghost` toggle "Details" with `chevron-down` / `chevron-up` (`aria-expanded`). Details: `detail` in mono 13/20 in a `--bg` box, radius 6, padding 12, max-height 160 scrolls, with a `ghost` button "Kopieren" / "Copy". Never shows raw codes as the title.
+ErrorPanel: block, `--surface-raised`, 1 px `--border`, radius 10, padding 16, alert role. Row 1: `circle-alert` 18 `--danger`, 12 px gap, title 16/24 weight 600 `--text` (what happened, no full stop). Row 2, indented to the title: body 14/20 `--text-muted` (what to do). Row 3, 12 px below: actions: "Erneut versuchen" / "Try again" (`secondary`, `refresh-cw`) when retry is possible, the action from the error as a second `secondary` button, and a "Details" collapsible (10.15). Details: the `detail` text in mono 13/20 in a `--bg` box, radius 6, padding 12, max-height 160, scrolls, with a `ghost` "Kopieren" / "Copy". The detail text is the English core message in both UI languages: it is diagnostic text for bug reports and is exempt from translation.
 
-Inline error: under a field (10.7) or under a setting: `circle-alert` 16 plus one sentence in `--danger` 14/20.
+Inline error: under a field or setting, `circle-alert` 16 plus one sentence in `--danger` 14/20.
 
-### 10.12 Launch progress panel (custom, 4b, shadcn `progress` for the bar)
+### 10.12 Launch progress panel (custom, 4b, shadcn `progress`)
 
-Sits 24 px below the Play button, width 480 max, appears only in the preparing state; its space is reserved from the moment preparing starts (fixed 120 px block), so nothing jumps between phases.
+24 px below the Play button, width at most 480, only in the preparing state. Its height is fixed at 160 px from the moment preparing starts, so nothing jumps between phases.
 
-- Line 1, phase (body 16/24 `--text`), from `PlayEvent`: "Loader wird aufgelöst" / "Resolving loader", "Installer wird geladen" / "Downloading installer", "Dateien werden geladen" / "Downloading files", "Installation wird geprüft" / "Verifying installation", "Wird installiert" / "Installing", "Spiel wird gestartet" / "Launching game".
-- Line 2 (secondary 14/20 tabular): counts "3.402 von 4.118 Dateien" / "3,402 of 4,118 files", or the installer step "Schritt 3 von 6: jarsplitter" / "Step 3 of 6: jarsplitter" (a real sequence, so numbers are right here).
-- Bar: 6 px, pill, track `--hover`, fill `--accent`, determinate when counts or steps are known (`aria-valuenow`, `aria-valuemax`); during phases without counts the bar is hidden, not looped.
-- Line 3 when an install log exists: link button "Installationsprotokoll öffnen" / "Open install log".
-- `Notice` events appear as caption lines below (13/18 `--text-muted`), at most the last two.
-- Accessibility: the phase line is `aria-live="polite"`; counts are not announced on every change.
-- Failure: the panel is replaced by an ErrorPanel in the same place with "Erneut versuchen".
+- Line 1, phase (16/24 `--text`): "Loader wird aufgelöst" / "Resolving loader", "Installer wird geladen" / "Downloading installer", "Dateien werden geladen" / "Downloading files", "Installation wird geprüft" / "Verifying installation", "Wird installiert" / "Installing", "Spiel wird gestartet" / "Launching game". 4 px below:
+- Line 2 (secondary, tabular): "3.402 von 4.118 Dateien" / "3,402 of 4,118 files", or "Schritt 3 von 6: jarsplitter" / "Step 3 of 6: jarsplitter" (a real sequence). 8 px below:
+- Bar: 6 px, pill, track `--hover`, fill `--text`, determinate when counts or steps are known (value and max exposed); hidden during phases without counts, never looped. 12 px below:
+- When an install log exists: link button "Installationsprotokoll öffnen" / "Open install log" (40 px).
+- Notice events as caption lines at the bottom, at most the last two.
+- The phase line is a polite live region; counts are not announced on every change.
+- Offline: if all files are cached the launch starts normally. Otherwise the panel is replaced by an ErrorPanel "Keine Verbindung" / "No connection", body "Für diese Version fehlen Dateien. Prüfe die Internetverbindung und versuche es erneut." / "Files for this version are missing. Check your internet connection and try again.", with "Erneut versuchen".
+- Failure: the panel is replaced in place by an ErrorPanel with "Erneut versuchen". For `installFailed` and `installStepFailed` it has the second action "Installationsprotokoll öffnen" / "Open install log" when an install log was reported.
 
 ### 10.13 Log view (custom, 4b, Virtuoso inside the log area)
 
 - Log area: `--surface`, 1 px `--border`, radius 10, fills the remaining height of the content, scrolls internally. Line padding 0 12, mono 13/20.
-- Line layout (grid): time `hh:mm:ss` (8ch, `--text-muted`) | level (5ch, the level text as given, in its level colour) | thread (16ch max, ellipsis, `--text-muted`) | message (wraps, `overflow-wrap: anywhere`, in its level colour). Throwable lines are indented by 2ch under their message, same colour. The level is shown as text, so colour is never the only signal.
-- Level colours: ERROR, FATAL `--log-error`; WARN `--log-warn`; INFO and lines without level `--log-info`; DEBUG, TRACE `--log-debug`.
-- Selection: native text selection across lines, `::selection` background `--selection`, text `--text`.
-- Search hits: `<mark>` with `--highlight` background and `--text`; the current hit additionally gets a 1 px `--text` outline.
-- When the user scrolls up, following stops and a `secondary` button "Zum Ende springen" / "Jump to end" (`arrow-down-to-line`) appears at the bottom right inside the log area, 12 px from the edges; at the end, following resumes and the button disappears (no animation).
+- Line grid, 8 px column gap: time `hh:mm:ss` (8ch, `--text-muted`) | level (5ch, the level word as given, in its level color) | thread (16ch max, ellipsis, `--text-muted`) | message (wraps, `overflow-wrap: anywhere`, level color). Throwable lines are indented 2ch under their message, same color. The level word means color is never the only signal.
+- Level colors: ERROR, FATAL `--log-error`; WARN `--log-warn`; INFO and lines without level `--log-info`; DEBUG, TRACE `--log-debug`.
+- Selection: native text selection across lines, `--selection` background, text `--text`.
+- Search hits: `<mark>` with `--highlight` and `--text`; the current hit adds a 1 px `--text` outline.
+- When the user scrolls up, following stops and a `secondary` "Zum Ende springen" / "Jump to end" (`arrow-down-to-line`) appears at the bottom right inside the log area, 12 px from the edges; back at the end, following resumes and the button disappears (no animation).
 
-Toolbar above the log area, one row, 40 px controls, 8 px gaps, 16 px below:
-- Visible label "Im Log suchen" / "Search log" (14/20 weight 600) left of the search input (width 320), then the hit count "12 Treffer" / "12 matches" (secondary, tabular), then icon buttons "Vorheriger Treffer" / "Nächster Treffer" (`chevron-up` / `chevron-down`). Enter and Shift+Enter in the field step through hits. Ctrl+F focuses the field.
-- "Stufen" / "Levels" dropdown (`secondary`, shows "Stufen: 4 von 5" / "Levels: 4 of 5") with checkbox items Fehler, Warnung, Info, Debug, Sonstige.
-- Right-aligned: "Kopieren" / "Copy" (`secondary`, `copy`; copies the filtered lines, redacted by the backend) and "Logdatei öffnen" / "Open log file" (`ghost`, `external-link`).
+Toolbar above the log area, 40 px controls, 8 px gaps, 8 px between rows, 16 px below the last row:
+- Row 1: visible label "Im Log suchen" / "Search log" (14/20 600) left of the search input (width 240), then the hit count "12 Treffer" / "12 matches" (secondary, tabular), then the icon buttons "Vorheriger Treffer" (`chevron-up`) and "Nächster Treffer" (`chevron-down`). Enter and Shift+Enter in the field step through hits; Ctrl+F focuses the field.
+- Row 2: on the left "Stufen" / "Levels" dropdown (`secondary`, label "Stufen: 4 von 5" / "Levels: 4 of 5") with checkbox items "Fehler" / "Error", "Warnung" / "Warning", "Info", "Debug", "Sonstige" / "Other"; on the right "Kopieren" / "Copy" (`secondary`, `copy`, copies the filtered lines, redacted by the backend) and "Logdatei öffnen" / "Open log file" (`ghost`, `external-link`).
+- From a content width of 1200 px the two rows join into one (row 1 left, row 2 right). In the narrow layout the right half of row 2 moves to a third row.
+- Under the toolbar, the run switcher: a ghost select (10.15) "Aktueller Lauf: {{instance}}, seit {{time}}" / "Current run: {{instance}}, since {{time}}" with the option "Letzter Lauf" / "Previous run".
 
 ### 10.14 Badge (shadcn `badge`)
 
-Pill, 20 px high, padding 0 8, 13/18 weight 600, no fill colours beyond these:
+Pill, 20 px high, padding 0 8, 13/18 weight 600:
 
 | Badge | Text | Fill | Border |
 |---|---|---|---|
-| "Empfohlen" / "Recommended" | `--accent` | `--selected` | none |
-| "Instabil" / "Unstable", "Neuere Version", "Nicht lesbar", "Erneut anmelden", "Entwicklungs-Build" | `--warning` | `--surface-raised` | 1 px `--border` |
+| "Empfohlen" / "Recommended" | `--text` | `--hover` | none |
+| "Instabil" / "Unstable", "Neuere Version" / "Newer format", "Nicht lesbar" / "Unreadable", "Erneut anmelden" / "Sign in again", "Entwicklungs-Build" / "Development build" | `--warning` | `--surface-raised` | 1 px `--border` |
 
 Badges carry text, never a dot or an emoji.
 
 ### 10.15 Others
 
-- Skeleton (shadcn `skeleton`, with `animate-pulse` removed): `--hover` fill, radius 6, the exact size of the content it stands for.
-- Tooltip (shadcn `tooltip`): inverse colours, radius 6, padding 4 8, 13/18, max-width 240; only for icon-only buttons and truncated text, never for required information.
-- Separator (shadcn `separator`): 1 px `--border`, 4 px margin in menus.
-- ScrollArea (shadcn `scroll-area`): only inside popovers and dialogs; the content column uses native scrolling. Scrollbar thumb `--border-strong`, track transparent.
-- Progress (shadcn `progress`): see 10.12.
-- Not used: Card, Sheet, Tabs, Kbd, Avatar (the initial circle is custom and does not load images), Sidebar block, Accordion, Carousel.
+- **Skeleton** (shadcn `skeleton`, pulse removed): `--hover` fill, radius 6, the exact size of the content it stands for, shown after 200 ms.
+- **Tooltip** (shadcn `tooltip`): inverse colors, radius 6, padding 4 8, 13/18, max-width 240; for icon-only buttons, truncated names and truncated paths only, never for required information. Opens on hover and on keyboard focus.
+- **Collapsible** (shadcn `collapsible`): a `ghost` button with the label and `chevron-down` (open: `chevron-up`) and expanded state; the content appears below without animation. Used for "Erweitert" / "Advanced" in Settings, "Details" in the ErrorPanel and the license texts.
+- **Ghost select** (shadcn `select` with a ghost trigger): trigger without border or fill, text 14/20 `--text`, `chevron-down` 16, hover `--hover`, 40 px high. Used only for the log run switcher.
+- **In-text link**: inside a paragraph, inherits the paragraph's size, `--text`, underline 1 px at 3 px offset, hover 2 px; the 40 px rule does not apply to links in running text (WCAG 2.5.8 exception). A link that opens a browser ends with `external-link` 16 and the accessible name adds "(öffnet im Browser)" / "(opens in browser)".
+- **Spinner**: lucide `loader-circle` 16 (18 in the Play button), `currentColor`, rotating linearly at 800 ms per turn, `aria-hidden` (the label carries the state); hidden under reduced motion.
+- **Path display**: mono 13/20, one line, truncated in the middle (start and the last folder stay visible), full path in a tooltip and in the accessible name; selectable text.
+- **Separator** (shadcn `separator`): 1 px `--border` (in menus `--border-strong` in dark, `--border` in light), 4 px margin in menus.
+- **ScrollArea** (shadcn `scroll-area`): only inside popovers and dialogs; the content column uses native scrolling (themed through `color-scheme`).
+- Not used: Card, Sheet, Tabs, Kbd, Avatar (the initial circle is custom and loads no images), the Sidebar block, Accordion, Carousel.
 
 ## 11. Screens
 
-Each screen: regions, primary action, states (loading, empty, error, plus specific ones), keyboard path. Tab order on every screen: sidebar nav, then header (primary action, account chip), then content top to bottom, left to right.
+Each screen: regions, primary action, states, keyboard path. Tab order on every screen: sidebar nav, then header (primary action, account chip), then content top to bottom, left to right.
 
-### 11.0 App start
+### 11.0 App start and first run
 
-- `main.tsx` loads `settings_get`, then i18n and theme, then renders. Until then the window shows only `--bg` (no text, no spinner).
-- Loading longer than 1 s: still `--bg`; the skeleton of the shell (sidebar items, header title block) appears.
+- `main.tsx` loads the settings, then i18n and theme, then renders. Until then the window shows only `--bg`.
+- Loading longer than 200 ms: the shell skeleton (sidebar items, header title block) appears.
 - Empty: not applicable (missing settings give defaults).
-- Error (`settings_get` fails even after the broken-file fallback): an ErrorPanel, 480 px wide, horizontally centred, 96 px from the top, on `--bg`, with "Try again". Its text is English when i18n could not be initialised, otherwise in the UI language.
-- Settings were reset: toast once after render.
+- Error (settings cannot be read even after the broken-file fallback): an ErrorPanel, 480 px wide, horizontally centered, 96 px from the top, on `--bg`, with "Erneut versuchen" / "Try again". Its text is English if i18n could not be initialized, otherwise in the UI language.
+- Settings were reset: toast once after render "Einstellungen waren beschädigt und wurden zurückgesetzt" / "Settings were damaged and have been reset".
+- First run (no account, no instance): 4a starts on Instances with its empty state and the chip "Anmelden". From 4b the start page shows the no-instance state with the text "Lege eine Instanz an und melde dich danach mit Microsoft an, um zu spielen." / "Create an instance, then sign in with Microsoft to play."; after the first instance exists, the Play button moves to "Anmelden" by its precedence (10.2). Instance first, account second, because creating an instance works offline and without approval, while sign-in may still be unavailable (11.6).
 
 ### 11.1 Instances (4a; start view in 4a)
 
 ```
-Instanzen                                       [+ Instanz anlegen]  (S Steve v)
--------------------------------------------------------------------------------
-Name                       Version      Loader            Zuletzt gespielt
-[v] Überleben 1.21          1.21.11      Fabric 0.17.3     vor 2 Tagen       (...)
-    1.20.1 Forge            1.20.1       Forge 47.4.28     Noch nie gespielt (...)
-    Alte Welt               [Neuere Version]                                 (...)
+Instanzen                                         [+ Instanz anlegen]  (M Mira_K v)
+------------------------------------------------------------------------------------
+Name                            Version     Loader           Zuletzt gespielt
+[v] Überleben 1.21              1.21.11     Fabric 0.17.3    vor 2 Tagen       (...)
+    1.20.1 Forge                1.20.1      Forge 47.4.28    Noch nie gespielt (...)
+    Alte Welt                   [Neuere Version]                               (...)
 ```
 
-- Header: h1 "Instanzen" / "Instances", primary "Instanz anlegen" / "Create instance" (`plus`) in the header actions slot.
-- Content: column header row, then `<ul>` of rows (10.4), 0 px gap between rows (the hover fill separates them), list grows; the content column scrolls.
-- Loading: column header plus three skeleton rows (name block 40 %, version 80 px, loader 120 px, date 96 px).
-- Empty: the column header is not shown. Left-aligned block at the top of the content, max-width 480: title (h2 18/26) "Noch keine Instanz" / "No instances yet", one line secondary "Eine Instanz ist ein eigener Spielordner mit Version und Loader." / "An instance is its own game folder with a version and a loader.", 16 px, primary button "Instanz anlegen". The header primary is hidden in this state so there is one primary action.
+- Header: h1 "Instanzen" / "Instances"; primary "Instanz anlegen" / "Create instance" (`plus`) in the header.
+- Content: column header row, then the list of rows (10.4), no gap between rows; the content column scrolls.
+- Loading: column header plus three skeleton rows (name 40 %, version 80 px, loader 120 px, date 96 px).
+- Empty: no column header. A left-aligned block at the top of the content, max-width 480: h2 "Noch keine Instanz" / "No instances yet", one line secondary "Eine Instanz ist ein eigener Spielordner mit Version und Loader." / "An instance is its own game folder with a version and a loader.", 16 px, primary "Instanz anlegen". The header primary is hidden in this state (one primary action per screen).
 - Error: ErrorPanel in place of the list with "Erneut versuchen".
-- Many (40): plain scrolling list, no virtualisation (below the 50-row threshold).
-- Keyboard: Tab to the header action, the chip, then the first row; Tab moves row button, its action button, next row. Enter or Space on a row selects it; Enter on the action button opens its menu (arrow keys, Escape closes and focus returns to the action button). Delete key on a focused row opens the delete dialog.
+- Many (40): plain scrolling list, no virtualization (below the 50-row threshold).
+- Long names: 64-character names with no spaces truncate in the row with a tooltip; nothing overflows.
+- Keyboard: Tab to the header action, the chip, then the first row; Tab moves row button, its action button, next row. Enter or Space on a row selects it; Enter on the action button opens its menu (arrows, Escape closes, focus back to the action button). The Delete key on a focused row opens the delete dialog (same rules as the menu item).
 
 ### 11.2 Create instance (dialog, 4a)
 
-Width 560. Fields top to bottom, 16 px apart:
-1. "Spielversion" / "Game version": combobox (10.5), filter checkboxes below.
+Width 560. Title "Instanz anlegen" / "Create instance". Fields top to bottom, 16 px apart:
+1. "Spielversion" / "Game version": combobox with filter checkboxes below (10.5).
 2. "Loader": segments (10.6).
 3. "Loader-Version" / "Loader version": select (hidden for "Kein Loader").
-4. "Name": input, max 64 characters, prefilled from the selection ("1.20.1 Forge") until the user edits it; help line "So heißt die Instanz in der Liste." / "This is how the instance appears in the list."
+4. "Name": input, at most 64 characters, prefilled from the selection ("1.20.1 Forge") until the user edits it; help line "So heißt die Instanz in der Liste." / "This is how the instance appears in the list."
 
 Footer: "Abbrechen" / "Cancel" (`secondary`), "Instanz anlegen" / "Create instance" (`primary`, loading "Wird angelegt…" / "Creating…").
 
-- Loading: version trigger disabled with "Versionen werden geladen…"; loader version select disabled with "Wird geladen…".
-- Empty: version list empty because of filters: the combobox empty text with "Filter zurücksetzen". Loader has no builds: hint and disabled create button (10.6).
-- Error: versions failed to load: inline error under the version field with "Erneut versuchen" (the cached list is used if one exists, with the caption "Gespeicherte Liste, nicht aktuell" / "Saved list, may be outdated"). Create failed: ErrorPanel directly above the footer, all inputs kept, focus on the panel title.
-- Validation: name empty or whitespace: "Gib einen Namen ein." / "Enter a name."; longer than 64: "Höchstens 64 Zeichen." / "At most 64 characters."; line break: removed on paste.
-- Success: dialog closes, toast "{{name}} angelegt" / "{{name}} created", the new row is selected and scrolled into view.
-- Keyboard: focus starts on the version trigger; Tab through filters, loader segments (one tab stop, arrows inside), loader version, name, Cancel, Create. Enter in the name field submits. Escape closes (inputs are discarded; the dialog is short).
+- Loading: version trigger disabled with "Versionen werden geladen…"; loader version disabled with "Wird geladen…".
+- Empty: filters hide every version: the combobox empty text with "Filter zurücksetzen". Loader without builds: hint and disabled create button (10.6).
+- Error: version list failed or offline: 10.5. Create failed: ErrorPanel directly above the footer, all inputs kept, focus moves to the panel title (which scrolls it into view at the minimum window height, where the body scrolls).
+- Validation: name empty or whitespace: "Gib einen Namen ein." / "Enter a name."; longer than 64: "Höchstens 64 Zeichen." / "At most 64 characters."; line breaks are removed on paste.
+- Success: dialog closes, toast "{{name}} angelegt" / "{{name}} created", the new row is selected, scrolled into view and focused.
+- Keyboard: focus starts on the version trigger; Tab through filters, loader segments (one tab stop, arrows inside), loader version, name, Cancel, Create. Enter in the name field submits. Escape closes and keeps the draft (10.9).
 
 ### 11.3 Delete instance (alert dialog, 4a)
 
-Width 440. Title "{{name}} löschen?" / "Delete {{name}}?". Text "Der Ordner mit Welten, Einstellungen und Screenshots wird in den Papierkorb verschoben." / "The folder with worlds, settings and screenshots is moved to the recycle bin." Buttons "Behalten" / "Keep" (`secondary`, initial focus) and "In den Papierkorb" / "Move to recycle bin" (`destructive`, loading "Wird verschoben…" / "Moving…").
+Width 440. Title "{{name}} löschen?" / "Delete {{name}}?". Text "Der Ordner mit Welten, Einstellungen und Screenshots wird in den Papierkorb verschoben." / "The folder with worlds, settings and screenshots is moved to the Recycle Bin." Buttons "Behalten" / "Keep" (`secondary`, initial focus) and "In den Papierkorb" / "Move to Recycle Bin" (`destructive`, loading "Wird verschoben…" / "Moving…").
 
-- Loading: the destructive button shows its loading state, both buttons inert.
-- Error: ErrorPanel inside the dialog above the buttons; the dialog stays open.
-- Success: dialog closes, row disappears without animation, toast "{{name}} ist im Papierkorb" / "{{name}} is in the recycle bin". If it was selected, nothing is selected.
+- Loading: the destructive button shows its loading state; both buttons inert.
+- Error: ErrorPanel inside the dialog above the buttons; the dialog stays open. If the Recycle Bin cannot take the folder (too large for the bin, drive without a bin), the app never deletes permanently: the ErrorPanel says "Ordner konnte nicht in den Papierkorb verschoben werden" / "The folder could not be moved to the Recycle Bin", body "Es wurde nichts gelöscht. Öffne den Ordner, um ihn selbst zu verschieben oder zu löschen." / "Nothing was deleted. Open the folder to move or delete it yourself.", with the action "Ordner öffnen" / "Open folder".
+- Success: dialog closes, the row disappears, toast "{{name}} ist im Papierkorb" / "{{name}} is in the Recycle Bin". Selection fallback per 10.2.
+- Focus after delete: the action button of the next row, else of the previous row, else "Instanz anlegen".
 - Empty: not applicable (opened for one instance).
 - Keyboard: Tab between the two buttons, Enter activates the focused one, Escape keeps.
 
@@ -595,59 +670,80 @@ Width 440. Title "{{name}} löschen?" / "Delete {{name}}?". Text "Der Ordner mit
 
 There is no accounts page; accounts live in the header chip (10.3).
 
-- Loading: the chip shows a skeleton of its shape (40 × 120 pill).
-- Empty: "Anmelden" button (10.3); the Play button on the start page also says "Anmelden".
-- Error (account list failed): the chip becomes a `secondary` button "Konten nicht verfügbar" / "Accounts unavailable" with `triangle-alert`; its menu holds the ErrorPanel text and "Erneut versuchen". The credential store failing does not block the list (plan, review focus 3).
-- Remove dialog (alert dialog, 440): title "{{name}} abmelden?" / "Sign out {{name}}?", text "Die gespeicherte Anmeldung wird von diesem PC entfernt. Dein Microsoft-Konto bleibt unverändert." / "The saved sign-in is removed from this PC. Your Microsoft account stays unchanged.", buttons "Behalten" / "Keep" (initial focus) and "Abmelden" / "Sign out" (`destructive`). Success toast "{{name}} abgemeldet" / "Signed out {{name}}".
-- Keyboard: Tab to the chip, Enter opens the menu, arrows move, Enter selects, the submenu opens with the right arrow; Escape closes and returns focus to the chip.
+- Loading: the chip shows a 40 × 200 pill skeleton.
+- Empty: the "Anmelden" chip; on the start page the Play button also says "Anmelden".
+- Error (account list failed): the chip becomes a `secondary` button "Konten nicht verfügbar" / "Accounts unavailable" with `triangle-alert`; its menu shows the error text and "Erneut versuchen". A failing credential store does not block the list.
+- Remove dialog (alert dialog, 440): title "{{name}} abmelden?" / "Sign out {{name}}?", text "Die gespeicherte Anmeldung wird von diesem PC entfernt. Dein Microsoft-Konto bleibt unverändert." / "The saved sign-in is removed from this PC. Your Microsoft account stays unchanged.", buttons "Behalten" / "Keep" (initial focus) and "Abmelden" / "Sign out" (`destructive`). Success toast "{{name}} abgemeldet" / "Signed out {{name}}". Focus afterward: the chip.
+- Keyboard: Tab to the chip, Enter opens the menu, arrows move, Enter selects, the right arrow opens the submenu; Escape closes and returns focus to the chip.
 
 ### 11.5 Sign-in (dialog, 4a)
 
-Width 480. Title "Konto hinzufügen" / "Add account" in every phase. The body changes per phase; the dialog height may change between phases (no animation).
+Width 560. Title "Konto hinzufügen" / "Add account"; when signing in an existing account again: "{{name}} erneut anmelden" / "Sign in {{name}} again". The body changes per phase; the height may change between phases (no animation). Footer at most two buttons.
 
-| Phase | Body | Buttons (left to right) |
+| Phase | Body | Footer |
 |---|---|---|
-| idle | "Die Anmeldung läuft im Browser bei Microsoft. Hengst Client sieht dein Passwort nicht." / "You sign in with Microsoft in your browser. Hengst Client never sees your password." | ghost "Code stattdessen verwenden" / "Use a code instead", secondary "Abbrechen", primary "Mit Microsoft anmelden" / "Sign in with Microsoft" (`external-link`) |
-| waitingBrowser | "Melde dich im Browser an. Danach geht es hier automatisch weiter." / "Sign in in your browser. This window continues on its own afterwards." | ghost "Code stattdessen verwenden", secondary "Browser erneut öffnen" / "Open browser again", secondary "Abbrechen". No primary: waiting is the state |
-| showingCode | "Öffne microsoft.com/link und gib diesen Code ein." / "Open microsoft.com/link and enter this code."; code box (mono 28/36, `--bg`, radius 6, padding 12 16) with a `secondary` "Code kopieren" / "Copy code" to its right; caption "Noch 14:32 gültig" / "Valid for 14:32" (tabular, updates each second, not announced) | secondary "Abbrechen", primary "microsoft.com/link öffnen" / "Open microsoft.com/link" |
-| completing | "Wird angemeldet…" / "Signing in…" | all inert |
-| failed | ErrorPanel (with "Erneut versuchen", which restarts the same method) | secondary "Schließen" / "Close" |
-| appNotApproved | own block, section 11.6 | secondary "Mehr erfahren" / "Learn more", primary "Schließen" / "Close" |
+| idle | "Die Anmeldung läuft im Browser bei Microsoft. Hengst Client sieht dein Passwort nicht." / "You sign in with Microsoft in your browser. Hengst Client never sees your password." Below it, the link button "Code stattdessen verwenden" / "Use a code instead" | secondary "Abbrechen" / "Cancel", primary "Mit Microsoft anmelden" / "Sign in with Microsoft" (`external-link`) |
+| starting | as idle | the primary shows "Wird geöffnet…" / "Opening…" with spinner, inert; Cancel stays active |
+| waitingBrowser | spinner (16) plus "Melde dich im Browser an. Danach geht es hier automatisch weiter." / "Complete the sign-in in your browser. This window continues on its own afterward."; caption "Wartet höchstens 5 Minuten." / "Waits up to 5 minutes."; link button "Code stattdessen verwenden" | secondary "Abbrechen", secondary "Browser erneut öffnen" / "Open browser again". No primary: waiting is the state |
+| showingCode | "Öffne microsoft.com/link und gib diesen Code ein." / "Open microsoft.com/link and enter this code."; code box (mono 28/36, `--bg`, radius 6, padding 12 16) with `secondary` "Code kopieren" / "Copy code" to its right; caption "Noch 14:32 Min. gültig" / "14:32 left" (tabular, updates each second, not announced) | secondary "Abbrechen", primary "microsoft.com/link öffnen" / "Open microsoft.com/link" |
+| completing | spinner plus "Wird angemeldet…" / "Signing in…" | both inert |
+| failed | ErrorPanel (with "Erneut versuchen", which restarts the same method), copy per the table below | secondary "Schließen" / "Close" |
+| appNotApproved | block in 11.6 | secondary "Mehr erfahren" / "Learn more", primary "Schließen" / "Close" |
 | done | dialog closes, toast "Angemeldet als {{name}}" / "Signed in as {{name}}" | |
 | cancelled | dialog closes, focus to the chip | |
 
-- Loading: idle primary shows "Wird geöffnet…" / "Opening…" between the click and `browserOpened` (guard against double click).
-- Empty: not applicable.
-- Error: the failed phase.
-- Code copied: the copy button label changes to "Kopiert" / "Copied" for 2 s (no toast).
-- Keyboard: initial focus on the primary (idle) or on "Code kopieren" (showingCode); Escape cancels the running login and closes, focus returns to the chip.
+- "Browser erneut öffnen" fails: inline error under the body text "Der Browser ließ sich nicht öffnen. Verwende stattdessen den Code." / "The browser could not be opened. Use a code instead." (the link button below stays).
+- Code copied: the copy button reads "Kopiert" / "Copied" for 2 s (no toast).
+- Signing in again with a different Microsoft account than the one asked for: that account is added and selected as usual; the dialog closes with the toast "Angemeldet als {{new}}. {{old}} ist weiterhin abgemeldet." / "Signed in as {{new}}. {{old}} is still signed out." and the old account keeps its "Erneut anmelden" badge.
+- Loading: the starting and completing phases. Empty: not applicable. Error: the failed phase.
+- Keyboard: initial focus on the primary (idle) or on "Code kopieren" (showingCode); Escape cancels the running login and closes; focus returns to the chip (or to the Play button when opened from it).
+
+Error copy in the failed phase (title without full stop, body, action):
+
+| Code | Title (de / en) | Body (de / en) | Action |
+|---|---|---|---|
+| `network`, `offline` | "Keine Verbindung zu Microsoft" / "Cannot reach Microsoft" | "Prüfe die Internetverbindung und versuche es erneut." / "Check your internet connection and try again." | Try again |
+| `loginDeclined` | "Anmeldung abgelehnt" / "Sign-in declined" | "Die Anmeldung wurde im Browser abgebrochen oder nicht erlaubt. Versuche es erneut, wenn du Hengst Client den Zugriff erlauben willst." / "The sign-in was canceled or not allowed in the browser. Try again if you want to give Hengst Client access." | Try again |
+| `browserLoginTimedOut` | "Die Anmeldung ist abgelaufen" / "The sign-in timed out" | "Im Browser kam innerhalb von 5 Minuten keine Anmeldung an. Starte sie erneut." / "No sign-in arrived from the browser within 5 minutes. Start it again." | Try again |
+| `deviceCodeExpired` | "Der Code ist abgelaufen" / "The code expired" | "Fordere einen neuen Code an und gib ihn auf microsoft.com/link ein." / "Request a new code and enter it at microsoft.com/link." | Try again |
+| `loopbackUnavailable` | "Die Browser-Anmeldung ist gerade nicht möglich" / "Browser sign-in is not possible right now" | "Hengst Client konnte keinen lokalen Anschluss für die Rückmeldung öffnen. Verwende stattdessen den Code." / "Hengst Client could not open a local port for the reply. Use a code instead." | "Code stattdessen verwenden" |
+| `browserLoginFailed` | "Microsoft hat die Anmeldung nicht abgeschlossen" / "Microsoft did not complete the sign-in" | "Versuche es erneut oder verwende stattdessen den Code." / "Try again or use a code instead." | Try again |
+| `appMisconfigured` | "Die Anmeldung ist in diesem Build falsch eingerichtet" / "Sign-in is set up incorrectly in this build" | "Das liegt nicht an deinem Konto. Melde den Fehler mit den Details." / "This is not caused by your account. Report it with the details." | none (Details) |
+| `missingClientId` | "In diesem Build ist keine Microsoft-Anmeldung eingerichtet" / "This build has no Microsoft sign-in configured" | "Verwende einen offiziellen Build von Hengst Client." / "Use an official build of Hengst Client." | none |
+| `noXboxAccount` | "Zu diesem Konto gibt es kein Xbox-Profil" / "This account has no Xbox profile" | "Lege einmalig ein Xbox-Profil an, danach klappt die Anmeldung." / "Create an Xbox profile once, then sign-in works." | "Xbox-Profil anlegen" / "Create Xbox profile" |
+| `gameNotOwned` | "Dieses Konto besitzt Minecraft: Java Edition nicht" / "This account does not own Minecraft: Java Edition" | "Melde dich mit dem Konto an, mit dem du das Spiel gekauft hast." / "Sign in with the account you bought the game with." | Try again |
+| `noProfile` | "Zu diesem Konto gibt es noch kein Spielerprofil" / "This account has no player profile yet" | "Lege auf minecraft.net einen Spielernamen an und versuche es dann erneut." / "Choose a player name on minecraft.net, then try again." | "Profil anlegen" / "Create profile" |
+| `credentialStore` | "Die Anmeldung konnte nicht gespeichert werden" / "The sign-in could not be saved" | "Die Windows-Anmeldeinformationsverwaltung hat den Zugriff verweigert. Versuche es erneut." / "Windows Credential Manager refused access. Try again." | Try again |
+| other | from `errorCopy.ts` (Task 4) | | |
 
 ### 11.6 "Sign-in not available yet" block
 
-Shown inside the sign-in dialog when the error code is `appNotApproved`, instead of the generic ErrorPanel. Not an error style: `info` icon 18 in `--text-muted`, title (18/26) "Anmeldung noch nicht verfügbar" / "Sign-in is not available yet", text (16/24) "Mojang hat die Microsoft-Anmeldung von Hengst Client noch nicht freigegeben. Bis dahin lassen sich keine Konten hinzufügen. Mit deinem Konto ist alles in Ordnung, du musst nichts ändern." / "Mojang has not approved Hengst Client's Microsoft sign-in yet. Until then, accounts cannot be added. Your account is fine, nothing needs to change on your side." In dev builds a caption below: "Entwicklungs-Builds können das Offline-Entwicklungskonto verwenden." / "Development builds can use the offline development account." Buttons as in the table above; "Mehr erfahren" opens `UrlTarget::SignInHelp`.
+Shown inside the sign-in dialog for `appNotApproved`, instead of the generic ErrorPanel. Not an error style: `info` 18 in `--text-muted`, title (18/26) "Anmeldung noch nicht verfügbar" / "Sign-in is not available yet", text (16/24) "Mojang hat die Microsoft-Anmeldung von Hengst Client noch nicht freigegeben. Bis dahin lassen sich keine Konten hinzufügen. Mit deinem Konto ist alles in Ordnung, du musst nichts ändern." / "Mojang has not approved Hengst Client's Microsoft sign-in yet. Until then, accounts cannot be added. Your account is fine, nothing needs to change on your side." Dev builds add a caption: "Entwicklungs-Builds können das Offline-Entwicklungskonto verwenden." / "Development builds can use the offline development account." Buttons as in 11.5; "Mehr erfahren" opens the sign-in help page in the browser.
 
-### 11.7 Settings (4a partial, 4b complete) with About
+### 11.7 Settings with About (4a partial, 4b complete)
 
-Single column, max-width 640, sections 48 px apart, each with an h2 and controls 24 px below it. Labels above controls. Changes save on selection (no save button); if saving takes longer than 400 ms the help line shows "Wird gespeichert…" / "Saving…".
+Single column, max-width 640, sections 48 px apart, each with an h2 and controls 24 px below it. Labels above controls. Choices save on selection, text fields on blur or Enter (no save button); if saving takes longer than 400 ms the help line shows "Wird gespeichert…" / "Saving…".
 
 Sections in order:
 1. "Sprache" / "Language": segments "System", "Deutsch", "English".
-2. "Design" / "Theme": segments "System", "Hell" / "Light", "Dunkel" / "Dark".
-3. "Arbeitsspeicher" / "Memory" (4b): input with `inputmode="numeric"`, suffix "MB", help line "Empfohlen: 2048 bis 4096 MB. Installiert: 16 GB." / "Recommended: 2048 to 4096 MB. Installed: 16 GB.", step buttons are not used (typing is faster), validation 512 to 65,536 with the error "Wähle einen Wert zwischen 512 und 65.536 MB." / "Choose a value between 512 and 65,536 MB." Behind a disclosure "Erweitert" / "Advanced": "Java" (4b): path text in mono 13/20, buttons "Java auswählen…" / "Choose Java…" and "Zurücksetzen" / "Reset".
-4. "Spielstart" / "Launch" (4b): switch "Beim Spielstart in den Infobereich verkleinern" / "Minimise to the notification area when the game starts".
-5. "Datenordner" / "Data folder": path in mono 13/20, `secondary` "Ordner öffnen" / "Open folder".
-6. "Über Hengst Client" / "About Hengst Client": mark 48 px, name 18/26, version (tabular), dev badge if any, "Not an official Minecraft product." (identical in both languages), "Lizenz: GPL-3.0" / "Licence: GPL-3.0", link "Quellcode" / "Source code" (opens the repository via `open_url`), link "Drittlizenzen" / "Third-party licences" (4b). The AboutPanel facts from Task 2 (number of known game versions, newest release and snapshot) as secondary lines.
+2. "Design" / "Theme": segments "System", "Hell" / "Light", "Dunkel" / "Dark". The window title bar follows at once (7.1).
+3. "Arbeitsspeicher" / "Memory" (4b): input with suffix "MB" (width 160), help line "Empfohlen: 2048 bis 4096 MB. Installiert: 16 GB." / "Recommended: 2048 to 4096 MB. Installed: 16 GB." Out of range: "Wähle einen Wert zwischen 512 und 65.536 MB." / "Choose a value between 512 and 65,536 MB." Above the installed memory: saved, with a warning in the help line (`triangle-alert`, `--warning`): "Mehr als installiert. Das Spiel startet dann womöglich nicht." / "More than installed. The game may not start." Then the collapsible "Erweitert" / "Advanced" with:
+   - "Java (optional)" (4b): path display (10.15), or "Automatisch passend zur Spielversion" / "Automatic, matching the game version" when unset; buttons `secondary` "Java auswählen…" / "Choose Java…" (opens the Windows file dialog) and `ghost` "Zurücksetzen" / "Reset" (only when set). After a pick the help line shows spinner plus "Wird geprüft…" / "Checking…"; success shows the detected version as a caption ("Java 21.0.5"); a file that is not `java.exe` or `javaw.exe`: "Wähle eine java.exe oder javaw.exe aus." / "Choose a java.exe or javaw.exe file."; the check fails or times out: "Diese Java-Installation ließ sich nicht starten." / "This Java installation could not be started." In both error cases the previous value stays. Reset returns to automatic without a confirmation.
+4. "Spielstart" / "Launch" (4b): switch "Beim Spielstart in den Infobereich verkleinern" / "Minimize to the notification area when the game starts".
+5. "Datenordner" / "Data folder": path display, `secondary` "Ordner öffnen" / "Open folder".
+6. "Über Hengst Client" / "About Hengst Client": mark 48 px, name 18/26, version (tabular), dev badge if any, "Not an official Minecraft product." (identical in both languages), "Lizenz: GPL-3.0" / "License: GPL-3.0", link button "Quellcode" / "Source code" (opens the repository in the browser), button `secondary` "Lizenzen von Drittanbietern" / "Third-party licenses" (4b, opens 11.10), and the facts from Task 2 as secondary lines (number of known game versions, newest release and snapshot).
 
-- Primary action: none (settings save themselves). This is the one screen without a primary button, on purpose.
-- Loading: skeletons per section (title block 120 px, control block 320 × 40).
-- Empty: not applicable; About facts without data show "Noch keine Versionsliste geladen" / "No version list loaded yet".
-- Error: saving failed: inline error under that control, the control returns to the previous value. Loading About facts failed: inline error with "Erneut versuchen" in that section only.
-- Keyboard: Tab from section to section control; segments are one tab stop each with arrow keys inside; the switch toggles with Space.
+- Primary action: none; settings save themselves (the one screen without a primary button, on purpose).
+- Loading: skeletons per section (title 120 × 26, control 320 × 40).
+- Empty: About facts without data: "Noch keine Versionsliste geladen" / "No version list loaded yet".
+- Error: saving failed: inline error under that control, which returns to its previous value. About facts failed: inline error with "Erneut versuchen" in that section only.
+- Long paths: middle truncation with tooltip (10.15).
+- Keyboard: Tab from control to control; segments are one tab stop each with arrows inside; the switch toggles with Space; the collapsible opens with Enter or Space.
 
 ### 11.8 Start page (4b; start view from 4b)
 
 ```
-Spielen                                                         (S Steve v)
+Spielen                                                          (M Mira_K v)
 
   Überleben mit Freunden 1.21
   1.21.11        Fabric 0.17.3        Zuletzt gespielt vor 2 Tagen
@@ -661,103 +757,141 @@ Spielen                                                         (S Steve v)
   Installationsprotokoll öffnen
 ```
 
-- Header: h1 "Spielen" / "Play", chip on the right, no header action (the Play button is the action).
-- Content: one left-aligned block, 48 px from the top of the content, max-width 640: start title (32/40, two lines max), 8 px, meta line (secondary 14/20: version, loader, last played as three separate spans with 24 px gaps, no separators), 16 px, `ghost` "Instanz wechseln" / "Switch instance" with `chevron-down` (DropdownMenu with the instances as radio items), 32 px, Play button (10.2), 24 px, progress panel or ErrorPanel (10.12), and in the running state a link button "Log anzeigen" / "Show log".
+- Header: h1 "Spielen" / "Play", chip; no header action (the Play button is the action).
+- Content: one left-aligned block, 48 px from the top, max-width 640: start title (32/40, two lines max), 8 px, meta line (secondary 14/20: version, loader, last played as three spans with 24 px gaps, no separators), 16 px, `ghost` "Instanz wechseln" / "Switch instance" with `chevron-down` (DropdownMenu with the instances as radio items; hidden when there is only one instance), 32 px, the Play button (10.2), 24 px, progress panel (10.12) or ErrorPanel, and in the running state a link button "Log anzeigen" / "Show log".
 - Loading: skeleton title (320 × 40), meta (240 × 20), button (240 × 56).
-- Empty: no instance: title "Noch keine Instanz" / "No instances yet", text "Lege eine Instanz an, um zu spielen." / "Create an instance to play.", Play button in its "Instanz anlegen" state. No account: the instance is shown normally, the button says "Anmelden".
-- Error: instance or game state failed to load: ErrorPanel in place of the block with "Erneut versuchen". Launch failed: ErrorPanel below the button, button back to "Spielen".
-- At 600 px window height everything fits without scrolling: 56 header + 48 top + 80 title + 8 + 20 meta + 16 + 40 switch button + 32 + 56 Play + 24 + 120 progress = 500 px.
+- Empty: no instance: h2-sized title "Noch keine Instanz" / "No instances yet" in place of the start title, the first-run text (11.0), Play button in its "Instanz anlegen" state. No account: the instance shows normally, the button says "Anmelden".
+- Error: instance or game state failed to load: ErrorPanel in place of the block with "Erneut versuchen". Launch failure and abnormal exit: 10.2 and 10.12.
+- Height at 960 × 600: 56 header + 48 + 80 title + 8 + 20 meta + 16 + 40 switcher + 32 + 56 Play + 24 + 160 panel = 540 px, 572 px with the 32 px bottom padding; it fits.
 - Keyboard: Tab to "Instanz wechseln", then the Play button. The Play button gets initial focus when the view opens from the sidebar, so Enter plays. No global hotkey.
 
 ### 11.9 Live log (4b)
 
-- Header: h1 "Log", chip. Above the log area the toolbar (10.13). Below the toolbar, a secondary line naming the run: "Aktueller Lauf: Überleben 1.21, seit 12:04" / "Current run: ..." with a `ghost` select to switch to "Letzter Lauf" / "Previous run".
-- Loading: toolbar visible but inert, log area with eight skeleton lines of varying width (40 to 90 %).
-- Empty: no run yet: inside the log area, top-left with 16 px padding, title "Noch kein Log" / "No log yet", text "Starte eine Instanz, dann erscheint ihre Ausgabe hier." / "Start an instance and its output appears here.", primary "Zur Startseite" / "Go to Play". Run without output yet: "Noch keine Ausgabe" / "No output yet" caption. Filter hides everything: "Alle Zeilen sind ausgeblendet." / "All lines are hidden." with `ghost` "Alle Stufen zeigen" / "Show all levels".
-- Error: attach failed: ErrorPanel inside the log area with "Erneut versuchen". Copy failed: inline error under the toolbar.
-- 10,000 lines: virtualised, no layout change.
-- Keyboard: Ctrl+F to search; Tab: search, previous, next, levels, copy, open file, then the log area (focusable, `tabindex="0"`, arrow keys and Page Up/Down scroll, Ctrl+A selects all lines of the current filter, Ctrl+C copies the selection), then "Zum Ende springen" if shown.
+- Header: h1 "Log", chip. Then the toolbar (10.13), the run switcher, the log area.
+- Loading: toolbar visible but inert, eight skeleton lines of varying width (40 to 90 %) in the log area.
+- Empty: no run yet: in the log area, top-left with 16 px padding, title "Noch kein Log" / "No log yet", text "Starte eine Instanz, dann erscheint ihre Ausgabe hier." / "Start an instance and its output appears here.", primary "Spielen öffnen" / "Open Play". Run without output yet: caption "Noch keine Ausgabe" / "No output yet". Filters hide everything: "Alle Zeilen sind ausgeblendet." / "All lines are hidden." with `ghost` "Alle Stufen zeigen" / "Show all levels".
+- Error: attaching failed: ErrorPanel in the log area with "Erneut versuchen". Copy failed: inline error under the toolbar.
+- 10,000 lines: virtualized, no layout change.
+- Keyboard: Ctrl+F to search; Tab: search, previous, next, levels, copy, open file, run switcher, then the log area (focusable; arrows and Page Up/Down scroll, Ctrl+A selects all lines of the current filter, Ctrl+C copies), then "Zum Ende springen" if shown.
 
-### 11.10 Instance detail
+### 11.10 Third-party licenses (4b, dialog)
+
+Opened from About. Dialog width 640, title "Lizenzen von Drittanbietern" / "Third-party licenses". Body: a text line "Hengst Client nutzt diese Bibliotheken. Die vollständigen Texte stehen unter jedem Eintrag." / "Hengst Client uses these libraries. The full texts are under each entry.", then two groups with h3-sized labels (16/24 600) "Rust" and "JavaScript", each a list of collapsible entries (40 px): name, version (tabular, secondary), license id (caption, e.g. "MIT OR Apache-2.0"); expanded, the license text in mono 13/20 in a `--bg` box, max-height 240, scrolls. Footer: primary "Schließen" / "Close". The data is a static file in the bundle; the dialog makes no network request.
+- Loading: five skeleton rows per group.
+- Empty: "Keine Lizenzangaben gefunden. Das ist ein Fehler im Build." / "No license data found. This is a build error." (inline error; the build test keeps this from shipping).
+- Error: ErrorPanel "Lizenzangaben konnten nicht geladen werden" / "License data could not be loaded" with "Erneut versuchen".
+- Keyboard: Tab through entries, Enter expands, Escape closes, focus back to the About button.
+
+### 11.11 Tray and closing while the game runs (4b)
+
+- Tray icon: the brand mark. Tooltip "Hengst Client" when idle, "Hengst Client: {{instance}} läuft" / "Hengst Client: {{instance}} is running" while a game runs.
+- Tray menu (native Windows menu, so native styling): "Hengst Client öffnen" / "Open Hengst Client", "Spiel beenden" / "Stop game" (only while a game runs), separator, "Beenden" / "Quit". Left click on the icon opens the window.
+- When the game starts and "minimize to the notification area" is on, the window hides to the tray. When the game ends, the window is shown again and restored; it is not forced to the foreground (Windows may flash the taskbar button instead).
+- Closing the window while a game runs hides it to the tray (no dialog).
+- "Beenden" while a game runs opens an alert dialog (440): title "Spiel beenden und Hengst Client schließen?" / "Stop the game and quit Hengst Client?", text "Das Spiel wird beendet. Fortschritt seit dem letzten Speichern im Spiel kann verloren gehen." / "The game is stopped. Progress since the game last saved may be lost.", buttons "Weiterspielen" / "Keep playing" (`secondary`, initial focus) and "Spiel beenden und schließen" / "Stop game and quit" (`destructive`). The window is shown first if it was hidden.
+- Loading: the destructive button shows "Wird beendet…" until the game process has exited, then the app quits. Empty: not applicable. Error: if the game does not stop within 10 s, the dialog shows "Das Spiel reagiert nicht" / "The game is not responding" with the destructive button "Sofort beenden und schließen" / "Force stop and quit".
+
+### 11.12 Instance detail
 
 There is no instance detail screen in v0.1. Everything about an instance is in its row, its menu and the start page.
 
 ## 12. Writing
 
-- Two languages, German and English, complete in both; all strings in `src/i18n/{de,en}.json`. German uses informal "du" throughout, never "Sie". No English leftovers in the German UI.
-- Sentence case in both languages for everything: titles, buttons, menu items, labels ("Instanz anlegen", "Create instance"). This overrides WIG's title case for English buttons (produkt-regelwerk W15) because the plan fixes one style for both languages and mixed case between the two languages would look inconsistent.
+- Two languages, German and English (US spelling), complete in both; all strings in `src/i18n/{de,en}.json`. German uses informal "du" throughout, never "Sie". No English leftovers in the German UI, except the legal sentence and the diagnostic error details (10.11).
+- Sentence case in both languages for everything: titles, buttons, menu items, labels ("Instanz anlegen", "Create instance"). This overrides WIG's title case for English buttons (produkt-regelwerk W15) because the plan fixes one style for both languages.
 - Buttons are verbs naming the result ("Instanz anlegen", "In den Papierkorb", "Abmelden"), never "OK", "Ja", "Weiter", "Submit". A flow keeps its verb: "Instanz anlegen" leads to "{{name}} angelegt".
 - Loading labels: verb plus a real ellipsis "…" ("Wird angelegt…", "Creating…").
-- Errors: two parts, what happened and what to do: "Die Versionsliste konnte nicht geladen werden." plus "Prüfe die Internetverbindung und versuche es erneut." No apology, no blame, no codes in the title, no exclamation marks.
-- No exclamation marks anywhere. No filler ("einfach", "schnell", "nahtlos", "simply", "seamless"), no greetings, no marketing words. No full stop at the end of titles, labels, buttons and captions; full sentences in body text end with one.
-- No dashes as separators in visible text (no "—", "–"); ranges with "bis" / "to". Quotes: „…“ in German, “…” in English.
-- Numbers, units, dates: section 3.3.
-- Proper names stay untranslated: Fabric, Quilt, Legacy Fabric, Forge, NeoForge, Microsoft, Mojang, Hengst Client. "Minecraft" appears only in the fixed sentence "Not an official Minecraft product." and where Microsoft's own pages are named, never as part of the product name.
+- Errors in two parts: a title saying what happened, without a full stop ("Versionsliste konnte nicht geladen werden" / "Version list could not be loaded"), and a body saying what to do, as full sentences ("Prüfe die Internetverbindung und versuche es erneut." / "Check your internet connection and try again."). No apology, no blame, no codes in the title.
+- No exclamation marks anywhere. No filler ("einfach", "schnell", "nahtlos", "simply", "seamless"), no greetings, no marketing words. No full stop at the end of titles, labels, buttons, badges and captions that are not sentences; body text, help lines and captions that are full sentences end with one.
+- No dashes as separators in visible text; ranges with "bis" / "to". Quotes: „…“ in German, “…” in English.
+- Numbers, units, dates, durations: section 3.3.
+- Proper names stay untranslated: Fabric, Quilt, Legacy Fabric, Forge, NeoForge, Microsoft, Mojang, Xbox, Hengst Client.
+- "Minecraft" appears in factual references to the game ("Minecraft: Java Edition", the legal sentence, Microsoft's and Mojang's page names), never in the product name, the mark, the window title or the navigation (docs/PLAN.md section 9).
+- Example names in mockups and tests are neutral player names such as "Mira_K", never the game's default character names.
 
 ## 13. Accessibility
 
 - Focus: visible on every interactive element (section 9); order sidebar, header, content; modals trap focus and return it to the trigger; Escape closes.
-- Real elements only: `<button>` for actions, `<a>`-like link buttons only for opening things outside the app, `<nav>` with `aria-label`, one `<h1>` per view (the header title), headings without gaps (h1, then h2).
-- Targets: 40 × 40 px minimum for all controls (buttons, icon buttons, segments, menu items, checkbox rows, switch rows), list rows 48 px, Play 56 px; 8 px between adjacent targets. 40 px is above the WCAG 2.2 AA minimum of 24 × 24 and close to the 44 px guideline; for a mouse-first desktop app it is the deliberate density (produkt-regelwerk W7 allows the smaller size for dense desktop UI with a mouse).
-- Names: every icon-only button has an `aria-label` that matches its tooltip (section 6). Visible text is part of the accessible name.
-- States are programmatic: `aria-current="page"` (nav), `aria-pressed` (rows), `aria-expanded` (menus, details, combobox), `aria-checked` via the radio and checkbox primitives, `aria-busy` on lists while loading, `aria-disabled` plus `aria-describedby` for explained disabled controls, `aria-invalid` on fields.
-- Announcements: toasts `role="status"`, ErrorPanel `role="alert"`, the launch phase `aria-live="polite"`.
-- Contrast: section 2.3; state is never shown by colour alone (check icons, weight, text badges, level text in the log).
-- Scaling: at 125 % and 150 % Windows display scaling the layout is the same in logical pixels; every screen is checked at both. Text sizes are in `rem` and nothing has a fixed height around text except controls whose text fits by design, so WebView zoom up to 200 % (Ctrl+Plus, enabled on the window with `zoom_hotkeys_enabled(true)`) reflows without clipping: rows grow, button rows wrap, the sidebar collapses earlier because the logical width shrinks. On small screens where 960 × 600 does not fit at 150 % (for example 1366 × 768), Windows limits the window; the content still scrolls and nothing is cut off horizontally.
+- When the focused element disappears: after deleting a row, focus goes to the next row's action button, else the previous row's, else "Instanz anlegen"; when an empty-state button unmounts because the first item was created, focus goes to the new row; after signing out, to the chip.
+- Real elements only: buttons for actions, link buttons for opening things outside the app, `<nav>` with a label, one `<h1>` per view, headings without gaps.
+- Targets: 40 × 40 px minimum for all controls, list rows 48 px, Play 56 px; 8 px between separate adjacent targets (menu items and list rows are adjacent by design and do not overlap). 40 px is above the WCAG 2.2 AA minimum of 24 × 24 and close to 44 px; for a mouse-first desktop app it is the deliberate density (produkt-regelwerk W7).
+- Names: every icon-only button has a name matching its tooltip. Visible text is part of the accessible name.
+- State is programmatic: `aria-current="page"` (nav), `aria-current="true"` (selected row), expanded state (menus, collapsibles, combobox), checked state via the radio and checkbox primitives, busy state on lists while loading, `aria-disabled` plus `aria-describedby` for explained disabled controls, `aria-invalid` on fields.
+- Announcements: toasts via Sonner's live region, ErrorPanel as alert, the launch phase as a polite live region.
+- Contrast: section 2.3. State is never shown by color alone (check icons, weight, text badges, level words).
+- Scaling: at 125 % and 150 % Windows display scaling the layout is identical in logical pixels; every screen is checked at both, plus window placement on a 1366 × 768 screen at 125 % (7.1). Text is in `rem` and nothing around text has a fixed height except controls whose text fits by design, so WebView zoom up to 150 % reflows without clipping: rows grow, button rows wrap, and below 720 CSS px the narrow layout applies (7.3). Windows display scaling never changes the breakpoint; only zoom does.
 - Reduced motion: section 8.
 
 ## 14. Brand mark (placeholder)
 
-The owner designs the real logo. Until then the app uses a placeholder that is plainly geometric and does not pretend to be finished:
+The owner designs the real logo. Until then a placeholder that is plainly geometric and does not pretend to be finished:
 
-- A rounded square, 64 × 64 viewBox, corner radius 14, filled `#1D6F80` (light `--accent`, used in both themes because the mark is a static file and must also work as the taskbar icon).
-- On it a stylised "H" in `#F6FBFC` (`--on-accent`) made of three rectangles with square ends: left bar x 18, y 16, 8 × 32; right bar x 38, y 16, 8 × 32; crossbar x 26, y 28, 12 × 8.
+- A rounded square, 64 × 64 viewBox, corner radius 14, filled `#1D6F80` (used in both themes, because the mark is a static file that also serves as the taskbar icon).
+- On it a stylized "H" in `#F6FBFC` from three rectangles with square ends: left bar x 18, y 16, 8 × 32; right bar x 38, y 16, 8 × 32; crossbar x 26, y 28, 12 × 8.
 - No gradient, no shadow, no horse, no pixel art, nothing from the game.
 
-Where it appears: the sidebar brand row (24 px), the About section (48 px), the window and taskbar icon and the installer icon (generated by `pnpm tauri icon brand/mark.svg`).
+Where it appears: the sidebar brand row (24 px), About (48 px), the window, taskbar and tray icon, and the installer icon.
 
-Swap: the folder `apps/desktop/brand/` is the only place to change. Replace `apps/desktop/brand/mark.svg`, run `pnpm tauri icon brand/mark.svg`, done; the frontend imports the mark only from that file (`apps/desktop/brand/README.md`, Task 3).
+Swap: the folder `apps/desktop/brand/` is the only place to change: replace `apps/desktop/brand/mark.svg` and regenerate the icons (`apps/desktop/brand/README.md`, Task 3). The frontend imports the mark only from that file.
 
 ## 15. Not like this
 
-Concrete template tells this app will not have, and what it does instead:
+The tells an app like this could really show, and what Hengst Client does instead:
 
-1. Gradient or glowing Play button, "hero" backgrounds, blurred game screenshots behind content. Instead: a flat accent button on `--surface`.
-2. A grid of identical shadowed instance cards with cover images. Instead: a 48 px list with columns.
-3. Uppercase tracked labels ("INSTANCES", "VERSION") and eyebrows above headings. Instead: sentence-case h1 and plain column labels.
-4. Meta strings like "1.21.11 · Fabric · 2 days ago". Instead: separate columns or separate spans with space.
-5. "→" or chevrons on buttons that do not open anything. Chevrons only on menu and select triggers.
-6. Status dots in front of every item, pulsing "online" dots. One `--success` dot, only next to "Läuft seit".
-7. Emoji, sparkles, "New" or "Pro" badges, version numbers as decoration.
-8. Pure black dark theme with a neon accent; cream background with terracotta. Instead: the graphite ramp in 2.1 with one petrol accent.
-9. One radius on everything. Instead: 6 for controls, 10 for panels, pill only for chip, badges and progress.
-10. Fade-and-slide-in of every section, hover scale on rows, `transition: all`, spinners in the middle of the page. Instead: section 8 and skeletons.
-11. Greeting headlines ("Welcome back, Steve"), exclamation marks, filler copy. Instead: the view name as title.
-12. A centred empty state with a large illustration. Instead: a left-aligned title, one sentence and one button.
-13. Anything that imitates the game's look or another launcher's: blocky fonts, dirt or grass textures, pixel icons, skin heads in the account chip (the chip shows an initial).
+1. **The stock admin shell.** Logo top left, a sidebar of five to eight equal entries, a header with a page title, a search box and an avatar, a grid of stat cards. Instead: at most four destinations, no global search, no stats, the account shown as a player name chip, and the start page built around one action and the real launch progress.
+2. **The default shadcn look.** Zinc grays, `rounded-md` on everything, a soft ring of 50 % opacity for focus, `shadow-sm` under every input, ghost buttons whose hover is the accent. Instead: the remapped tokens (2.4), two radii plus pills, a 2 px focus outline, flat level 0, and the gate test that keeps the defaults out.
+3. **Launcher chrome.** Banner art and news feeds, blurred game screenshots behind the Play button, a shop or "featured" tile, a friends list, a gradient or glowing Play button. Instead: a flat Play button on `--surface` and nothing above it but the instance name.
+4. **Instance cards with cover images.** Instead: a 48 px list with columns.
+5. **Dashboard decoration.** Status dots before every row, pulsing "online" indicators, colored icon tiles, counters in pills. Instead: one `--success` dot next to "Läuft seit", text badges only where a state needs explaining.
+6. **Accent everywhere.** Teal checkboxes, teal links, teal progress, teal badges, teal selected rows. Instead: the accent on three kinds of element (2.2), neutral everything else.
+7. **Spinner pages and fade-in sections.** A centered spinner while data loads, list items that slide in, hover scale on rows. Instead: static skeletons after 200 ms and motion only on popovers, dialogs and the Play press (section 8).
+8. **Template copy.** "Welcome back, Mira", "Let's get you playing", exclamation marks, "Oops, something went wrong". Instead: the view name as the title and errors that say what happened and what to do.
+9. **Meta strings and chrome typography.** "1.21.11 · Fabric · 2 days ago", uppercase column labels, "→" on buttons. Instead: columns or separate spans, sentence case, chevrons only on menu and select triggers.
+10. **Anything that borrows the game's look or another launcher's**: blocky fonts, dirt or grass textures, pixel icons, skin heads in the account chip. Instead: the system font, line icons and an initial circle.
 
 ## 16. Decisions
 
 | Decision | Reason | Rule that decided |
 |---|---|---|
-| shadcn/ui on Base UI, tokens remapped, shadcn variables not declared on `:root` | Real design system for app UI; the `--accent` name collides, mapping through `@theme inline` keeps component classes unchanged | design-unslop mode A, plan "UI-Bibliothek", pick-ui-library |
-| System fonts (Segoe UI Variable, Cascadia Mono) | Windows-only app that should feel native; no bundled files, nothing fetched at runtime | plan Task 1 brief; design-unslop "Inter only for neutral app briefs" does not apply because no web font is chosen at all |
-| Weights 400 and 600 only | Hierarchy through size and colour | design-unslop hard rules |
-| 40 px controls, 48 px rows, 56 px Play | Mouse-first desktop density; above the 24 px WCAG minimum | produkt-regelwerk T1 with W7 (desktop with mouse) |
-| No cards; list rows and background steps | Avoids the SaaS-card kit and keeps the launcher quiet | frontend-design (pattern 4), design-unslop B7 |
-| One accent, petrol teal | Calm, technical, distinct from the game's and other launchers' colours | design-unslop F7, F8, F12, tokens "Akzent" |
-| `--border-strong` sharpened to 3:1 | Control boundaries must reach 3:1 | produkt-regelwerk A4, WCAG 1.4.11; the plan allows sharpening values for contrast |
-| Ease-out curve `cubic-bezier(0.23, 1, 0.32, 1)` instead of the draft `cubic-bezier(0.2, 0, 0, 1)` | The draft curve starts flat and delays the first movement | produkt-regelwerk M3 and W4, emil-design-eng (more specific for product UI than the draft) |
-| No animation on keyboard-opened menus and view switches | Frequent actions must feel instant | emil-design-eng "never animate keyboard-initiated actions", produkt-regelwerk M1 |
-| Static skeletons, no pulse | Calm tool; loading is short and local | design-unslop M1 (pulse only for live), produkt-regelwerk L1, L2 |
-| Simple confirm, no typed name, for delete and sign-out | Both are reversible (recycle bin, account untouched) | produkt-regelwerk Z5 (named buttons); plan fixes a dialog instead of undo because restoring from the recycle bin is outside the app |
+| shadcn/ui on Base UI; shadcn variables declared on `:root` pointing at our tokens, except `--accent`; shadcn's hover role only as the `accent` utility; gate test and lint ban | Real design system for app UI; raw `var(--popover)` and `var(--radius)` in generated components must resolve; the `--accent` name collides | design-unslop mode A, plan "UI-Bibliothek" and Task 3 test |
+| `--border-control` for control boundaries, `--border` and `--border-strong` decorative | Control boundaries must reach 3:1; separators need not | plan Task 1, WCAG 1.4.11, produkt-regelwerk A4 |
+| Accent on three element kinds only | One signature, used for the next action | design-unslop F7, F8 |
+| Neutral `--selected` | Selected rows and segments are not accent elements; selection is shown by fill plus check | design-unslop F7, produkt-regelwerk Z6 |
+| Dark `--danger` `#F4756B`, explicit hover and pressed danger tokens | `#F0645A` failed 4.5:1 on `--hover` and `--selected` | produkt-regelwerk A4 |
+| System fonts (Segoe UI Variable, Cascadia Mono) | Windows-only app that should feel native; nothing bundled or fetched | plan Task 1 |
+| Weights 400 and 600 only | Hierarchy through size and color | design-unslop hard rules |
+| 40 px controls, 48 px rows, 56 px Play | Mouse-first desktop density; above the 24 px WCAG minimum | produkt-regelwerk T1 with W7 |
+| Breakpoint 1200 px, narrow layout below 720 CSS px, zoom guaranteed to 150 % | The row grid needs the room; content width must not jump down at the collapse | produkt-regelwerk A7, T10 |
+| Window size clamped to the work area | The app must fit 1366 × 768 at 125 % | produkt-regelwerk T10 |
+| No cards; list rows and background steps | Avoids the card kit and keeps the launcher quiet | frontend-design pattern 4, design-unslop B7 |
+| Ease-out `cubic-bezier(0.23, 1, 0.32, 1)` instead of the draft `cubic-bezier(0.2, 0, 0, 1)` | The draft curve starts flat and delays the first movement | produkt-regelwerk M3 and W4, emil-design-eng |
+| No animation for keyboard-opened layers and view switches | Frequent actions must feel instant | emil-design-eng, produkt-regelwerk M1 |
+| Static skeletons, no pulse | Calm tool; loading is short and local | design-unslop M1, produkt-regelwerk L1, L2 |
+| Confirmation dialog for delete, no undo | Undo is the rule for reversible deletion (Z5), but the Recycle Bin cannot be guaranteed (size limit, drives without a bin); if moving to the bin fails, the app shows an error and never deletes permanently | produkt-regelwerk Z5 (dialog with named buttons for actions that may not be reversible) |
+| Confirmation dialog for sign-out | Removing stored credentials cannot be undone from the app (signing in again is the way back) | produkt-regelwerk Z5 |
 | Sentence case in English too | One style in both languages | plan "Sprache und Ton" over WIG title case (W15) |
-| Settings without a primary button | Settings save on change; a "Save" button would be a second, pointless step | produkt-regelwerk N1 is about competing actions, not about requiring one |
-| Search field label to the left of the field in the log toolbar | Visible label without a second toolbar row | produkt-regelwerk FO1 (visible label), adapted for a toolbar |
-| stitch-design-taste used only for the document shape (named colours with hex and role, explicit anti-patterns) | Its Inter ban, perpetual micro-motion, spring defaults and asymmetric hero rules target marketing pages | design-unslop mode A and produkt-regelwerk M1/M2 are the specific rules for app UI |
+| Settings without a primary button | Settings save on change | produkt-regelwerk N1 concerns competing actions |
+| Log search label left of the field | Visible label without another toolbar row | produkt-regelwerk FO1 |
+| Instance first, account second on first run | Creating an instance works offline and without Mojang approval | produkt-regelwerk N7 (first success without detour) |
+| stitch-design-taste used only for the document shape | Its Inter ban, perpetual motion, springs and hero rules target marketing pages | design-unslop mode A and produkt-regelwerk M1/M2 are the specific rules for app UI |
 
 ## 17. Review notes
 
-Checked against `frontend-design`: none of the five default patterns applies (no cream and terracotta, no near-black with neon, no broadsheet layout, no card kit with uniform radius and grey shadow, no uppercase eyebrows, middle-dot meta strings, mono data labels or "→" chrome; the log uses mono because it is log output, not decoration). "Remove one accessory": the instance cards and a coloured status dot per row were dropped in favour of plain rows and one dot only for the running state.
+Checked against `frontend-design`: none of the five default patterns applies (no cream and terracotta, no near-black with neon, no broadsheet, no card kit with one radius and gray shadows, no uppercase eyebrows, middle-dot meta strings, mono data labels or "→" chrome; mono is used for log output, paths and codes, which are data). "Remove one accessory": instance cards, a status dot per row, and the accent on checkboxes, links, progress and badges were removed.
 
-Checked against produkt-regelwerk: WD9 holds (no pure black or white surface or text, table 2.1); M2 holds (120 to 220 ms, exits 25 to 27 % shorter); M3 holds after replacing the draft curve; M7 is specified (section 8); A1 holds (2 px outline, 3:1 or more on every surface, table 2.3); A4 forced the `--border-strong` change.
+Checked against produkt-regelwerk: WD9 holds (no pure black or white surface or text); M2 holds (120 to 220 ms, exits 25 to 27 % shorter); M3 holds after replacing the draft curve; M7 is specified; A1 holds with the inset outline for keyboard-highlighted items; A4 holds for every pair in 2.3, after `--border-control` and the dark danger change; E3 is covered by offline states in the version picker, sign-in and launch.
+
+## Appendix A. Notes for implementers
+
+Not normative design; how the above is meant to be built, and what must be verified on the machine.
+
+- **Keyboard versus pointer:** one way to suppress transitions for keyboard-opened layers is a flag on `<html>` (pointer-down sets `data-input="pointer"`, keydown sets `data-input="keyboard"`) with transitions set to `none` under the keyboard flag. The same flag drives the inset outline on highlighted items (section 9).
+- **Click guards:** the guard sits before the first `await`, not only on a `disabled` prop set in the next render (produkt-regelwerk Z2).
+- **Header border:** detect scrolling with a sentinel element and IntersectionObserver, not a scroll listener.
+- **Dark variant:** `@custom-variant dark (&:where(.dark, .dark *));` (as verified in the plan); the shadcn page shows `(&:is(.dark *))`, either matches `.dark` on `<html>`.
+- **WebView defaults in release builds (Task 3; check the exact Tauri 2.12 and WebView2 option names):** disable the default context menu everywhere except text inputs and the log area, which keep a native cut, copy, paste and select-all menu; disable the browser accelerator keys F5, Ctrl+R, Ctrl+P, F12 and the built-in find bar (Ctrl+F belongs to the log search); enable the zoom keys (Ctrl+Plus, Ctrl+Minus, Ctrl+0) for section 13.
+- **Title bar theme:** set the window theme at creation and again on every resolved-theme change (the plan's `startup.rs` covers creation; the runtime change needs the window theme setter, name to be checked).
+- **Window size clamping:** the plan's `window_state.rs` restores size and position; it applies the clamps in 7.1 against the current monitor's work area.
+- **Tabular figures:** check once in agentfenster on Windows 10 (Segoe UI) and Windows 11 (Segoe UI Variable) that `tabular-nums` takes effect; Segoe UI's digits are fixed-width by default, so the result should look the same either way.
+- **shadcn verification:** the Task 3 duties in 2.4 list every generated-component detail known from memory of the template; confirm each against the files `shadcn add` actually writes.
+- **Backend names:** the Play states map to the plan's `play`, `play_cancel`, `game_stop`, `game_force_stop` and `AppEvent::GameState`; "Mehr erfahren" maps to `UrlTarget::SignInHelp`, "Xbox-Profil anlegen" to `XboxSignup`, "Profil anlegen" to `MinecraftProfile`, "microsoft.com/link öffnen" to `DeviceLogin`.
