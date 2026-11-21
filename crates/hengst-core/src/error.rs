@@ -64,6 +64,8 @@ pub enum Error {
     UnknownPlaceholder { version: String, key: String },
     #[error("invalid loader installer: {0}")]
     Installer(String),
+    #[error("loader install failed: {0}")]
+    InstallFailed(String),
     #[error("loader installer step {jar} failed with exit code {code}, see {log}")]
     Processor {
         jar: String,

@@ -736,7 +736,7 @@ async fn prepares_modern_forge_running_its_processors_once() {
         .join("java.exe");
     let work = std::path::absolute(paths.tmp())
         .unwrap()
-        .join(format!("loader-{FORGE_ID}"));
+        .join(format!("loader-forge-{FORGE_ID}"));
     for c in &calls {
         assert_eq!(c.program, java);
         assert_eq!(c.args[0], "-cp");
@@ -767,7 +767,7 @@ async fn prepares_modern_forge_running_its_processors_once() {
         std::fs::read(&patched).unwrap(),
         made("forge-1.20.1-47.4.28-client.jar")
     );
-    assert!(forge::install_log(&paths, FORGE_ID).is_file());
+    assert!(forge::install_log(&paths, LoaderKind::Forge, FORGE_ID).is_file());
 
     // Second launch: valid state, no processor runs.
     prepare_with_runner(&paths, &o, &ep, Arc::new(NoStart))
@@ -899,7 +899,7 @@ async fn prepares_neoforge_for_1_20_1_under_the_forge_artifact() {
         "1.20.1",
         "1.20.1-47.1.106",
         "forge",
-        "1.20.1-neoforge-47.1.106",
+        "1.20.1-forge-47.1.106",
     )
     .await;
 }

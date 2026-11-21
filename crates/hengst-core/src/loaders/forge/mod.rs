@@ -323,13 +323,18 @@ fn absolute_root(paths: &Paths) -> Result<(PathBuf, PathBuf)> {
 }
 
 /// Processors write files shared by all builds of one game version (split and remapped client
-/// jars, mappings), so there is one install lock per loader kind and game version, not per build.
-/// The lock lives outside the work directory.
-fn install_lock_path(paths: &Paths, kind: LoaderKind, game: &str) -> Result<PathBuf> {
+/// jars, mappings under `libraries/net/minecraft/client/`), and Forge and NeoForge share them
+/// too, so there is one install lock per game version for the whole Forge family, not per build
+/// or per kind. The lock lives outside the work directory.
+fn install_lock_path(paths: &Paths, game: &str) -> Result<PathBuf> {
     validate_id(game)?;
-    Ok(paths
-        .tmp()
-        .join(format!("loader-{}-{game}.lock", kind.slug())))
+    Ok(paths.tmp().join(format!("loader-forge-family-{game}.lock")))
+}
+
+/// The scratch directory of one install. Keyed by kind as well as id: NeoForge 1.20.1 ids use
+/// the Forge scheme (`1.20.1-forge-<build>`), so an id alone can belong to both loaders.
+fn work_dir(paths: &Paths, kind: LoaderKind, id: &str) -> Result<PathBuf> {
+    Ok(std::path::absolute(paths.tmp())?.join(format!("loader-{}-{id}", kind.slug())))
 }
 
 /// How long `lock_file` waits before saying so, and at most.
@@ -484,12 +489,14 @@ pub fn marker_path(paths: &Paths, kind: LoaderKind, id: &str) -> PathBuf {
 }
 
 /// Log of the processor run for a loader version.
-pub fn install_log(paths: &Paths, id: &str) -> PathBuf {
-    paths.logs().join(format!("loader-install-{id}.log"))
+pub fn install_log(paths: &Paths, kind: LoaderKind, id: &str) -> PathBuf {
+    paths
+        .logs()
+        .join(format!("loader-install-{}-{id}.log", kind.slug()))
 }
 
 /// Brings the installation of `fi` (merged into `merged`) up to date on every launch, under an
-/// exclusive lock per loader kind and game version: restores and verifies the installer-provided artifacts, verifies
+/// exclusive lock per game version (shared by Forge and NeoForge): restores and verifies the installer-provided artifacts, verifies
 /// the vanilla jar the processors read, plans the processors and runs them unless the recorded
 /// install state is still valid, then records it. Blocking; call it off the async runtime.
 /// `java` is the runtime the game itself uses. Profiles without client processors (legacy,
@@ -508,7 +515,7 @@ pub fn finish_install(
     let id = merged.id.as_str();
     validate_id(id)?;
     let _lock = lock_file(
-        &install_lock_path(paths, fi.kind, &fi.game)?,
+        &install_lock_path(paths, &fi.game)?,
         &format!("{} for Minecraft {}", fi.kind, fi.game),
         LockTiming::DEFAULT,
         &|m| runner.notice(m),
@@ -539,7 +546,7 @@ pub fn finish_install(
         });
     }
 
-    let work = std::path::absolute(paths.tmp())?.join(format!("loader-{id}"));
+    let work = work_dir(paths, fi.kind, id)?;
     match std::fs::remove_dir_all(&work) {
         Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
         _ => {}
@@ -577,7 +584,7 @@ pub fn finish_install(
             &java,
             &plan.commands,
             &work,
-            &install_log(paths, id),
+            &install_log(paths, fi.kind, id),
         )?;
         // Now the patched client jar exists and must match version.json too.
         verify_provided(merged, &libraries, None)?;
@@ -1311,7 +1318,7 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(&err, Error::Processor { jar, code, log } if jar.starts_with("processor 0")
-                && *code != 0 && *log == install_log(&s.paths, ID)),
+                && *code != 0 && *log == install_log(&s.paths, LoaderKind::Forge, ID)),
             "{err}"
         );
         assert!(!s.marker().exists());
@@ -1357,7 +1364,7 @@ mod tests {
     fn work_directory_is_fresh_outside_libraries_and_meta_and_removed_after() {
         let s = setup();
         let root = std::path::absolute(s.paths.root()).unwrap();
-        let work = root.join("tmp").join(format!("loader-{ID}"));
+        let work = root.join("tmp").join(format!("loader-forge-{ID}"));
         std::fs::create_dir_all(&work).unwrap();
         std::fs::write(work.join("stale.txt"), b"old run").unwrap();
         let patcher = Patcher::default();
@@ -1367,7 +1374,28 @@ mod tests {
         assert!(!cwd.starts_with(root.join("libraries")) && !cwd.starts_with(root.join("meta")));
         assert!(!work.exists());
         // One lock for every Forge build of this game version, outside the work directory.
-        assert!(root.join("tmp").join("loader-forge-1.20.1.lock").is_file());
+        assert!(root
+            .join("tmp")
+            .join("loader-forge-family-1.20.1.lock")
+            .is_file());
+    }
+
+    #[test]
+    fn forge_and_neoforge_with_one_version_id_keep_their_own_state_but_share_the_lock() {
+        // NeoForge 1.20.1 uses the Forge id scheme, so both loaders can have the same id.
+        let paths = Paths::new("C:/h");
+        let id = "1.20.1-forge-47.1.106";
+        let (f, n) = (LoaderKind::Forge, LoaderKind::NeoForge);
+        assert_ne!(
+            work_dir(&paths, f, id).unwrap(),
+            work_dir(&paths, n, id).unwrap()
+        );
+        assert_ne!(install_log(&paths, f, id), install_log(&paths, n, id));
+        assert_ne!(marker_path(&paths, f, id), marker_path(&paths, n, id));
+        // The lock is per game version and has no kind in it.
+        let lock = install_lock_path(&paths, "1.20.1").unwrap();
+        assert!(!lock.to_string_lossy().contains("neoforge"));
+        assert_ne!(lock, install_lock_path(&paths, "1.21.1").unwrap());
     }
 
     #[test]

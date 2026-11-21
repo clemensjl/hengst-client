@@ -278,7 +278,7 @@ async fn live_launch_with(
                 assert_eq!(again.args, p.args);
                 p = again;
             }
-            let log = forge::install_log(&paths, &p.version_id);
+            let log = forge::install_log(&paths, kind, &p.version_id);
             let headers = std::fs::read_to_string(&log)
                 .unwrap()
                 .lines()
@@ -349,7 +349,7 @@ async fn live_launch_with(
                     loader_lines.push(line.clone());
                 }
                 if let Some(b) = banner {
-                    if banner_line.is_none() && line.contains(b) {
+                    if banner_line.is_none() && banner_matches(&line, b) {
                         banner_line = Some(line);
                     }
                 }
@@ -464,6 +464,22 @@ async fn legacy_fabric_1_12_2() {
 const MODERN_FORGE: &str = "Forge mod loading, version ";
 const LEGACY_FORGE: &str = "Forge Mod Loader version ";
 const NEOFORGE: &str = "NeoForge mod loading, version ";
+
+/// The Forge banners are substrings of the NeoForge one: a line that names NeoForge is evidence
+/// for NeoForge only. (The NeoForge banner itself contains "NeoForge" by construction.)
+fn banner_matches(line: &str, banner: &str) -> bool {
+    line.contains(banner) && (banner == NEOFORGE || !line.contains("NeoForge"))
+}
+
+#[test]
+fn a_neoforge_line_is_not_a_forge_banner() {
+    let neo = "NeoForge mod loading, version 21.1.267, for MC 1.21.1";
+    let forge = "Forge mod loading, version 47.4.28, for MC 1.20.1";
+    assert!(banner_matches(neo, NEOFORGE));
+    assert!(!banner_matches(neo, MODERN_FORGE));
+    assert!(banner_matches(forge, MODERN_FORGE));
+    assert!(!banner_matches(forge, NEOFORGE));
+}
 
 #[tokio::test]
 #[ignore]

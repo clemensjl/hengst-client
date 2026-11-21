@@ -116,10 +116,11 @@ fn bad(msg: impl std::fmt::Display) -> Error {
     Error::Installer(msg.to_string())
 }
 
-/// The message of an error without the "invalid loader installer" prefix, for nesting.
+/// The message of an error without its "invalid loader installer" or "loader install failed"
+/// prefix, for nesting.
 fn inner(e: Error) -> String {
     match e {
-        Error::Installer(m) => m,
+        Error::Installer(m) | Error::InstallFailed(m) => m,
         other => other.to_string(),
     }
 }
@@ -766,7 +767,8 @@ fn processor_command(java: &Path, c: &ProcessorCommand, cwd: &Path) -> Result<Co
 /// Right before each start the jar and classpath are checked against their declared SHA-1, and
 /// after a zero exit the declared outputs. A processor running longer than `PROCESSOR_TIMEOUT`
 /// is killed. Any failure stops the run with an error naming the
-/// processor and the log; a non-zero exit is `Error::Processor`.
+/// processor and the log: a non-zero exit is `Error::Processor`, everything else
+/// `Error::InstallFailed`.
 pub fn run_processors(
     runner: &dyn ProcessRunner,
     java: &Path,
@@ -793,21 +795,22 @@ fn run_processors_with(
     let see = || log.display().to_string();
     for c in cmds {
         let name = processor_name(c);
-        let fail = |e: Error| bad(format!("{name}: {}; see {}", inner(e), see()));
+        let failed = Error::InstallFailed;
+        let fail = |e: Error| failed(format!("{name}: {}; see {}", inner(e), see()));
         c.verify_files().map_err(fail)?;
         writeln!(out, "== {name}: {} {}", c.main_class, c.args.join(" "))?;
         out.flush()?;
         let mut cmd = processor_command(java, c, cwd)?;
         cmd.stdout(out.try_clone()?).stderr(out.try_clone()?);
         let code = runner.run(&mut cmd, timeout).map_err(|e| {
-            bad(format!(
+            failed(format!(
                 "{name}: could not start {}: {e}; see {}",
                 java.display(),
                 see()
             ))
         })?;
         let Some(code) = code else {
-            return Err(bad(format!(
+            return Err(failed(format!(
                 "{name} did not finish within {} s and was stopped; see {}",
                 timeout.as_secs_f32(),
                 see()
@@ -1725,6 +1728,8 @@ mod tests {
         let err = run_processors(&runner, Path::new("java"), &plan.commands, &env.work, &log)
             .unwrap_err();
         let m = err.to_string();
+        assert!(matches!(err, Error::InstallFailed(_)), "{m}");
+        assert!(m.starts_with("loader install failed: "), "{m}");
         assert!(
             m.contains("processor 1") && m.contains("SHA-1") && m.contains("install.log"),
             "{m}"
@@ -1742,6 +1747,7 @@ mod tests {
         let err = run_processors(&runner, Path::new("java"), &plan.commands, &env.work, &log)
             .unwrap_err();
         let m = err.to_string();
+        assert!(matches!(err, Error::InstallFailed(_)), "{m}");
         assert!(
             m.contains("processor 0") && m.contains("o.bin") && m.contains("install.log"),
             "{m}"
@@ -1789,6 +1795,7 @@ mod tests {
         )
         .unwrap_err();
         let m = err.to_string();
+        assert!(matches!(err, Error::InstallFailed(_)), "{m}");
         assert!(
             m.contains("processor 0") && m.contains("install.log"),
             "{m}"
@@ -1824,6 +1831,7 @@ mod tests {
         )
         .unwrap_err();
         let m = err.to_string();
+        assert!(matches!(err, Error::InstallFailed(_)), "{m}");
         assert!(
             m.contains("processor 0")
                 && m.contains("install.log")
