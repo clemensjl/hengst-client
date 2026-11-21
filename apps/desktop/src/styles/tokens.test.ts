@@ -1,9 +1,8 @@
-import { readdirSync, readFileSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   CSS,
-  DESIGN,
   UI_DIR,
   block,
   contrast,
@@ -14,6 +13,8 @@ import {
   tableRows,
   themeInline,
 } from "./designDoc";
+import { buttonVariants } from "@/components/ui/button";
+import { classConflicts, classLiterals } from "./classConflicts";
 
 const THEMES = [":root", ".dark"] as const;
 
@@ -166,37 +167,35 @@ describe("tokens", () => {
     }
   });
 
-  it("spacing, radius and motion tokens of DESIGN.md sections 4, 5 and 8 are declared on :root", () => {
-    const want: Record<string, string> = {
-      "--space-1": "4px",
-      "--space-2": "8px",
-      "--space-3": "12px",
-      "--space-4": "16px",
-      "--space-5": "24px",
-      "--space-6": "32px",
-      "--space-7": "48px",
-      "--radius-control": "6px",
-      "--radius-panel": "10px",
-      "--radius-pill": "999px",
-      "--dur-press": "120ms",
-      "--dur-popover-in": "160ms",
-      "--dur-popover-out": "120ms",
-      "--dur-dialog-in": "220ms",
-      "--dur-dialog-out": "160ms",
-      "--dur-progress": "200ms",
-    };
-    for (const [name, value] of Object.entries(want)) {
-      expect(cssVar(":root", name), name).toBe(value);
-      // The value is stated in the document too.
-      expect(DESIGN, name).toContain(`\`${name}\``);
+  it("spacing, radius and motion tokens are declared on :root with the values of DESIGN.md sections 4, 5 and 8", () => {
+    const rows = [
+      ...tableRows("## 4. Spacing"),
+      ...tableRows("## 5. Shape, borders, elevation"),
+      ...tableRows("## 8. Motion"),
+    ].filter((r) => /^`--(space|radius|dur|ease)-/.test(r[0]));
+    expect(rows.length).toBeGreaterThanOrEqual(16);
+    for (const [name, value] of rows) {
+      const token = firstToken(name)!;
+      const doc = value.replace(/`/g, "");
+      const unit = doc.match(/^([\d.]+) ?(px|ms)/);
+      const want = unit ? unit[1] + unit[2] : doc;
+      expect(normalize(cssVar(":root", token) ?? "MISSING"), token).toBe(normalize(want));
     }
   });
 });
 
 describe("generated components pass the gate of DESIGN.md 2.4", () => {
-  const files = readdirSync(UI_DIR)
+  const walk = (dir: string): string[] =>
+    readdirSync(dir).flatMap((f) => {
+      const full = path.join(dir, f);
+      return statSync(full).isDirectory() ? walk(full) : [full];
+    });
+  const files = walk(UI_DIR)
     .filter((f) => f.endsWith(".tsx"))
-    .map((f) => ({ name: f, text: readFileSync(path.join(UI_DIR, f), "utf8") }));
+    .map((f) => ({
+      name: path.relative(UI_DIR, f).split(path.sep).join("/"),
+      text: readFileSync(f, "utf8"),
+    }));
   // Base UI sets these at runtime on its popups and panels.
   const runtimeVariables = new Set([
     "--transform-origin",
@@ -253,10 +252,49 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
       "hover:bg-primary/",
       "hover:bg-destructive/",
       "font-medium",
+      "var(--primary)",
+      "shadow-2xs",
+      "shadow-2xl",
+      "rounded-xs",
+      "rounded-full",
     ];
     for (const { name, text } of files) {
       for (const b of banned) expect(text.includes(b), `${name}: ${b}`).toBe(false);
+      // A bare `shadow` is Tailwind's default shadow, not the elevation token.
+      expect(/(?:^|[\s"'`:])shadow(?![-\w])/.test(text), `${name}: bare shadow`).toBe(false);
     }
+  });
+
+  // DESIGN.md names no alpha modifier on a color utility, so none may appear. The pill radius is
+  // `rounded-pill` (mapped to --radius-pill), never `rounded-full`.
+  it("no color utility carries an alpha modifier", () => {
+    const alpha =
+      /\b(?:[a-z-]+:)*(?:bg|text|border|ring|outline|fill|stroke|from|to|via|decoration|shadow|divide|accent|caret)-[a-z0-9-]+\/(?:\d|\[)/;
+    for (const { name, text } of files) expect(alpha.test(text), name).toBe(false);
+  });
+
+  it("no component relies on a later class beating an earlier one", () => {
+    // `cn` only joins classes: every class list of the generated components, and every button
+    // variant with every size, must set each property once per variant.
+    for (const { name, text } of files) {
+      for (const list of classLiterals(text)) {
+        expect(classConflicts(list), `${name}: ${list}`).toEqual([]);
+      }
+    }
+    for (const variant of ["primary", "secondary", "ghost", "destructive", "link"] as const) {
+      for (const size of ["default", "icon", "lg"] as const) {
+        const list = buttonVariants({ variant, size });
+        expect(classConflicts(list), `${variant} ${size}: ${list}`).toEqual([]);
+      }
+    }
+  });
+
+  it("the conflict check catches the conflicts it is for", () => {
+    expect(classConflicts("px-4 px-0")).not.toEqual([]);
+    expect(classConflicts("px-4 hover:px-0")).toEqual([]);
+    expect(classConflicts("text-label text-foreground")).toEqual([]);
+    expect(classConflicts("text-label text-small")).not.toEqual([]);
+    expect(classConflicts("border border-transparent border-input")).not.toEqual([]);
   });
 
   const primaryUtility =

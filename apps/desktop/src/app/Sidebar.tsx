@@ -26,12 +26,18 @@ export function Sidebar({ view, onSelect, devBuild }: Props) {
         aria-label={label}
         aria-current={active ? "page" : undefined}
         onClick={() => onSelect(it.view)}
+        // The active item and its hover never animate (DESIGN.md 8).
         className={cn(
-          "mx-auto flex h-10 w-10 items-center justify-center gap-3 rounded-md px-0 text-small text-muted-foreground transition-[background-color,color] duration-(--dur-press) ease-out hover:bg-hover hover:text-foreground active:bg-selected active:duration-0 wide:w-full wide:justify-start wide:px-3",
-          active && "bg-selected font-semibold text-foreground",
+          "mx-auto flex h-10 w-10 items-center justify-center gap-3 rounded-md px-0 text-small wide:w-full wide:justify-start wide:px-3",
+          active
+            ? "bg-selected font-semibold text-foreground"
+            : "text-muted-foreground hover:bg-hover hover:text-foreground active:bg-selected",
         )}
       >
-        <Icon className={cn("size-[18px] shrink-0", active && "text-primary")} aria-hidden="true" />
+        <Icon
+          className={cn("size-[18px] shrink-0", active ? "text-primary" : "")}
+          aria-hidden="true"
+        />
         <span className="hidden wide:inline">{label}</span>
       </button>
     );

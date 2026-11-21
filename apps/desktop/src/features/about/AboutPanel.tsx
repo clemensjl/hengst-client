@@ -1,54 +1,94 @@
-import { CircleAlertIcon } from "lucide-react";
-import { useEffect } from "react";
+import { CircleAlertIcon, ExternalLinkIcon } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import mark from "../../../brand/mark.svg";
 import { Badge } from "@/components/Badge";
 import { Delayed } from "@/components/Delayed";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
+import { ErrorPanel } from "@/features/errors/ErrorPanel";
+import { api, IpcError } from "@/ipc/client";
+import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import { useApp } from "@/stores/app";
-import type { VersionFilter } from "@/ipc/bindings/VersionFilter";
 
-const ALL_KINDS: VersionFilter = { release: true, snapshot: true, beta: true, alpha: true };
+/** The "Source code" link: the address is fixed in Rust, only the target name is sent. */
+function SourceLink() {
+  const { t } = useTranslation();
+  const [error, setError] = useState<ErrorDto | null>(null);
+  const busy = useRef(false);
+  const open = async () => {
+    // A second click while the first is being handled opens nothing more (DESIGN.md 10.0).
+    if (busy.current) return;
+    busy.current = true;
+    setError(null);
+    try {
+      await api.openUrl("repository");
+    } catch (e) {
+      setError(
+        e instanceof IpcError
+          ? e.dto
+          : { code: "internal", params: {}, action: null, detail: String(e) },
+      );
+    } finally {
+      busy.current = false;
+    }
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      <Button
+        variant="link"
+        className="self-start"
+        aria-label={t("common.opensInBrowser", { name: t("about.source") })}
+        onClick={() => void open()}
+      >
+        {t("about.source")}
+        <ExternalLinkIcon aria-hidden="true" />
+      </Button>
+      {error && <ErrorPanel error={error} />}
+    </div>
+  );
+}
 
 /** The facts block of "About Hengst Client" (DESIGN.md 11.7). Its own load state, its own retry. */
 export function AboutPanel() {
   const { t } = useTranslation();
   const info = useApp((s) => s.info);
-  const versions = useApp((s) => s.versions);
+  const summary = useApp((s) => s.versionsSummary);
   const loadInfo = useApp((s) => s.loadInfo);
-  const loadVersions = useApp((s) => s.loadVersions);
+  const loadSummary = useApp((s) => s.loadVersionsSummary);
 
   useEffect(() => {
     if (info.status === "idle") void loadInfo();
-    if (versions.status === "idle") void loadVersions(ALL_KINDS);
-  }, [info.status, versions.status, loadInfo, loadVersions]);
+    if (summary.status === "idle") void loadSummary();
+  }, [info.status, summary.status, loadInfo, loadSummary]);
 
   const facts = () => {
-    if (versions.status === "error" && !versions.data) {
-      const offline = versions.error?.code === "network";
+    if (summary.status === "error" && !summary.data) {
+      const offline = summary.error?.code === "network";
       return (
         <div className="flex items-center gap-2 text-small text-danger">
           <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
           <span>{t(offline ? "errors.versionsOffline" : "errors.versionsFailed")}</span>
-          <Button variant="ghost" onClick={() => void loadVersions(ALL_KINDS)}>
+          <Button variant="ghost" onClick={() => void loadSummary()}>
             {t("common.retry")}
           </Button>
         </div>
       );
     }
-    if (!versions.data)
+    if (!summary.data) {
       return (
         <Delayed>
           <Skeleton className="h-5 w-60" />
         </Delayed>
       );
-    const { versions: list, latestRelease, latestSnapshot } = versions.data;
-    if (list.length === 0)
+    }
+    const { count, latestRelease, latestSnapshot } = summary.data;
+    if (count === 0) {
       return <p className="text-small text-muted-foreground">{t("about.noVersions")}</p>;
+    }
     return (
       <div className="flex flex-col text-small text-muted-foreground tabular-nums">
-        <p>{t("about.versionsCount", { count: list.length })}</p>
+        <p>{t("about.versionsCount", { count })}</p>
         <p>{t("about.latestRelease", { id: latestRelease })}</p>
         <p>{t("about.latestSnapshot", { id: latestSnapshot })}</p>
       </div>
@@ -77,6 +117,7 @@ export function AboutPanel() {
         <p lang="en">{t("about.legal")}</p>
         <p>{t("about.license")}</p>
       </div>
+      <SourceLink />
       {facts()}
     </div>
   );

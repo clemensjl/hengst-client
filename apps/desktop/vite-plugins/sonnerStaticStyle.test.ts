@@ -1,7 +1,11 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { removeSonnerRuntimeStyle } from "./sonnerStaticStyle";
+import {
+  assertTransformedOnce,
+  removeSonnerRuntimeStyle,
+  sonnerStaticStyle,
+} from "./sonnerStaticStyle";
 
 const sonner = readFileSync(
   path.resolve(import.meta.dirname, "../node_modules/sonner/dist/index.mjs"),
@@ -22,6 +26,23 @@ describe("Sonner under the CSP", () => {
 
   it("fails loudly when the insertion looks different", () => {
     expect(() => removeSonnerRuntimeStyle("export const x = 1;")).toThrow(/CSP/);
+  });
+
+  it("a production build fails unless Sonner's module was transformed exactly once", () => {
+    expect(() => assertTransformedOnce(0)).toThrow(/renamed/);
+    expect(() => assertTransformedOnce(2)).toThrow(/2 times/);
+    expect(() => assertTransformedOnce(1)).not.toThrow();
+    // Through the plugin's own hooks: build mode, nothing transformed, buildEnd throws.
+    const plugin = sonnerStaticStyle() as unknown as {
+      configResolved: (c: { command: string }) => void;
+      transform: (code: string, id: string) => unknown;
+      buildEnd: (e?: Error) => void;
+    };
+    plugin.configResolved({ command: "build" });
+    expect(() => plugin.buildEnd()).toThrow();
+    expect(plugin.transform("x", "/other/module.js")).toBeNull();
+    plugin.transform(sonner, "C:\\app\\node_modules\\sonner\\dist\\index.mjs");
+    expect(() => plugin.buildEnd()).not.toThrow();
   });
 
   it("the CSP allows style elements from 'self' only", () => {

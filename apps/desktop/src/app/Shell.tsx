@@ -36,25 +36,29 @@ export function Shell({ view, onSelect, devBuild, children }: Props) {
   const scrolled = useScrolled(scroller, sentinel);
   const title = t(VIEW_ITEMS.find((i) => i.view === view)!.labelKey);
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="flex h-dvh bg-background text-foreground">
       <Sidebar view={view} onSelect={onSelect} devBuild={devBuild} />
       <div className="flex min-w-0 flex-1 flex-col bg-surface">
         <header
           className={cn(
-            "flex h-14 shrink-0 items-center gap-4 border-b border-transparent px-6 wide:px-8",
-            scrolled && "border-border",
+            "flex min-h-14 shrink-0 items-center gap-4 border-b px-6 py-3 wide:px-8",
+            scrolled ? "border-border" : "border-transparent",
           )}
         >
-          <h1 className="min-w-40 truncate font-display text-display">{title}</h1>
+          {/* A long title wraps to a second line (the header grows) instead of being cut: a tooltip
+              would not be reachable by keyboard (DESIGN.md 10.15). */}
+          <h1 className="min-w-40 font-display text-display">{title}</h1>
           {/* The view's primary action and the account chip (Task 8) go here. */}
           <div className="ml-auto flex shrink-0 items-center gap-4" data-slot="header-end" />
         </header>
         <div
           ref={scroller}
-          className="flex-1 overflow-x-hidden overflow-y-auto px-6 pt-2 pb-6 wide:px-8 wide:pb-8"
+          className="flex-1 overflow-x-hidden overflow-y-auto px-6 pb-6 wide:px-8 wide:pb-8"
         >
-          <div ref={sentinel} aria-hidden="true" className="-mt-2 h-px" />
-          <main className="max-w-[1120px]">{children}</main>
+          {/* 1 px at the very top that takes no space (-mb-px): once it is scrolled out of view the
+              header gets its line. The 8 px from header to content are the main's own padding. */}
+          <div ref={sentinel} aria-hidden="true" className="-mb-px h-px" />
+          <main className="max-w-[1120px] pt-2">{children}</main>
         </div>
       </div>
     </div>

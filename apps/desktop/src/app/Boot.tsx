@@ -17,7 +17,7 @@ type Phase =
 function ShellSkeleton() {
   return (
     <Delayed>
-      <div className="flex h-screen" aria-busy="true">
+      <div className="flex h-dvh" aria-busy="true">
         <div className="flex w-16 shrink-0 flex-col gap-2 border-r bg-background p-2 wide:w-54">
           <Skeleton className="h-10" />
           <Skeleton className="h-10" />
@@ -64,6 +64,11 @@ export function Boot() {
 
   const start = useCallback(async () => {
     setPhase({ kind: "loading" });
+    // The skeleton and the error block may show before the settings are known. The WebView's own
+    // color scheme is what Rust set at window creation from the saved theme (a forced light or
+    // dark, or the system's), so it is the right theme for them; the saved setting then takes over.
+    applyTheme(currentTheme("system"));
+    document.documentElement.dataset.ready = "";
     const app = useApp.getState();
     // Events before the first load; a failed subscription only loses live updates.
     await app.startEventLoop().catch((e) => console.error("event channel:", e));
@@ -71,12 +76,10 @@ export function Boot() {
       const settings = await app.loadSettings();
       initI18n(settings.language, navigator.language);
       applyTheme(currentTheme(settings.theme));
-      document.documentElement.dataset.ready = "";
       void app.loadInfo();
       setPhase({ kind: "ready", notice: settings.notice });
     } catch {
       initI18n(null, navigator.language);
-      document.documentElement.dataset.ready = "";
       setPhase({ kind: "error" });
     }
   }, []);

@@ -1,5 +1,4 @@
 @import "tailwindcss";
-@import "tw-animate-css";
 @import "shadcn/tailwind.css";
 /* Sonner's own style sheet, shipped with ours; its run-time insertion is removed (see
    vite-plugins/sonnerStaticStyle.ts) because the CSP refuses inline style elements. */
@@ -290,6 +289,15 @@
     background-color: var(--highlight);
     color: var(--text);
   }
+}
+
+/* Nothing animates while the last input was the keyboard (DESIGN.md 8, Appendix A). Sonner keeps
+   its own timing. */
+html[data-input="keyboard"] *:not([data-sonner-toaster], [data-sonner-toaster] *),
+html[data-input="keyboard"] *::before,
+html[data-input="keyboard"] *::after {
+  transition: none !important;
+  animation: none !important;
 }
 
 /* A layer that opens by pointer fades and scales from the trigger; by keyboard it just appears

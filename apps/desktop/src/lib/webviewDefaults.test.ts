@@ -63,6 +63,16 @@ describe("webview defaults", () => {
     stop();
   });
 
+  it("cancels a blocked key even if a handler further down stops the event", () => {
+    const stop = installWebviewDefaults(true);
+    const target = el("<div>a</div>");
+    target.addEventListener("keydown", (e) => e.stopPropagation());
+    const f5 = new KeyboardEvent("keydown", { key: "F5", cancelable: true, bubbles: true });
+    target.dispatchEvent(f5);
+    expect(f5.defaultPrevented).toBe(true);
+    stop();
+  });
+
   it("installs nothing when disabled (debug builds keep the menu and the keys)", () => {
     const stop = installWebviewDefaults(false);
     const f5 = new KeyboardEvent("keydown", { key: "F5", cancelable: true, bubbles: true });

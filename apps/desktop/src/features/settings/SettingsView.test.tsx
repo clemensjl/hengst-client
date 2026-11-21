@@ -91,6 +91,18 @@ describe("SettingsView", () => {
     expect((patches[0] as { language: unknown }).language).toEqual({ op: "clear" });
   });
 
+  it("a second choice while one is saving is ignored", async () => {
+    const patches = backend(async (p) => {
+      await new Promise((r) => setTimeout(r, 50));
+      return { ...saved, theme: (p as { theme: string }).theme };
+    });
+    view();
+    fireEvent.click(screen.getByRole("radio", { name: "Dark" }));
+    fireEvent.click(screen.getByRole("radio", { name: "Light" }));
+    await waitFor(() => expect(useApp.getState().settings.data?.theme).toBe("dark"));
+    expect(patches).toHaveLength(1);
+  });
+
   it("a failed save falls back to the saved value and says so inline", async () => {
     backend(() => {
       throw { code: "internal", params: {}, action: null, detail: "disk full" };
@@ -106,6 +118,9 @@ describe("SettingsView", () => {
     backend(() => saved);
     view();
     expect(await screen.findByText("Not an official Minecraft product.")).toBeTruthy();
-    expect(await screen.findByText("\\HengstClient")).toBeTruthy();
+    const path = await screen.findByText("C:\\data\\HengstClient");
+    // The whole path wraps and stays visible: no truncation, no tooltip.
+    expect(path.className).toContain("wrap-anywhere");
+    expect(path.className).not.toContain("truncate");
   });
 });

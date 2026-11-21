@@ -40,7 +40,7 @@ describe("accent", () => {
 
   it("is used only for the primary action, the active nav icon and the focus ring", () => {
     const raw =
-      /\b(?:[a-z-]+:)*(?:bg|text|border|ring)-primary(?:-foreground)?(?![\w-])|var\(--accent\)|accent-hover|accent-pressed/g;
+      /\b(?:[a-z-]+:)*(?:bg|text|border|ring|accent|fill|stroke|outline|decoration|shadow|caret|from|to|via|divide)-primary(?:-foreground)?(?![\w-])|var\(--accent\)|var\(--primary\)|accent-hover|accent-pressed/g;
     for (const { file, text } of scanned) {
       for (const [hit] of text.matchAll(raw)) {
         expect(allowed[file] ?? [], `${file}: ${hit}`).toContain(hit);

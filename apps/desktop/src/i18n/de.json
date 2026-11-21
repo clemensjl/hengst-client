@@ -117,5 +117,7 @@
   "errors.fileSystem.title": "Eine Datei ließ sich nicht lesen oder schreiben",
   "errors.fileSystem.body": "Prüfe, ob der Datenordner erreichbar und nicht schreibgeschützt ist, und versuche es erneut.",
   "errors.openFailed.title": "Der Link konnte nicht geöffnet werden",
-  "errors.openFailed.body": "Windows hat das Öffnen im Browser abgelehnt. Prüfe den Standardbrowser und versuche es erneut."
+  "errors.openFailed.body": "Windows hat das Öffnen im Browser abgelehnt. Prüfe den Standardbrowser und versuche es erneut.",
+  "about.source": "Quellcode",
+  "common.opensInBrowser": "{{name}} (öffnet im Browser)"
 }

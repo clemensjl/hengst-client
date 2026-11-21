@@ -29,6 +29,15 @@ function loading<T>(r: Resource<T>): Resource<T> {
   return r.data === undefined ? { status: "loading" } : r;
 }
 
+/** What About shows about the version list; separate from `versions`, which carries the filter of the version picker. */
+export interface VersionsSummary {
+  count: number;
+  latestRelease: string;
+  latestSnapshot: string;
+}
+
+const ALL_KINDS: VersionFilter = { release: true, snapshot: true, beta: true, alpha: true };
+
 interface AppState {
   view: View;
   info: Resource<AppInfo>;
@@ -36,6 +45,7 @@ interface AppState {
   versions: Resource<GameVersionsDto>;
   /** Why the shown version list may be old: no connection, or another refresh failure. */
   versionsStale: null | "offline" | "other";
+  versionsSummary: Resource<VersionsSummary>;
   setView: (view: View) => void;
   loadInfo: () => Promise<void>;
   /** Resolves with the answer, rejects with an `IpcError`. */
@@ -43,6 +53,7 @@ interface AppState {
   /** Saves a change; resolves with the saved settings, rejects with an `IpcError` (nothing changed). */
   updateSettings: (change: Partial<SettingsPatch>) => Promise<SettingsDto>;
   loadVersions: (filter: VersionFilter) => Promise<void>;
+  loadVersionsSummary: () => Promise<void>;
   /** Subscribes to backend events. Call it before the first load, so no event in between is lost. */
   startEventLoop: () => Promise<void>;
 }
@@ -56,6 +67,7 @@ export const useApp = create<AppState>()((set, get) => ({
   settings: idle(),
   versions: idle(),
   versionsStale: null,
+  versionsSummary: idle(),
 
   setView: (view) => set({ view }),
 
@@ -96,6 +108,27 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  loadVersionsSummary: async () => {
+    set((s) => ({ versionsSummary: loading(s.versionsSummary) }));
+    try {
+      const all = await api.gameVersions(ALL_KINDS);
+      set({
+        versionsSummary: {
+          status: "ready",
+          data: {
+            count: all.versions.length,
+            latestRelease: all.latestRelease,
+            latestSnapshot: all.latestSnapshot,
+          },
+        },
+      });
+    } catch (e) {
+      set((s) => ({
+        versionsSummary: { ...s.versionsSummary, status: "error", error: errorOf(e) },
+      }));
+    }
+  },
+
   startEventLoop: () =>
     subscribeEvents((event) => {
       if (event.event === "dataChanged") {
@@ -106,6 +139,7 @@ export const useApp = create<AppState>()((set, get) => ({
         if (event.data.scope === "versions") {
           set({ versionsStale: null });
           if (versionsFilter) void get().loadVersions(versionsFilter);
+          if (get().versionsSummary.status !== "idle") void get().loadVersionsSummary();
         }
       } else if (event.event === "notice") {
         const offline = event.data.kind === "versionsRefreshOffline";

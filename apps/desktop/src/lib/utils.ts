@@ -1,29 +1,10 @@
-import { createCn } from "cn/config";
+import { clsx, type ClassValue } from "clsx";
 
 /**
- * Class merging that knows the type scale of DESIGN.md 2.5, so `text-label text-foreground` keeps
- * both the size and the color.
+ * Joins class names. It does not resolve conflicts: a later class does not beat an earlier one of
+ * the same property, so a component must never pass two (tokens.test.ts checks the generated
+ * ones and every button variant).
  */
-export const cn = createCn({
-  extend: {
-    classGroups: {
-      "font-size": [
-        {
-          text: [
-            "display-lg",
-            "display",
-            "heading",
-            "body",
-            "label",
-            "small",
-            "caption",
-            "badge",
-            "play",
-            "mono",
-            "code",
-          ],
-        },
-      ],
-    },
-  },
-});
+export function cn(...inputs: ClassValue[]): string {
+  return clsx(inputs);
+}

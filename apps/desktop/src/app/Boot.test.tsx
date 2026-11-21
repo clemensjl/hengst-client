@@ -73,6 +73,20 @@ describe("Boot", () => {
     ).toHaveLength(1);
   });
 
+  it("applies the system theme before the settings are known, so the error block is not light on dark", async () => {
+    vi.stubGlobal("matchMedia", () => ({
+      matches: true,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    }));
+    backend(() => {
+      throw { code: "internal", params: {}, action: null, detail: "x" };
+    });
+    render(<Boot />);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+    expect(document.documentElement.classList.contains("dark")).toBe(true);
+  });
+
   it("shows an error with a retry when the settings cannot be read, then recovers", async () => {
     let fail = true;
     backend(() => {
@@ -81,6 +95,9 @@ describe("Boot", () => {
     });
     render(<Boot />);
     expect(await screen.findByRole("alert")).toBeTruthy();
+    // The error block shows in the theme the WebView already has (here: light), painted at once.
+    expect(document.documentElement.hasAttribute("data-ready")).toBe(true);
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
     fail = false;
     fireEvent.click(screen.getByRole("button"));
     await waitFor(() => expect(screen.getByRole("navigation")).toBeTruthy());

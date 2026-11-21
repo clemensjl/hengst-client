@@ -26,6 +26,13 @@ describe("Shell", () => {
       (el) => el.getAttribute("aria-label") ?? el.textContent,
     );
     expect(focusable).toEqual(["Instances", "Settings", "Content action"]);
+    // 8 px from the header to the first content (DESIGN.md 7.2): the main's own padding; the
+    // sentinel for the header line takes no space and the scroller has no top padding.
+    const main = container.querySelector("main")!;
+    expect(main.className).toContain("pt-2");
+    const scroller = main.parentElement!;
+    expect(scroller.className).not.toMatch(/(^|\s)(pt|py|p)-/);
+    expect(scroller.firstElementChild!.className).toContain("-mb-px");
     const regions = [...container.querySelectorAll("aside, header, main")].map((e) => e.tagName);
     expect(regions).toEqual(["ASIDE", "HEADER", "MAIN"]);
   });

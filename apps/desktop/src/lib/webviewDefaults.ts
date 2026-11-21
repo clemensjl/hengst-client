@@ -33,9 +33,10 @@ export function installWebviewDefaults(enabled: boolean = import.meta.env.PROD):
     if (blocksBrowserShortcut(e)) e.preventDefault();
   };
   document.addEventListener("contextmenu", menu);
-  document.addEventListener("keydown", keys);
+  // Capture phase: no handler further down can swallow the event before it is cancelled.
+  document.addEventListener("keydown", keys, true);
   return () => {
     document.removeEventListener("contextmenu", menu);
-    document.removeEventListener("keydown", keys);
+    document.removeEventListener("keydown", keys, true);
   };
 }

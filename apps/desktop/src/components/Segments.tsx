@@ -44,7 +44,7 @@ export function Segments<V extends string>({
           key={o.value}
           value={o.value}
           className={cn(
-            "flex h-10 items-center gap-2 rounded-md border border-input bg-secondary pr-4 pl-3 text-small text-foreground transition-[background-color,border-color] duration-(--dur-press) ease-out select-none hover:bg-hover data-checked:border-foreground data-checked:bg-selected data-disabled:text-text-disabled",
+            "flex h-10 items-center gap-2 rounded-md border border-input bg-secondary pr-4 pl-3 text-small text-foreground select-none hover:bg-hover data-checked:border-foreground data-checked:bg-selected data-disabled:text-text-disabled",
           )}
         >
           <span className="flex size-4 shrink-0 items-center justify-center">
