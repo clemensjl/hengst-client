@@ -55,4 +55,16 @@ class TypedOptionTest {
         assertSame(onGrid, f.coerce(onGrid));
         assertEquals(1.8f, (Float) onGrid, 0f);
     }
+
+    @Test
+    void default_index_of_a_non_choice_spec_throws() {
+        assertThrows(IllegalArgumentException.class, () -> OptionSpec.toggle("t", true).defaultIndex());
+    }
+
+    @Test
+    void value_with_an_index_out_of_range_throws() {
+        OptionSpec c = OptionSpec.choice("c", "a", "a", "b");
+        assertThrows(ArrayIndexOutOfBoundsException.class, () -> c.value(2));
+        assertThrows(ArrayIndexOutOfBoundsException.class, () -> c.value(-1));
+    }
 }

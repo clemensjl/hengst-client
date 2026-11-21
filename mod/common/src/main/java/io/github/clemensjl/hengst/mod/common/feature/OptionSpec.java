@@ -187,7 +187,11 @@ public final class OptionSpec {
             case FLOAT_RANGE: {
                 float f = coerceFloat(raw);
                 // An input that is already on the grid is returned as it is: no new box per read.
-                return raw instanceof Float && ((Float) raw).floatValue() == f ? raw : (Object) f;
+                if (raw instanceof Float && ((Float) raw).floatValue() == f) {
+                    return raw;
+                }
+                // The default path (missing key, wrong type, NaN) returns the preallocated default.
+                return ((Float) def).floatValue() == f ? def : (Object) f;
             }
             default:
                 return values[coerceChoice(raw)];
