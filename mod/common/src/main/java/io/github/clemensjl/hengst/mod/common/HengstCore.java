@@ -11,16 +11,13 @@ import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGate;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
 import io.github.clemensjl.hengst.mod.common.hud.CpsCounter;
 import io.github.clemensjl.hengst.mod.common.hud.FrameCounter;
 import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.hud.HudRenderer;
-import io.github.clemensjl.hengst.mod.common.hud.modules.CoordinatesModule;
-import io.github.clemensjl.hengst.mod.common.hud.modules.CpsModule;
-import io.github.clemensjl.hengst.mod.common.hud.modules.FpsModule;
-import io.github.clemensjl.hengst.mod.common.hud.modules.KeystrokesModule;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
@@ -36,6 +33,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
@@ -88,9 +86,12 @@ public final class HengstCore {
     private static final int SITE_SERVER = 8;
     private static final int SITE_LANGUAGE = 9;
     private static final int SITE_HUD_TICK = 10;
-    private static final int SITES = 11;
+    private static final int SITE_KEY = 11;
+    private static final int SITES = 12;
     private static final int MAX_CONFIG_KINDS = 32;
     private static final int MAX_KINDS = 4;
+    // Key handler failures remembered at once (feature and exception class); further ones stay silent until a success.
+    private static final int MAX_KEY_FAILURES = 8;
 
     private final Platform platform;
     private final TimeSource time;
@@ -108,6 +109,17 @@ public final class HengstCore {
     private final Class<?>[][] loggedKinds = new Class<?>[SITES][MAX_KINDS];
     private final int[] loggedCount = new int[SITES];
     private final boolean[] held = new boolean[2];
+    // Key bindings, indexed like keySpecs: the owning feature (null for the two core keys), the key's index in the
+    // owner's keys(), whether it is a HOLD key, whether it is held now and whether its press was delivered (HOLD only).
+    private final List<KeySpec> keySpecs = new ArrayList<KeySpec>();
+    private Feature[] keyOwner = new Feature[0];
+    private int[] keyLocal = new int[0];
+    private boolean[] keyHold = new boolean[0];
+    private boolean[] keyDown = new boolean[0];
+    private boolean[] delivered = new boolean[0];
+    private final Feature[] keyFailFeature = new Feature[MAX_KEY_FAILURES];
+    private final Class<?>[] keyFailKind = new Class<?>[MAX_KEY_FAILURES];
+    private int keyFailCount;
 
     private Profile profile;
     // The name the loaded profile belongs to; saves go there, and only while it is still the active one.
@@ -135,10 +147,9 @@ public final class HengstCore {
         this.platform = platform;
         this.time = time;
         gate = new FeatureGate(platform.version(), policy);
-        registry.register(new FpsModule());
-        registry.register(new CpsModule());
-        registry.register(new KeystrokesModule());
-        registry.register(new CoordinatesModule());
+        for (Feature f : FeatureCatalog.create()) {
+            registry.register(f);
+        }
         Path root = platform.configDir().resolve("hengst");
         settingsStore = new SettingsStore(root.resolve("settings.json"), clock, platform::logWarning);
         profileStore = new ProfileStore(root.resolve("profiles"), clock, platform::logWarning);
@@ -175,6 +186,28 @@ public final class HengstCore {
         // The first periodic check runs in the first tick.
         lastLanguageCheckNanos = lastSaveNanos - LANGUAGE_INTERVAL_NANOS;
         registry.seal();
+        appendKeys(null, FeatureCatalog.coreKeys());
+        for (Feature f : registry.supportedOn(platform.version())) {
+            appendKeys(f, f.keys());
+        }
+    }
+
+    /** Adds key bindings after the existing ones; the state arrays grow with them. Cold path. */
+    private void appendKeys(Feature owner, List<KeySpec> specs) {
+        int n = keyOwner.length;
+        int total = n + specs.size();
+        keyOwner = Arrays.copyOf(keyOwner, total);
+        keyLocal = Arrays.copyOf(keyLocal, total);
+        keyHold = Arrays.copyOf(keyHold, total);
+        keyDown = Arrays.copyOf(keyDown, total);
+        delivered = Arrays.copyOf(delivered, total);
+        for (int i = 0; i < specs.size(); i++) {
+            KeySpec spec = specs.get(i);
+            keySpecs.add(spec);
+            keyOwner[n + i] = owner;
+            keyLocal[n + i] = i;
+            keyHold[n + i] = spec.mode() == KeySpec.Mode.HOLD;
+        }
     }
 
     /** See the class comment for when to call it. Throws only if the platform itself fails. */
@@ -336,6 +369,9 @@ public final class HengstCore {
                 held[0] = false;
                 held[1] = false;
             }
+            if (screenOpen || !game.inWorld()) {
+                releaseHeldKeys();
+            }
             Session s = current;
             if (s != null && !screenOpen) {
                 // The game removed our screen without calling closed(): end the session as a close would.
@@ -370,6 +406,22 @@ public final class HengstCore {
             ok(SITE_TICK);
         } catch (RuntimeException e) {
             failure(SITE_TICK, "client tick", e);
+        }
+    }
+
+    /** Gives every delivered, still held HOLD key its release: a screen opened or the world was left. */
+    private void releaseHeldKeys() {
+        try {
+            boolean[] d = delivered;
+            for (int i = 0; i < d.length; i++) {
+                if (d[i]) {
+                    d[i] = false;
+                    deliverKey(i, false);
+                }
+            }
+            ok(SITE_KEY);
+        } catch (RuntimeException e) {
+            failure(SITE_KEY, "releasing the held keys", e);
         }
     }
 
@@ -488,8 +540,8 @@ public final class HengstCore {
     }
 
     /**
-     * Once per key-binding press of the settings key. Opening only in a world is the adapter's duty: it checks that
-     * before calling, the core does not. Does nothing if one of the mod's screens is already open.
+     * Opens the settings. {@link #onFeatureKey} (index 0) calls it after its own checks; it does not check the world
+     * itself. Does nothing if one of the mod's screens is already open.
      *
      * <p>Screen removal rule: when the game removes a mod screen (any reason), the adapter first marks its host
      * screen as removed and then forwards {@code closed()} to the {@link UiScreen}. The core answers with
@@ -513,6 +565,112 @@ public final class HengstCore {
         } catch (RuntimeException e) {
             failure(SITE_OPEN, "opening the settings", e);
         }
+    }
+
+    /**
+     * Every state change of a key binding of {@link #keySpecs()}, by index. Contract for the adapters (per tick and
+     * key): first {@code onFeatureKey(i, true)} if at least one click was counted since the last tick, then
+     * {@code onFeatureKey(i, false)} if the key is no longer down. The core keeps the held state: a press of a held
+     * key and a release of a key that is not held do nothing. A press counts only in a world without an open screen
+     * and, for a feature key, while {@link FeatureState#on} is true for its feature (a disabled, unsupported or
+     * restricted feature does nothing); it then needs a real release before the next press counts. Index 0 opens the
+     * settings, 1 the HUD editor. A release goes only to HOLD keys whose press was delivered; the tick sends it when a
+     * screen opens or the world is left. Indexes outside the list are ignored. Allocation free in the healthy case; a
+     * throwing handler is logged once per feature and exception class and stops nothing.
+     */
+    public void onFeatureKey(int index, boolean down) {
+        boolean[] downs = keyDown;
+        if (index < 0 || index >= downs.length) {
+            return;
+        }
+        try {
+            if (!down) {
+                downs[index] = false;
+                if (delivered[index]) {
+                    delivered[index] = false;
+                    deliverKey(index, false);
+                }
+                return;
+            }
+            if (downs[index]) {
+                return;
+            }
+            downs[index] = true;
+            GameView game = platform.game();
+            if (!game.inWorld() || game.screenOpen()) {
+                return;
+            }
+            Feature owner = keyOwner[index];
+            if (owner == null) {
+                if (index == 0) {
+                    onOpenSettingsKey();
+                } else {
+                    onOpenHudEditorKey();
+                }
+                return;
+            }
+            if (!FeatureState.on(owner.number())) {
+                return;
+            }
+            if (keyHold[index]) {
+                delivered[index] = true;
+            }
+            deliverKey(index, true);
+            ok(SITE_KEY);
+        } catch (RuntimeException e) {
+            failure(SITE_KEY, "a feature key", e);
+        }
+    }
+
+    /** One handler call, fenced: a throw is logged once per feature and exception class and goes no further. */
+    private void deliverKey(int index, boolean down) {
+        Feature owner = keyOwner[index];
+        try {
+            owner.onKey(keyLocal[index], down, time.nanoTime());
+            if (keyFailCount != 0) {
+                keyHealthy(owner);
+            }
+        } catch (RuntimeException | LinkageError e) {
+            keyFailure(owner, e);
+        }
+    }
+
+    private void keyFailure(Feature owner, Throwable e) {
+        Class<?> kind = e.getClass();
+        for (int i = 0; i < keyFailCount; i++) {
+            if (keyFailFeature[i] == owner && keyFailKind[i] == kind) {
+                return;
+            }
+        }
+        if (keyFailCount >= MAX_KEY_FAILURES) {
+            return;
+        }
+        keyFailFeature[keyFailCount] = owner;
+        keyFailKind[keyFailCount] = kind;
+        keyFailCount++;
+        platform.logWarning("Hengst: a key of " + owner.id() + " failed: " + e);
+    }
+
+    /** A handler of this feature ran cleanly: its failures are logged again if they return. */
+    private void keyHealthy(Feature owner) {
+        int kept = 0;
+        for (int i = 0; i < keyFailCount; i++) {
+            if (keyFailFeature[i] != owner) {
+                keyFailFeature[kept] = keyFailFeature[i];
+                keyFailKind[kept] = keyFailKind[i];
+                kept++;
+            }
+        }
+        for (int i = kept; i < keyFailCount; i++) {
+            keyFailFeature[i] = null;
+            keyFailKind[i] = null;
+        }
+        keyFailCount = kept;
+    }
+
+    /** The key bindings the adapters register, in index order for {@link #onFeatureKey}; the same as {@link FeatureCatalog#keys}. */
+    public List<KeySpec> keySpecs() {
+        return Collections.unmodifiableList(keySpecs);
     }
 
     /** Like {@link #onOpenSettingsKey()} for the HUD editor key. */
@@ -586,6 +744,9 @@ public final class HengstCore {
             registry.register(feature);
         } finally {
             registry.seal();
+        }
+        if (feature.supports(platform.version())) {
+            appendKeys(feature, feature.keys());
         }
         applyConfig();
     }

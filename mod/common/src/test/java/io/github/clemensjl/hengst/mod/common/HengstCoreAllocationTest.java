@@ -272,4 +272,54 @@ class HengstCoreAllocationTest {
             assertEquals(0, cold[i], "case " + i + " allocated " + cold[i] + " bytes on the frame path");
         }
     }
+
+    /** Counts instead of listing: nothing to allocate in the handler. */
+    private static final class CountingKeyFeature extends io.github.clemensjl.hengst.mod.common.feature.Feature {
+        int downs;
+        int ups;
+        private final java.util.List<io.github.clemensjl.hengst.mod.common.feature.KeySpec> keys = java.util.Collections.singletonList(
+                new io.github.clemensjl.hengst.mod.common.feature.KeySpec("count.hold",
+                        io.github.clemensjl.hengst.mod.common.feature.DefaultKey.NONE,
+                        io.github.clemensjl.hengst.mod.common.feature.KeySpec.Mode.HOLD));
+
+        CountingKeyFeature() {
+            super("counting", 47, io.github.clemensjl.hengst.mod.common.feature.FeatureGroup.HUD,
+                    java.util.EnumSet.allOf(io.github.clemensjl.hengst.mod.common.platform.GameVersion.class));
+        }
+
+        @Override public java.util.List<io.github.clemensjl.hengst.mod.common.feature.KeySpec> keys() { return keys; }
+
+        @Override public void onKey(int key, boolean down, long nowNanos) {
+            if (down) { downs++; } else { ups++; }
+        }
+    }
+
+    @Test void feature_keys_allocate_nothing() {
+        core = start(); platform.inWorld = true;
+        CountingKeyFeature f = new CountingKeyFeature();
+        core.activeProfile().module("counting").setEnabled(true);
+        int hold = core.keySpecs().size();
+        core.registerForTest(f);
+        for (int i = 0; i < 3000; i++) { core.onFeatureKey(hold, true); core.onFeatureKey(hold, false); core.onClientTick(); }
+        long before = allocated();
+        for (int i = 0; i < 1000; i++) { core.onFeatureKey(hold, true); core.onFeatureKey(hold, false); }
+        long pairs = allocated() - before;
+        before = allocated();
+        for (int i = 0; i < 1000; i++) { core.onClientTick(); }
+        long idle = allocated() - before;
+        core.onFeatureKey(hold, true);
+        before = allocated();
+        for (int i = 0; i < 1000; i++) { core.onFeatureKey(hold, true); core.onClientTick(); }
+        long held = allocated() - before;
+        before = allocated();
+        for (int i = 0; i < 1000; i++) { core.onFeatureKey(-1, true); core.onFeatureKey(hold + 5, false); }
+        long outOfRange = allocated() - before;
+        System.out.println("HengstCore key allocation: 1000 press+release pairs " + pairs + " bytes, 1000 idle ticks " + idle
+                + " bytes, 1000 ticks with a held key " + held + " bytes, 1000 out of range " + outOfRange + " bytes");
+        assertEquals(0, pairs);
+        assertEquals(0, idle);
+        assertEquals(0, held);
+        assertEquals(0, outOfRange);
+        assertTrue(f.downs >= 4000 && f.ups >= 3999);
+    }
 }

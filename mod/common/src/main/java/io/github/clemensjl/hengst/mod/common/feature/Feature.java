@@ -39,6 +39,19 @@ public abstract class Feature {
         return Collections.emptyList();
     }
 
+    /** The key bindings of this feature; the index in this list is the {@code key} of {@link #onKey}. */
+    public List<KeySpec> keys() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * A key of {@link #keys()} changed. Called on the client thread, only while the feature is on, in a world without an
+     * open screen. {@code down} is true for a press; a release arrives only for {@link KeySpec.Mode#HOLD} keys whose
+     * press was delivered (also after the feature was switched off, or when a screen opened or the world was left).
+     * Allocation free in the healthy case. An exception is logged once and stops nothing.
+     */
+    public void onKey(int key, boolean down, long nowNanos) {}
+
     /**
      * Called by the core, once per pass and with this feature's own configuration, for every feature supported on
      * this version: at start, after the settings and the HUD editor close, on a profile switch and when the server
