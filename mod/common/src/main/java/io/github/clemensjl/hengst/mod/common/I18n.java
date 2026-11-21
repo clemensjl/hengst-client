@@ -22,6 +22,11 @@ public final class I18n {
         this.fallback = fallback;
     }
 
+    /** For tests: texts given directly instead of read from the language files. */
+    public static I18n of(Map<String, Object> primary, Map<String, Object> fallback) {
+        return new I18n(primary, fallback);
+    }
+
     public static I18n load(String languageCode) {
         String code = languageCode == null ? FALLBACK : languageCode.toLowerCase(Locale.ROOT);
         Map<String, Object> fallback = read(FALLBACK);
@@ -35,6 +40,21 @@ public final class I18n {
             v = fallback.get(key);
         }
         return v instanceof String ? (String) v : key;
+    }
+
+    /** Whether the key has a text in the active or the fallback language. */
+    public boolean has(String key) {
+        return primary.get(key) instanceof String || fallback.get(key) instanceof String;
+    }
+
+    /** The text of the first key that has one; the last key's text (or the key itself) if none has. */
+    public String first(String... keys) {
+        for (String key : keys) {
+            if (has(key)) {
+                return get(key);
+            }
+        }
+        return get(keys[keys.length - 1]);
     }
 
     public String get(String key, Object arg) {

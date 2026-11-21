@@ -4,6 +4,7 @@ import io.github.clemensjl.hengst.mod.common.I18n;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
@@ -173,31 +174,34 @@ public final class SettingsScreen implements UiScreen {
         final Feature f = model.selected();
         if (f != null) {
             final String id = f.id();
-            out.add(new ToggleWidget(i18n.get("hengst.option.background"), new BooleanSupplier() {
-                @Override
-                public boolean getAsBoolean() {
-                    return model.config(id).background();
-                }
-            }, new Consumer<Boolean>() {
-                @Override
-                public void accept(Boolean b) {
-                    model.config(id).setBackground(b);
-                    model.markChanged();
-                }
-            }));
-            out.add(new ToggleWidget(i18n.get("hengst.option.shadow"), new BooleanSupplier() {
-                @Override
-                public boolean getAsBoolean() {
-                    return model.config(id).shadow();
-                }
-            }, new Consumer<Boolean>() {
-                @Override
-                public void accept(Boolean b) {
-                    model.config(id).setShadow(b);
-                    model.markChanged();
-                }
-            }));
-            out.add(colorChoice(id));
+            // Background, shadow and colour style the HUD text; a feature that is not on the HUD has no use for them.
+            if (f.group() == FeatureGroup.HUD) {
+                out.add(new ToggleWidget(i18n.get("hengst.option.background"), new BooleanSupplier() {
+                    @Override
+                    public boolean getAsBoolean() {
+                        return model.config(id).background();
+                    }
+                }, new Consumer<Boolean>() {
+                    @Override
+                    public void accept(Boolean b) {
+                        model.config(id).setBackground(b);
+                        model.markChanged();
+                    }
+                }));
+                out.add(new ToggleWidget(i18n.get("hengst.option.shadow"), new BooleanSupplier() {
+                    @Override
+                    public boolean getAsBoolean() {
+                        return model.config(id).shadow();
+                    }
+                }, new Consumer<Boolean>() {
+                    @Override
+                    public void accept(Boolean b) {
+                        model.config(id).setShadow(b);
+                        model.markChanged();
+                    }
+                }));
+                out.add(colorChoice(id));
+            }
             for (OptionSpec spec : f.options()) {
                 Widget w = optionWidget(id, spec);
                 if (w != null) {
@@ -238,7 +242,7 @@ public final class SettingsScreen implements UiScreen {
     }
 
     private Widget optionWidget(final String id, final OptionSpec spec) {
-        String label = i18n.get("hengst.option." + spec.key());
+        String label = i18n.first("hengst.option." + id + "." + spec.key(), "hengst.option." + spec.key());
         switch (spec.kind()) {
             case TOGGLE:
                 return new ToggleWidget(label, new BooleanSupplier() {
@@ -253,19 +257,37 @@ public final class SettingsScreen implements UiScreen {
                         model.markChanged();
                     }
                 });
-            case CHOICE:
-                return new ChoiceWidget(label, spec.values(), new Supplier<String>() {
+            case CHOICE: {
+                // The values are shown through the language files; the stored value stays the raw one.
+                final String[] raw = spec.values();
+                final String[] shown = new String[raw.length];
+                for (int i = 0; i < raw.length; i++) {
+                    shown[i] = i18n.first("hengst.choice." + id + "." + raw[i], "hengst.choice." + raw[i], raw[i]);
+                }
+                return new ChoiceWidget(label, shown, new Supplier<String>() {
                     @Override
                     public String get() {
-                        return (String) model.config(id).option(spec);
+                        String value = (String) model.config(id).option(spec);
+                        for (int i = 0; i < raw.length; i++) {
+                            if (raw[i].equals(value)) {
+                                return shown[i];
+                            }
+                        }
+                        return value;
                     }
                 }, new Consumer<String>() {
                     @Override
                     public void accept(String s) {
-                        model.config(id).setOption(spec.key(), spec.coerce(s));
-                        model.markChanged();
+                        for (int i = 0; i < raw.length; i++) {
+                            if (shown[i].equals(s)) {
+                                model.config(id).setOption(spec.key(), spec.coerce(raw[i]));
+                                model.markChanged();
+                                return;
+                            }
+                        }
                     }
                 });
+            }
             case INT_RANGE:
             case FLOAT_RANGE:
                 // The slider reads a cached value: option() boxes a number on every call.

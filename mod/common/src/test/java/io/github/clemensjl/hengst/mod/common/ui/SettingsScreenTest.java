@@ -634,4 +634,77 @@ class SettingsScreenTest {
         long used = mx.getThreadAllocatedBytes(id) - a;
         assertTrue(used < 2048, "allocated " + used + " bytes in 1000 frames");
     }
+
+    // ---- rows by feature kind, labels, dim ----
+
+    @Test void the_first_draw_call_is_a_dim_over_the_whole_screen() {
+        screen.render(canvas, 0, 0, 0f);
+        assertEquals("fill 0 0 320 240 c0101010", canvas.calls.get(0));
+    }
+
+    @Test void a_feature_that_is_not_on_the_hud_gets_no_hud_style_rows() {
+        FeatureRegistry r = new FeatureRegistry();
+        r.register(new Feature("zoom", 30, FeatureGroup.VISUAL, EnumSet.allOf(GameVersion.class)) {
+            @Override public List<OptionSpec> options() { return Arrays.asList(OptionSpec.toggle("smooth", true)); }
+        });
+        r.register(new FpsModule());
+        open(r, "en_us");
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(60, 36 + 5, 0);                          // fps (number 1) is the first row
+        assertEquals("fps", model.selected().id());
+        assertEquals(3, screen.optionList().widgets().size());       // background, shadow, colour, no options
+        screen.mouseClicked(60, 36 + 20 + 5, 0);
+        assertEquals("zoom", model.selected().id());
+        assertEquals(1, screen.optionList().widgets().size());       // only its own option
+    }
+
+    private Feature featureWithOptions() {
+        return new Feature("zoom", 30, FeatureGroup.VISUAL, EnumSet.allOf(GameVersion.class)) {
+            @Override public List<OptionSpec> options() {
+                return Arrays.asList(OptionSpec.toggle("smooth", true), OptionSpec.choice("mode", "hold", "hold", "toggle"));
+            }
+        };
+    }
+
+    private void openZoom(java.util.Map<String, Object> primary, java.util.Map<String, Object> fallback) {
+        FeatureRegistry r = new FeatureRegistry();
+        r.register(featureWithOptions());
+        open(r, "en_us");
+        screen = new SettingsScreen(model, I18n.of(primary, fallback), () -> closeCount++);
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(60, 36 + 5, 0);
+        canvas.calls.clear();
+        screen.render(canvas, 0, 0, 0f);
+    }
+
+    private static java.util.Map<String, Object> texts(String... kv) {
+        java.util.Map<String, Object> m = new java.util.HashMap<>();
+        for (int i = 0; i < kv.length; i += 2) m.put(kv[i], kv[i + 1]);
+        return m;
+    }
+
+    @Test void option_labels_prefer_the_feature_specific_key_then_the_global_one_then_the_key() {
+        openZoom(texts("hengst.option.zoom.smooth", "Smooth zoom", "hengst.option.smooth", "Smooth"), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Smooth zoom ")), canvas.calls.toString());
+        openZoom(texts("hengst.option.smooth", "Smooth"), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Smooth ")), canvas.calls.toString());
+        openZoom(texts(), texts("hengst.option.zoom.smooth", "Fallback zoom"));
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Fallback zoom ")), canvas.calls.toString());
+        openZoom(texts(), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text hengst.option.smooth ")), canvas.calls.toString());
+    }
+
+    @Test void choice_values_are_shown_through_the_feature_key_then_the_global_key_then_raw() {
+        openZoom(texts("hengst.option.mode", "Mode", "hengst.choice.zoom.hold", "Hold key", "hengst.choice.hold", "Hold"), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Mode: Hold key ")), canvas.calls.toString());
+        openZoom(texts("hengst.option.mode", "Mode", "hengst.choice.hold", "Hold"), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Mode: Hold ")), canvas.calls.toString());
+        openZoom(texts("hengst.option.mode", "Mode"), texts());
+        assertTrue(canvas.calls.stream().anyMatch(c -> c.startsWith("text Mode: hold ")), canvas.calls.toString());
+        // Clicking stores the raw value, not the shown one.
+        openZoom(texts("hengst.choice.zoom.toggle", "Press to toggle"), texts());
+        int row = 36 + 20 + 5;                                       // second option row (no HUD rows for zoom)
+        screen.mouseClicked(200, row, 0);
+        assertEquals("toggle", model.config("zoom").option(model.selected().options().get(1)));
+    }
 }
