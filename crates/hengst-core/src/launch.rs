@@ -255,7 +255,7 @@ async fn link_client_jar(from: &std::path::Path, to: &std::path::Path, sha1: &st
         Ok(())
     })
     .await
-    .expect("copy task panicked")
+    .map_err(|e| std::io::Error::other(format!("copy task failed: {e}")))?
 }
 
 /// True in builds with the `dev-offline` cargo feature.

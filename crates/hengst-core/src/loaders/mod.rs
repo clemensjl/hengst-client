@@ -265,9 +265,8 @@ async fn list_saved(
             Ok((list, false))
         }
         Err(e) if is_unreachable(&e) => {
-            let saved = tokio::fs::read(&file)
+            let saved = read_bounded(&file, forge::installer::MAX_JSON_BYTES)
                 .await
-                .ok()
                 .and_then(|b| serde_json::from_slice::<Vec<LoaderVersion>>(&b).ok())
                 .filter(|l| {
                     !l.is_empty()
@@ -283,6 +282,20 @@ async fn list_saved(
         }
         Err(e) => Err(e),
     }
+}
+
+/// The file's bytes, or `None` when it cannot be read or is larger than `limit`.
+async fn read_bounded(file: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut buf = Vec::new();
+    tokio::fs::File::open(file)
+        .await
+        .ok()?
+        .take(limit + 1)
+        .read_to_end(&mut buf)
+        .await
+        .ok()?;
+    (buf.len() as u64 <= limit).then_some(buf)
 }
 
 async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
@@ -591,6 +604,15 @@ mod tests {
         )
         .unwrap();
         let down = serve(503).await;
+        assert!(matches!(
+            list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1").await,
+            Err(Error::Status { status: 503, .. })
+        ));
+        // A valid list padded beyond the size limit is not read.
+        let mut big = serde_json::to_vec(&list).unwrap();
+        big.resize(forge::installer::MAX_JSON_BYTES as usize + 1, b' ');
+        std::fs::write(&file, &big).unwrap();
+        assert!(serde_json::from_slice::<Vec<LoaderVersion>>(&big).is_ok());
         assert!(matches!(
             list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1").await,
             Err(Error::Status { status: 503, .. })

@@ -58,6 +58,17 @@ pub fn neoforge_game_version(version: &str) -> Option<String> {
     }
 }
 
+fn check_forge_supports(game: &str) -> Result<()> {
+    if !forge_supports(game) {
+        return Err(Error::LoaderUnsupported {
+            loader: "forge".into(),
+            game: game.to_string(),
+            reason: "Forge support starts at 1.7.10".into(),
+        });
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct Promotions {
     promos: HashMap<String, String>,
@@ -74,13 +85,7 @@ pub async fn list_forge(
     ep: &LoaderEndpoints,
     game: &str,
 ) -> Result<Vec<LoaderVersion>> {
-    if !forge_supports(game) {
-        return Err(Error::LoaderUnsupported {
-            loader: "forge".into(),
-            game: game.to_string(),
-            reason: "Forge support starts at 1.7.10".into(),
-        });
-    }
+    check_forge_supports(game)?;
     validate_id(game)?;
     let base = &ep.forge_files;
     let metadata: HashMap<String, Vec<String>> =
@@ -243,7 +248,9 @@ fn named_candidates(kind: LoaderKind, game: &str, requested: &str) -> Vec<Loader
 
 /// Fetches the installer of a build the user named, without the version list. A candidate whose
 /// installer is already on disk is tried first, so an installed build needs no network. A build
-/// without an installer is `Error::UnknownLoaderVersion`.
+/// without an installer is `Error::UnknownLoaderVersion`. The gates of the version list apply
+/// first: Forge before 1.7.10 is unsupported, and a NeoForge build must belong to `game` (no
+/// snapshot builds).
 pub async fn fetch_named(
     dl: &Downloader,
     paths: &Paths,
@@ -254,6 +261,20 @@ pub async fn fetch_named(
 ) -> Result<(LoaderVersion, PathBuf, String)> {
     validate_id(game)?;
     validate_id(requested)?;
+    let unknown = || Error::UnknownLoaderVersion {
+        loader: kind.to_string(),
+        game: game.to_string(),
+        version: requested.to_string(),
+    };
+    match kind {
+        LoaderKind::Forge => check_forge_supports(game)?,
+        LoaderKind::NeoForge
+            if game != "1.20.1" && neoforge_game_version(requested).as_deref() != Some(game) =>
+        {
+            return Err(unknown())
+        }
+        _ => {}
+    }
     let mut candidates = named_candidates(kind, game, requested);
     for c in &candidates {
         validate_id(&c.maven)?;
@@ -273,11 +294,7 @@ pub async fn fetch_named(
             Err(e) => return Err(e),
         }
     }
-    Err(Error::UnknownLoaderVersion {
-        loader: kind.to_string(),
-        game: game.to_string(),
-        version: requested.to_string(),
-    })
+    Err(unknown())
 }
 
 /// A Forge or NeoForge build whose installer was fetched, verified and read.
@@ -285,8 +302,8 @@ pub async fn fetch_named(
 pub struct ForgeInstall {
     pub kind: LoaderKind,
     pub game: String,
-    /// Full Maven version of the requested build, from the validated version list; never a value
-    /// read from the installer.
+    /// Full Maven version of the requested build: picked from the validated version list, or
+    /// mapped from the build the user named (`fetch_named`); never a value read from the installer.
     pub maven: String,
     pub installer: PathBuf,
     /// SHA-1 the installer was verified against (the Maven repository's).
@@ -901,6 +918,43 @@ mod tests {
                 fetch_named(&dl, &paths, &ep, LoaderKind::Forge, "1.20.1", bad).await,
                 Err(Error::UnsafePath(_))
             ));
+        }
+    }
+
+    #[tokio::test]
+    async fn named_build_gets_the_gates_of_the_version_list_without_network() {
+        let server = MockServer::start().await;
+        Mock::given(any())
+            .respond_with(ResponseTemplate::new(404))
+            .expect(0)
+            .mount(&server)
+            .await;
+        let ep = LoaderEndpoints {
+            forge_maven: format!("{}/fm", server.uri()),
+            ..ep(&server)
+        };
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let err = fetch_named(&dl, &paths, &ep, LoaderKind::Forge, "1.6.4", "9.11.1.1345")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err.to_string(),
+            "forge for Minecraft 1.6.4 is not supported (Forge support starts at 1.7.10)"
+        );
+        // A NeoForge build of another game version, and a snapshot build.
+        for (game, build) in [
+            ("1.21", "21.1.267"),
+            ("26.1", "26.1.0.0-alpha.1+snapshot-1"),
+        ] {
+            let err = fetch_named(&dl, &paths, &ep, LoaderKind::NeoForge, game, build)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, Error::UnknownLoaderVersion { version, .. } if version == build),
+                "{err}"
+            );
         }
     }
 

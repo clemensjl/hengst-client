@@ -134,10 +134,11 @@ impl Downloader {
                     tokio::time::sleep(Duration::from_millis(300 * u64::from(attempt))).await;
                 }
                 // The local file is missing or wrong and the server cannot be reached.
-                Err(Error::Http { .. }) => {
+                Err(Error::Http { source, .. }) => {
                     return Err(Error::Offline {
                         path: item.path.clone(),
                         url: item.url.clone(),
+                        source,
                     })
                 }
                 Err(e) => return Err(e),
@@ -216,6 +217,14 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
         Err(Error::Status { status: 404, .. }) => {
             return Err(Error::NoChecksum {
                 url: item.url.clone(),
+            })
+        }
+        // Without a usable cached hash the file cannot be checked while offline.
+        Err(Error::Http { url, source }) => {
+            return Err(Error::Offline {
+                path: item.path.clone(),
+                url,
+                source,
             })
         }
         Err(e) => return Err(e),
@@ -654,6 +663,68 @@ mod tests {
         assert!(Downloader::new(http_client()).fetch_one(&it).await.unwrap());
         assert!(!stale.exists());
         assert!(fresh.exists() && other.exists() && odd.exists());
+    }
+
+    /// A URL on a port that was just free and has no listener.
+    fn unreachable_url(name: &str) -> String {
+        let port = std::net::TcpListener::bind("127.0.0.1:0")
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port();
+        format!("http://127.0.0.1:{port}/{name}")
+    }
+
+    #[tokio::test]
+    async fn offline_without_a_usable_cached_hash_is_the_offline_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache.clone());
+        let url = unreachable_url("lib.jar");
+        let it = Download {
+            url: url.clone(),
+            path: dir.path().join("lib.jar"),
+            sha1: None,
+            sha1_from_cache: false,
+        };
+        std::fs::write(&it.path, b"hello").unwrap();
+        // No cache entry, then a corrupt one.
+        for entry in [None, Some("not a hash")] {
+            if let Some(text) = entry {
+                std::fs::create_dir_all(&cache).unwrap();
+                std::fs::write(cache.join(sha1_hex(url.as_bytes())), text).unwrap();
+            }
+            let err = fill_missing_sha1(&dl, &mut [it.clone()]).await.unwrap_err();
+            let m = err.to_string();
+            assert!(
+                matches!(&err, Error::Offline { path, .. } if *path == it.path),
+                "{m}"
+            );
+            assert!(m.contains("lib.jar") && m.contains("offline"), "{m}");
+            // The cause is kept for the message and as the error source.
+            assert!(std::error::Error::source(&err).is_some(), "{m}");
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_download_names_the_file_and_keeps_the_cause() {
+        let dir = tempfile::tempdir().unwrap();
+        let it = Download {
+            url: unreachable_url("a.bin"),
+            path: dir.path().join("a.bin"),
+            sha1: Some(HELLO_SHA1.into()),
+            sha1_from_cache: false,
+        };
+        let err = Downloader::new(http_client())
+            .fetch_one(&it)
+            .await
+            .unwrap_err();
+        let m = err.to_string();
+        assert!(matches!(&err, Error::Offline { .. }), "{m}");
+        let source = std::error::Error::source(&err)
+            .expect("cause kept")
+            .to_string();
+        assert!(m.contains(&source), "{m}");
     }
 
     #[tokio::test]
