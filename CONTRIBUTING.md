@@ -21,6 +21,12 @@ Run the same checks as CI:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
     cargo test --workspace --all-features
 
+### Live launch tests
+
+`crates/hengst-core/tests/loader_live.rs` contains ignored tests that really start the game with every supported loader. They are not part of the checks above and not meant for casual use: they download several gigabytes into `%TEMP%\hengst-live`, open game windows (one at a time) and take about 13 minutes.
+
+    cargo test -p hengst-core --features dev-offline --test loader_live -- --ignored --test-threads=1
+
 ## Rules
 
 - Code, error messages and the README are in English. Files under `docs/` are in German.
