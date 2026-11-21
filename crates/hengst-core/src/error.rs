@@ -49,6 +49,8 @@ pub enum Error {
     NoChecksum { url: String },
     #[error("loader profile inherits from {found}, expected {expected}")]
     ParentMismatch { expected: String, found: String },
+    #[error("{version} uses the launch argument placeholder ${{{key}}}, which the launcher does not know")]
+    UnknownPlaceholder { version: String, key: String },
     #[error("invalid loader installer: {0}")]
     Installer(String),
     #[error("loader installer step {jar} failed with exit code {code}, see {log}")]

@@ -232,7 +232,7 @@ pub async fn prepare_with_runner(
     };
     Ok(Prepared {
         java,
-        args: build_args(&merged, &ctx),
+        args: build_args(&merged, &ctx)?,
         game_dir,
         version_id: merged.id.clone(),
         loader_list_from_cache: setup.as_ref().is_some_and(|s| s.list_from_cache),
