@@ -999,9 +999,13 @@ class HengstCoreTest {
         int ticks;
         int languageChanges;
         boolean throwOnLanguage;
+        boolean throwOnTick;
 
         TickProbe() { super("probe", 0, EnumSet.allOf(GameVersion.class)); }
-        @Override public void tick(io.github.clemensjl.hengst.mod.common.hud.HudContext ctx, ModuleConfig cfg) { ticks++; }
+        @Override public void tick(io.github.clemensjl.hengst.mod.common.hud.HudContext ctx, ModuleConfig cfg) {
+            ticks++;
+            if (throwOnTick) { throw new IllegalStateException("tick"); }
+        }
         @Override public void onLanguageChanged() {
             languageChanges++;
             if (throwOnLanguage) { throw new IllegalStateException("probe"); }
@@ -1063,6 +1067,67 @@ class HengstCoreTest {
         assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
         assertEquals(1, core.context().languageGeneration());
         assertTrue(platform.warnings.isEmpty(), platform.warnings.toString());
+    }
+
+    @Test void switching_back_to_the_loaded_language_clears_a_give_up_so_the_failed_one_is_retried() {
+        int[] calls = {0};
+        core = start(); platform.inWorld = true;
+        core.setLanguageLoaderForTest(code -> { calls[0]++; throw new IllegalStateException("unreadable"); });
+        core.onClientTick();
+        platform.languageCode = "de_de";
+        for (int i = 0; i < 10; i++) { time.advanceMillis(1000); core.onClientTick(); }
+        assertEquals(3, calls[0]);                                       // given up while it stays selected
+        platform.languageCode = "en_us";                                 // the loaded language: nothing to load
+        time.advanceMillis(1000); core.onClientTick();
+        assertEquals(3, calls[0]);
+        platform.languageCode = "de_de";
+        for (int i = 0; i < 10; i++) { time.advanceMillis(1000); core.onClientTick(); }
+        assertEquals(6, calls[0]);                                       // retried, again three times
+    }
+
+    @Test void an_unreadable_language_file_at_start_does_not_make_start_throw() {
+        int[] calls = {0};
+        core = HengstCore.start(platform, time, clock, new FakeWallClock(), RestrictionPolicy.NONE,
+                code -> { calls[0]++; throw new IllegalStateException("en_us is unreadable"); });
+        assertEquals(1, platform.warnings.size());
+        assertEquals("hengst.button.done", core.context().i18n().get("hengst.button.done"));   // the key, never null
+        assertEquals(1, calls[0]);
+        platform.inWorld = true;
+        core.onClientTick();                                             // the check tries the real language (bounded)
+        assertEquals(2, calls[0]);
+        core.setLanguageLoaderForTest(I18n::load);
+        time.advanceMillis(1000); core.onClientTick();
+        assertEquals("Done", core.context().i18n().get("hengst.button.done"));
+        assertEquals(1, core.context().languageGeneration());
+    }
+
+    @Test void a_throwing_hud_tick_does_not_skip_the_batched_save() throws Exception {
+        TickProbe probe = new TickProbe();
+        core = start(); platform.inWorld = true;
+        core.registerForTest(probe);
+        Files.createDirectories(profiles().getParent());
+        Files.write(profiles(), new byte[0]);                            // the save at the editor's close fails
+        core.onOpenHudEditorKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(5, 5, 0);
+        platform.openedScreen.mouseDragged(100, 100, 0);
+        platform.openedScreen.mouseReleased(100, 100, 0);
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        Files.delete(profiles());                                        // the change is still pending
+        core.activeProfile().module("probe").setEnabled(true);
+        core.applyConfigForTest();
+        probe.throwOnTick = true;
+        // The module's failure is logged by the renderer; make that log itself throw once so renderer.tick fails.
+        platform.warnings = new java.util.ArrayList<String>() {
+            boolean armed = true;
+            @Override public boolean add(String w) {
+                if (armed) { armed = false; throw new IllegalStateException("log failed"); }
+                return super.add(w);
+            }
+        };
+        time.advanceMillis(5000); core.onClientTick();
+        assertTrue(Files.exists(defaultFile()));
+        assertTrue(platform.warnings.stream().anyMatch(w -> w.contains("the HUD tick")), platform.warnings.toString());
     }
 
     @Test void a_failing_language_load_does_not_skip_the_hud_tick() {

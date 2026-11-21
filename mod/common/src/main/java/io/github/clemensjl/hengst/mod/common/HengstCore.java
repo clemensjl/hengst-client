@@ -36,6 +36,7 @@ import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -86,7 +87,8 @@ public final class HengstCore {
     private static final int SITE_SETTINGS = 7;
     private static final int SITE_SERVER = 8;
     private static final int SITE_LANGUAGE = 9;
-    private static final int SITES = 10;
+    private static final int SITE_HUD_TICK = 10;
+    private static final int SITES = 11;
     private static final int MAX_CONFIG_KINDS = 32;
     private static final int MAX_KINDS = 4;
 
@@ -126,9 +128,10 @@ public final class HengstCore {
     private String failedLanguage;
     private int languageAttempts;
     // The language loader; replaced only by tests.
-    private Function<String, I18n> languageLoader = I18n::load;
+    private Function<String, I18n> languageLoader;
 
-    private HengstCore(Platform platform, TimeSource time, Clock clock, WallClock wallClock, RestrictionPolicy policy) {
+    private HengstCore(Platform platform, TimeSource time, Clock clock, WallClock wallClock, RestrictionPolicy policy,
+            Function<String, I18n> loader) {
         this.platform = platform;
         this.time = time;
         gate = new FeatureGate(platform.version(), policy);
@@ -153,9 +156,19 @@ public final class HengstCore {
         }
         frames = new FrameCounter(time);
         cps = new CpsCounter(time);
+        languageLoader = loader;
         String code = readLanguage();
-        ctx = new HudContext(platform, time, wallClock, frames, cps, I18n.load(code == UNREAD ? null : code));
-        loadedLanguage = code;
+        I18n initial;
+        try {
+            initial = loader.apply(code == UNREAD ? null : code);
+            loadedLanguage = code;
+        } catch (RuntimeException | LinkageError e) {
+            // start must not throw for this: keys as texts until the periodic check loads the real language.
+            platform.logWarning("Hengst: loading the language failed, showing keys until the next check: " + e);
+            initial = I18n.of(Collections.<String, Object>emptyMap(), Collections.<String, Object>emptyMap());
+            loadedLanguage = UNREAD;
+        }
+        ctx = new HudContext(platform, time, wallClock, frames, cps, initial);
         renderer = new HudRenderer(registry, gate);
         applyConfig();
         lastSaveNanos = time.nanoTime();
@@ -179,7 +192,13 @@ public final class HengstCore {
 
     static HengstCore start(Platform platform, TimeSource time, Clock clock, WallClock wallClock,
             RestrictionPolicy policy) {
-        return new HengstCore(platform, time, clock, wallClock, policy);
+        return new HengstCore(platform, time, clock, wallClock, policy, I18n::load);
+    }
+
+    /** For tests: like the other overload, with the loader used at start and in the checks. */
+    static HengstCore start(Platform platform, TimeSource time, Clock clock, WallClock wallClock,
+            RestrictionPolicy policy, Function<String, I18n> loader) {
+        return new HengstCore(platform, time, clock, wallClock, policy, loader);
     }
 
     /** The code once at start. A throw is logged once; English until the first tick check reads it again. */
@@ -336,7 +355,12 @@ public final class HengstCore {
             } catch (RuntimeException e) {
                 failure(SITE_LANGUAGE, "the language check", e);
             }
-            renderer.tick(ctx);
+            try {
+                renderer.tick(ctx);
+                ok(SITE_HUD_TICK);
+            } catch (RuntimeException e) {
+                failure(SITE_HUD_TICK, "the HUD tick", e);
+            }
             if (s != null && s.editorModel != null && s.editorModel.dirty()) {
                 dirty = true;
             }
@@ -385,6 +409,9 @@ public final class HengstCore {
         lastLanguageCheckNanos = now;
         String code = platform.languageCode();
         if (sameCode(code, loadedLanguage)) {
+            // Back on the loaded language: a give-up for another code is forgotten, so selecting it again retries.
+            failedLanguage = null;
+            languageAttempts = 0;
             return;
         }
         if (!sameCode(code, failedLanguage)) {
