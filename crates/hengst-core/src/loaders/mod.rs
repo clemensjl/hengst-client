@@ -134,12 +134,49 @@ pub async fn list_versions(
         LoaderKind::NeoForge => forge::list_neoforge(client, ep, game).await?,
     };
     if versions.is_empty() {
-        return Err(Error::NoLoaderVersions {
-            loader: kind.to_string(),
-            game: game.to_string(),
-        });
+        return Err(no_versions(kind, game));
     }
     Ok(versions)
+}
+
+/// True when `game` (`1.X[.Y]` or a year-based `26.x`) is older than 1.`minor`.`patch`; `None`
+/// for ids that cannot be placed (snapshots, pre-releases).
+fn older_than(game: &str, minor: u64, patch: u64) -> Option<bool> {
+    let mut parts = game.split('.');
+    let major: u64 = parts.next()?.parse().ok()?;
+    match major {
+        0 => None,
+        1 => {
+            let x: u64 = parts.next()?.parse().ok()?;
+            let y: u64 = match parts.next() {
+                Some(p) => p.parse().ok()?,
+                None => 0,
+            };
+            Some((x, y) < (minor, patch))
+        }
+        _ => Some(false),
+    }
+}
+
+/// `NoLoaderVersions` with a reason for the common mistakes, decided without any request.
+pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
+    let hint = match kind {
+        LoaderKind::NeoForge if older_than(game, 20, 1) == Some(true) => {
+            Some("NeoForge starts at 1.20.1")
+        }
+        LoaderKind::Fabric if older_than(game, 14, 0) == Some(true) => {
+            Some("Fabric starts at 1.14; try --loader legacy-fabric")
+        }
+        LoaderKind::LegacyFabric if older_than(game, 14, 0) == Some(false) => {
+            Some("Legacy Fabric serves 1.13.2 and older; try --loader fabric")
+        }
+        _ => None,
+    };
+    Error::NoLoaderVersions {
+        loader: kind.to_string(),
+        game: game.to_string(),
+        hint,
+    }
 }
 
 /// Resolves a loader request for a game version: picks the build and fetches its profile.
@@ -154,16 +191,22 @@ pub async fn prepare_loader(
 ) -> Result<LoaderSetup> {
     match req.kind {
         LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
-            let version = match list_versions(dl.client(), ep, req.kind, game).await {
-                Ok(list) => pick_version(&list, req.version.as_deref(), req.kind, game)?.clone(),
-                // Service down but the user named a build: the profile fetch falls back to the
-                // stored copy. The build is not checked against the list.
+            let (version, list_from_cache) = match list_saved(dl, paths, ep, req.kind, game).await {
+                Ok((list, cached)) => (
+                    pick_version(&list, req.version.as_deref(), req.kind, game)?.clone(),
+                    cached,
+                ),
+                // Service down, no saved list, but the user named a build: the profile fetch
+                // falls back to the stored copy. The build is not checked against a list.
                 Err(e) => match &req.version {
-                    Some(id) if fabric::is_unreachable(&e) => LoaderVersion {
-                        id: id.clone(),
-                        maven: id.clone(),
-                        stable: false,
-                    },
+                    Some(id) if is_unreachable(&e) => (
+                        LoaderVersion {
+                            id: id.clone(),
+                            maven: id.clone(),
+                            stable: false,
+                        },
+                        false,
+                    ),
                     _ => return Err(e),
                 },
             };
@@ -177,7 +220,7 @@ pub async fn prepare_loader(
                 child,
                 extra_downloads: Vec::new(),
                 forge: None,
-                list_from_cache: false,
+                list_from_cache,
             })
         }
         LoaderKind::Forge | LoaderKind::NeoForge => {
@@ -272,7 +315,12 @@ async fn list_saved(
                     !l.is_empty()
                         && l.iter().all(|v| {
                             crate::paths::validate_id(&v.id).is_ok()
-                                && crate::paths::validate_id(&v.maven).is_ok()
+                                // A Fabric-family maven is a coordinate (`group:artifact:version`)
+                                // that never becomes a path; Forge and NeoForge ones do.
+                                && (matches!(
+                                    kind,
+                                    LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric
+                                ) || crate::paths::validate_id(&v.maven).is_ok())
                         })
                 });
             match saved {
@@ -360,7 +408,8 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
         (None, None) => Ordering::Equal,
         (None, Some(_)) => Ordering::Greater,
         (Some(_), None) => Ordering::Less,
-        // A missing prerelease segment is the empty text, which sorts below any other text.
+        // A missing prerelease segment is the empty text, which counts as the number 0: it equals
+        // a `0` segment and sorts before any text segment.
         (Some(pa), Some(pb)) => cmp_segments(pa, pb, ""),
     })
 }
@@ -377,10 +426,7 @@ pub fn pick_version<'a>(
     game: &str,
 ) -> Result<&'a LoaderVersion> {
     if versions.is_empty() {
-        return Err(Error::NoLoaderVersions {
-            loader: kind.to_string(),
-            game: game.to_string(),
-        });
+        return Err(no_versions(kind, game));
     }
     match requested {
         Some(req) => versions
@@ -529,6 +575,32 @@ mod tests {
             pick_version(&[], None, LoaderKind::Fabric, "1.8.9"),
             Err(Error::NoLoaderVersions { .. })
         ));
+    }
+
+    #[test]
+    fn no_versions_names_the_common_mistakes() {
+        let m = |kind, game| no_versions(kind, game).to_string();
+        assert_eq!(
+            m(LoaderKind::NeoForge, "1.19.4"),
+            "no neoforge versions available for Minecraft 1.19.4 (NeoForge starts at 1.20.1)"
+        );
+        assert!(m(LoaderKind::NeoForge, "1.20").contains("starts at 1.20.1"));
+        assert!(!m(LoaderKind::NeoForge, "1.20.1").contains('('));
+        assert!(m(LoaderKind::Fabric, "1.8.9").contains("--loader legacy-fabric"));
+        assert!(m(LoaderKind::LegacyFabric, "1.21.11").contains("--loader fabric"));
+        assert!(m(LoaderKind::LegacyFabric, "26.1").contains("--loader fabric"));
+        // No hint where the launcher cannot tell, or nothing is known to be wrong.
+        for (kind, game) in [
+            (LoaderKind::Fabric, "1.21.11"),
+            (LoaderKind::Fabric, "24w14a"),
+            (LoaderKind::Fabric, "1.14 Pre-Release 1"),
+            (LoaderKind::LegacyFabric, "1.8.9"),
+            (LoaderKind::LegacyFabric, "24w14a"),
+            (LoaderKind::Quilt, "1.8.9"),
+            (LoaderKind::Forge, "1.21.11"),
+        ] {
+            assert!(!m(kind, game).contains('('), "{kind} {game}");
+        }
     }
 
     #[test]

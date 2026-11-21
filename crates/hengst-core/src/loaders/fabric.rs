@@ -2,14 +2,16 @@
 
 use serde::Deserialize;
 
-use super::{sort_newest_first, LoaderEndpoints, LoaderKind, LoaderVersion};
+use super::{
+    is_unreachable, no_versions, sort_newest_first, LoaderEndpoints, LoaderKind, LoaderVersion,
+};
 use crate::download::get_bytes;
 use crate::paths::{validate_id, Paths};
 use crate::version::VersionJson;
 use crate::{Error, Result};
 
 /// Base URL of the meta service for a Fabric-family loader. Forge and NeoForge are not served by
-/// a meta service of this shape.
+/// a Fabric-style meta service.
 pub fn meta_base<'a>(kind: LoaderKind, game: &str, ep: &'a LoaderEndpoints) -> Result<&'a str> {
     match kind {
         LoaderKind::Fabric => Ok(&ep.fabric),
@@ -18,7 +20,7 @@ pub fn meta_base<'a>(kind: LoaderKind, game: &str, ep: &'a LoaderEndpoints) -> R
         LoaderKind::NeoForge | LoaderKind::Forge => Err(Error::LoaderUnsupported {
             loader: kind.to_string(),
             game: game.to_string(),
-            reason: "not implemented yet".into(),
+            reason: "not served by a Fabric-style meta service".into(),
         }),
     }
 }
@@ -51,14 +53,6 @@ fn is_missing(e: &Error) -> bool {
     )
 }
 
-pub(super) fn is_unreachable(e: &Error) -> bool {
-    match e {
-        Error::Http { .. } => true,
-        Error::Status { status, .. } => *status >= 500,
-        _ => false,
-    }
-}
-
 /// Loader versions for a game version, newest first.
 pub async fn list_versions(
     client: &reqwest::Client,
@@ -69,10 +63,7 @@ pub async fn list_versions(
     let base = meta_base(kind, game, ep)?;
     validate_id(game)?;
     let url = format!("{base}/versions/loader/{}", encode(game));
-    let none = || Error::NoLoaderVersions {
-        loader: kind.to_string(),
-        game: game.to_string(),
-    };
+    let none = || no_versions(kind, game);
     let bytes = match get_bytes(client, &url).await {
         Ok(b) => b,
         Err(e) if is_missing(&e) => return Err(none()),
@@ -298,7 +289,7 @@ mod tests {
         for kind in [LoaderKind::Forge, LoaderKind::NeoForge] {
             assert!(matches!(
                 list_versions(&client, &ep, kind, "1.21.11").await,
-                Err(Error::LoaderUnsupported { ref reason, .. }) if reason == "not implemented yet"
+                Err(Error::LoaderUnsupported { ref reason, .. }) if reason == "not served by a Fabric-style meta service"
             ));
         }
     }

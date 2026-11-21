@@ -288,6 +288,33 @@ async fn prepares_fabric_on_a_modern_version() {
 }
 
 #[tokio::test]
+async fn installed_fabric_launches_offline_without_naming_a_build() {
+    // Not from the pool: dropping it really stops the server.
+    let s = MockServer::builder().start().await;
+    let u = s.uri();
+    mount_modern_vanilla(&s).await;
+    let (profile, jars) = mock_profile(FABRIC_PROFILE, "fabric-loader-0.20.1-9.9", "9.9", &u);
+    mount_jars(&s, &jars, &[]).await;
+    mount_fabric(&s, &profile).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let ep = endpoints(&u);
+    let default = opts("9.9", Some((LoaderKind::Fabric, None)));
+    let online = prepare(&paths, &default, &ep).await.unwrap();
+    assert!(!online.loader_list_from_cache);
+    drop(s);
+    assert!(reqwest::get(format!("{u}/fabric/v2/versions/loader/9.9"))
+        .await
+        .is_err());
+
+    // The saved version list stands in for the unreachable service.
+    let p = prepare(&paths, &default, &ep).await.unwrap();
+    assert!(p.loader_list_from_cache);
+    assert_eq!(p.version_id, online.version_id);
+    assert_eq!(p.args, online.args);
+}
+
+#[tokio::test]
 async fn prepares_legacy_fabric_on_a_legacy_version() {
     let s = MockServer::start().await;
     let u = s.uri();

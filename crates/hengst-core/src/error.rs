@@ -24,8 +24,13 @@ pub enum Error {
     NoRuntime { component: String, platform: String },
     #[error("offline accounts can only start the game in development builds (cargo feature dev-offline)")]
     OfflineLaunchDisabled,
-    #[error("no {loader} versions available for Minecraft {game}")]
-    NoLoaderVersions { loader: String, game: String },
+    #[error("no {loader} versions available for Minecraft {game}{}", hint_suffix(.hint))]
+    NoLoaderVersions {
+        loader: String,
+        game: String,
+        /// A likely reason the launcher can tell without asking anything.
+        hint: Option<&'static str>,
+    },
     #[error("{loader} {version} is not available for Minecraft {game} (see `hengst loaders {loader} {game}`)")]
     UnknownLoaderVersion {
         loader: String,
@@ -75,6 +80,10 @@ pub enum Error {
     Json(#[from] serde_json::Error),
     #[error(transparent)]
     Zip(#[from] zip::result::ZipError),
+}
+
+fn hint_suffix(hint: &Option<&'static str>) -> String {
+    hint.map(|h| format!(" ({h})")).unwrap_or_default()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
