@@ -30,3 +30,38 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --dry-run
+
+  mod:
+    # The companion mod under mod/. The workflow triggers stay as they are; the path filter below makes this job
+    # do nothing unless files under mod/ or this workflow changed. It starts no game and runs no in-game tests.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            mod:
+              - 'mod/**'
+              - '.github/workflows/ci.yml'
+      - if: steps.filter.outputs.mod == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - if: steps.filter.outputs.mod == 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: mod
+      - if: steps.filter.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p common test
+      - if: steps.filter.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p legacy test
+      - if: steps.filter.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p modern :1.21.11:test :26.3:test
+      - if: steps.filter.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew buildAll
