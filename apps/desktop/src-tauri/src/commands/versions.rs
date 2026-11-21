@@ -82,6 +82,7 @@ pub async fn game_versions_impl(
     if let Some(cached) = state
         .versions
         .get(&state.paths)
+        .await
         .map_err(|e| error_dto(&e))?
     {
         if state.versions.claim_refresh() {

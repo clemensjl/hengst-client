@@ -225,18 +225,21 @@ pub fn restored(s: &WindowState, monitors: &[MonitorArea], index: usize, frame: 
     }
 }
 
-/// The last normal (not maximized, not minimized) rectangle of this session.
+/// The last normal (not maximized, not minimized) rectangle of this session, and whether the
+/// window was maximized when it last was in a special state.
 ///
-/// Windows reports a move before it reports that the window is maximized or minimized: on
-/// maximizing, the `Moved` event already carries the big rectangle while `is_maximized` is still
-/// false (measured with Tauri 2.12 on Windows 11). So a rectangle taken at a `Moved` event is
-/// provisional, and the `Resized` event that reports the maximized or minimized state takes it
-/// back.
+/// Windows reports a move before it reports that the window is maximized: on maximizing, the
+/// `Moved` event already carries the big rectangle while `is_maximized` is still false (measured
+/// with Tauri 2.12 on Windows 11). So a rectangle taken at a `Moved` event is provisional, and the
+/// `Resized` event that reports the maximized state takes it back. Minimizing takes nothing back:
+/// a move to another monitor followed by a minimize keeps the new rectangle. A minimized window
+/// does not report maximized, so the last maximized state is kept and saved.
 #[derive(Clone, Debug)]
 pub struct Tracker {
     current: WindowState,
     before: WindowState,
     last_was_move: bool,
+    maximized: bool,
 }
 
 impl Tracker {
@@ -245,6 +248,7 @@ impl Tracker {
             before: start.clone(),
             current: start,
             last_was_move: false,
+            maximized: false,
         }
     }
 
@@ -260,22 +264,29 @@ impl Tracker {
         }
     }
 
-    /// `now` is as for `on_moved`; `special` tells that the window is maximized or minimized.
-    pub fn on_resized(&mut self, now: Option<WindowState>, special: bool) {
+    /// `now` is as for `on_moved`; `maximized` is what the window reports at this event.
+    pub fn on_resized(&mut self, now: Option<WindowState>, maximized: bool) {
         match now {
-            Some(now) => self.push(now, false),
-            None if special && self.last_was_move => {
-                self.current = self.before.clone();
-                self.last_was_move = false;
+            Some(now) => {
+                self.push(now, false);
+                self.maximized = false;
             }
+            None if maximized => {
+                if self.last_was_move {
+                    self.current = self.before.clone();
+                    self.last_was_move = false;
+                }
+                self.maximized = true;
+            }
+            // Minimized: the rectangle and the earlier maximized state stay.
             None => {}
         }
     }
 
     /// What to save when the window closes.
-    pub fn saved(&self, maximized: bool) -> WindowState {
+    pub fn saved(&self) -> WindowState {
         WindowState {
-            maximized,
+            maximized: self.maximized,
             ..self.current.clone()
         }
     }
@@ -583,7 +594,7 @@ mod tests {
         // maximize: Moved still sees a "normal" window with the big rectangle, Resized knows better
         t.on_moved(Some(big.clone()));
         t.on_resized(None, true);
-        let saved = t.saved(true);
+        let saved = t.saved();
         assert!(saved.maximized);
         assert_eq!(
             (saved.width, saved.height, saved.x, saved.y),
@@ -592,27 +603,48 @@ mod tests {
         // restoring reports the normal rectangle again
         t.on_moved(None);
         t.on_resized(Some(normal.clone()), false);
-        assert_eq!(t.saved(false).width, 1000);
-        assert!(!t.saved(false).maximized);
+        assert_eq!(t.saved().width, 1000);
+        assert!(!t.saved().maximized);
     }
 
     #[test]
     fn a_minimized_window_is_never_saved_as_the_rectangle() {
         let mut t = Tracker::new(state(1000, 650, 300, 200));
-        t.on_moved(Some(state(160, 28, -32000, -32000)));
-        t.on_resized(None, true);
-        let saved = t.saved(false);
-        assert_eq!((saved.x, saved.y), (300, 200));
-        // events while minimized or maximized change nothing
+        // Windows parks a minimized window far off-screen; the window code reports it as None.
         t.on_moved(None);
+        t.on_resized(None, false);
+        let saved = t.saved();
+        assert_eq!((saved.x, saved.y), (300, 200));
+        assert!(!saved.maximized);
+    }
+
+    #[test]
+    fn a_move_to_another_monitor_followed_by_minimize_is_kept() {
+        let mut t = Tracker::new(state(1000, 650, 300, 200));
+        // Win+Shift+Right: one Moved with the rectangle on monitor 2, then minimize.
+        t.on_moved(Some(state(1000, 650, 2300, 200)));
+        t.on_moved(None);
+        t.on_resized(None, false);
+        assert_eq!((t.saved().x, t.saved().y), (2300, 200));
+    }
+
+    #[test]
+    fn minimizing_from_maximized_still_saves_maximized() {
+        let mut t = Tracker::new(state(1000, 650, 300, 200));
+        t.on_moved(Some(state(2560, 1369, -8, -8)));
         t.on_resized(None, true);
-        assert_eq!(t.saved(false).x, 300);
+        // minimize: not maximized any more as far as the window reports
+        t.on_moved(None);
+        t.on_resized(None, false);
+        let saved = t.saved();
+        assert!(saved.maximized);
+        assert_eq!((saved.x, saved.y), (300, 200));
     }
 
     #[test]
     fn a_plain_move_is_kept() {
         let mut t = Tracker::new(state(1000, 650, 300, 200));
         t.on_moved(Some(state(1000, 650, 350, 220)));
-        assert_eq!((t.saved(false).x, t.saved(false).y), (350, 220));
+        assert_eq!((t.saved().x, t.saved().y), (350, 220));
     }
 }

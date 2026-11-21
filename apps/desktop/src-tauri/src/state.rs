@@ -39,10 +39,21 @@ pub struct VersionsCache {
 
 impl VersionsCache {
     /// The list from memory, otherwise the saved copy (which then stays in memory).
-    pub fn get(&self, paths: &Paths) -> Result<Option<VersionManifest>> {
+    pub async fn get(&self, paths: &Paths) -> Result<Option<VersionManifest>> {
+        let held = self
+            .inner
+            .memory
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        if held.is_some() {
+            return Ok(held);
+        }
+        // Read outside the lock; a list stored meanwhile by `put` wins over the saved copy.
+        let loaded = load_cached(paths).await?;
         let mut memory = self.inner.memory.lock().unwrap_or_else(|p| p.into_inner());
         if memory.is_none() {
-            *memory = load_cached(paths)?;
+            *memory = loaded;
         }
         Ok(memory.clone())
     }

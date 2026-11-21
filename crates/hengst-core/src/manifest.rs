@@ -60,7 +60,7 @@ pub async fn fetch_manifest(
 ) -> Result<VersionManifest> {
     match download_manifest(client, paths, url).await {
         Err(e @ (Error::Http { .. } | Error::Status { .. })) => {
-            match load_cached(paths).ok().flatten() {
+            match load_cached(paths).await.ok().flatten() {
                 Some(saved) => Ok(saved),
                 None => Err(e),
             }
@@ -89,8 +89,8 @@ pub async fn download_manifest(
 
 /// The saved manifest, without touching the network. A missing, truncated or unreadable-as-JSON
 /// file counts as no cache (`Ok(None)`); only a file system read error is an `Err`.
-pub fn load_cached(paths: &Paths) -> Result<Option<VersionManifest>> {
-    match std::fs::read(paths.manifest_file()) {
+pub async fn load_cached(paths: &Paths) -> Result<Option<VersionManifest>> {
+    match tokio::fs::read(paths.manifest_file()).await {
         Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(e.into()),
@@ -148,19 +148,19 @@ mod tests {
         assert_eq!(online.versions.len(), offline.versions.len());
     }
 
-    #[test]
-    fn load_cached_reads_what_fetch_manifest_saved_and_none_without_file() {
+    #[tokio::test]
+    async fn load_cached_reads_what_fetch_manifest_saved_and_none_without_file() {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::new(dir.path());
-        assert!(load_cached(&paths).unwrap().is_none());
+        assert!(load_cached(&paths).await.unwrap().is_none());
         std::fs::create_dir_all(paths.manifest_file().parent().unwrap()).unwrap();
         std::fs::write(paths.manifest_file(), sample().to_string()).unwrap();
         assert_eq!(
-            load_cached(&paths).unwrap().unwrap().latest.release,
+            load_cached(&paths).await.unwrap().unwrap().latest.release,
             "1.21.11"
         );
         std::fs::write(paths.manifest_file(), "{").unwrap();
-        assert!(load_cached(&paths).unwrap().is_none());
+        assert!(load_cached(&paths).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -181,7 +181,7 @@ mod tests {
             .collect();
         assert_eq!(names.len(), 1, "no temp file may stay behind: {names:?}");
         assert_eq!(
-            load_cached(&paths).unwrap().unwrap().latest.release,
+            load_cached(&paths).await.unwrap().unwrap().latest.release,
             "1.21.11"
         );
     }
@@ -200,10 +200,10 @@ mod tests {
             .await
             .unwrap();
         let reader_paths = paths.clone();
-        let reader = tokio::task::spawn_blocking(move || {
+        let reader = tokio::spawn(async move {
             for _ in 0..300 {
                 assert!(
-                    load_cached(&reader_paths).unwrap().is_some(),
+                    load_cached(&reader_paths).await.unwrap().is_some(),
                     "a rewrite must never expose a truncated cache"
                 );
             }

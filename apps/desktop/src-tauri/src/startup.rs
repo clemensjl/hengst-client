@@ -85,15 +85,21 @@ pub fn app_identifier(base: &str, debug: bool) -> String {
     }
 }
 
-/// The main window may only show the app's own pages: the local app origin and, in debug builds,
-/// the dev server. Every other navigation (a remote site, `file:`, `javascript:`) is refused.
+/// The origin the app's pages are served from on Windows: `http://tauri.localhost` without a
+/// port (`useHttpsScheme` is not set in `tauri.conf.json`, so Tauri's default `false` applies; the
+/// `tauri://` and `https://tauri.localhost` forms belong to other platforms or to that option).
+const APP_ORIGIN: &str = "http://tauri.localhost";
+
+/// The main window may only show the app's own pages: exactly the app origin and, under the dev
+/// condition (`cfg(dev)`), the dev server with its exact origin. Every other
+/// navigation (another port, another host, userinfo, `file:`, `data:`, `blob:`, `javascript:`) is
+/// refused. Tauri's own local-URL check ignores the port, so this guard is the one that counts.
 pub fn navigation_allowed(url: &Url, dev_url: Option<&Url>) -> bool {
-    let own = match url.scheme() {
-        "tauri" => url.host_str() == Some("localhost"),
-        "http" | "https" => url.host_str() == Some("tauri.localhost"),
-        _ => false,
-    };
-    own || dev_url.is_some_and(|dev| url.origin() == dev.origin())
+    // The scheme is compared too: the origin of a `blob:` URL is the origin of its inner URL.
+    let same = |allowed: &Url| url.scheme() == allowed.scheme() && url.origin() == allowed.origin();
+    let own = Url::parse(APP_ORIGIN).is_ok_and(|app| same(&app));
+    let plain = url.username().is_empty() && url.password().is_none();
+    (own || dev_url.is_some_and(same)) && plain
 }
 
 fn logical(size: u32, scale: f64) -> u32 {
@@ -233,6 +239,15 @@ fn create_window(
         window.maximize()?;
     }
     window.show()?;
+    // Windows may show the window without activating it, behind the launching terminal.
+    window.set_focus()?;
+    let (visible, focused) = (window.is_visible()?, window.is_focused()?);
+    if cfg!(debug_assertions) {
+        eprintln!("[debug] main window after show: visible={visible} focused={focused}");
+    }
+    if !visible {
+        window.show()?;
+    }
 
     if let (true, Some(normal)) = (restore, normal) {
         // The last normal rectangle of this session, see `Tracker`; only the maximized flag is
@@ -248,11 +263,11 @@ fn create_window(
                 }
                 WindowEvent::Resized(_) => {
                     let now = normal_rectangle(&watched).ok().flatten();
-                    let special = now.is_none();
-                    tracker.on_resized(now, special);
+                    let maximized = watched.is_maximized().unwrap_or(false);
+                    tracker.on_resized(now, maximized);
                 }
                 WindowEvent::CloseRequested { .. } => {
-                    let state = tracker.saved(watched.is_maximized().unwrap_or(false));
+                    let state = tracker.saved();
                     if let Err(e) = window_state::save(&paths, &state) {
                         eprintln!("could not save the window state: {e}");
                     }
@@ -272,7 +287,9 @@ pub fn run() {
     let debug = cfg!(debug_assertions);
     let identifier = app_identifier(&context.config().identifier, debug);
     context.config_mut().identifier = identifier;
-    let dev_url = if debug {
+    // `dev` is the cfg tauri-build sets when the app is built without `custom-protocol`: only
+    // then does the window load the dev server, so only then is its URL allowed.
+    let dev_url = if cfg!(dev) {
         context.config().build.dev_url.clone()
     } else {
         None
@@ -362,23 +379,30 @@ mod tests {
     }
 
     #[test]
-    fn only_the_app_origin_and_in_debug_the_dev_server_may_be_shown() {
+    fn only_the_exact_app_origin_and_in_dev_the_exact_dev_origin_may_be_shown() {
         let dev = url("http://localhost:1420");
         for ok in [
             "http://tauri.localhost/",
-            "https://tauri.localhost/index.html",
-            "tauri://localhost/",
+            "http://tauri.localhost/index.html",
+            "http://tauri.localhost:80/",
+            "http://TAURI.LOCALHOST/",
         ] {
             assert!(navigation_allowed(&url(ok), None), "{ok}");
         }
         for bad in [
-            "https://example.com/",
+            "http://tauri.localhost:8080/",
+            "https://tauri.localhost/",
+            "tauri://localhost/",
             "http://tauri.localhost.evil.example/",
+            "http://tauri.localhost@evil.example/",
+            "http://evil@tauri.localhost/",
             "http://evil.example/tauri.localhost",
+            "https://example.com/",
             "file:///C:/Windows/win.ini",
             "javascript:alert(1)",
             "http://localhost:1420/",
             "data:text/html,x",
+            "blob:http://tauri.localhost/1234",
             "about:blank",
         ] {
             assert!(!navigation_allowed(&url(bad), None), "{bad}");
@@ -392,7 +416,15 @@ mod tests {
             Some(&dev)
         ));
         assert!(!navigation_allowed(
+            &url("https://localhost:1420/"),
+            Some(&dev)
+        ));
+        assert!(!navigation_allowed(
             &url("https://example.com/"),
+            Some(&dev)
+        ));
+        assert!(navigation_allowed(
+            &url("http://tauri.localhost/"),
             Some(&dev)
         ));
     }

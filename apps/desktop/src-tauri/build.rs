@@ -28,6 +28,13 @@ fn main() {
     // to add its own copy below. Cargo has no link argument for unit tests only, hence the generic
     // `rustc-link-arg`.
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() != Ok("msvc")
+    {
+        // The manifest above is linked with MSVC arguments only; a GNU build would get no manifest
+        // and fail at load time, long after the build.
+        panic!("hengst-desktop supports Windows only with the MSVC toolchain (target *-pc-windows-msvc)");
+    }
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
         && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
     {
         let manifest = std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR");
