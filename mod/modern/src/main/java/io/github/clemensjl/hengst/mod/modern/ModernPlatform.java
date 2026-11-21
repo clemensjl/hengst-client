@@ -12,6 +12,8 @@ import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ClientPacketListener;
+import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
 import org.slf4j.Logger;
@@ -29,6 +31,11 @@ public final class ModernPlatform implements Platform {
 
     @Override
     public GameVersion version() {
+        return gameVersion();
+    }
+
+    /** The version of this node; static so the key bindings can be registered before the platform exists. */
+    static GameVersion gameVersion() {
         // One branch per node: a new node gets no return here and fails to compile until it is mapped.
         //? if =26.3 {
         return GameVersion.V26_3;
@@ -159,6 +166,32 @@ public final class ModernPlatform implements Platform {
             }
             ServerData server = mc.getCurrentServer();
             return server == null ? null : server.ip;
+        }
+
+        /**
+         * The own entry of the server's player list: getPlayerInfo(UUID) is a HashMap lookup, getLatency a field read
+         * (both verified on 1.21.11 and 26.3), so nothing is allocated. -1 in single player (also when the world is
+         * opened to LAN), before the connection exists and until the server has sent the own entry.
+         */
+        @Override
+        public int pingMillis() {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc.hasSingleplayerServer()) {
+                return -1;
+            }
+            LocalPlayer p = mc.player;
+            ClientPacketListener connection = mc.getConnection();
+            if (p == null || connection == null) {
+                return -1;
+            }
+            PlayerInfo info = connection.getPlayerInfo(p.getUUID());
+            return info == null ? -1 : info.getLatency();
+        }
+
+        /** ClientPacketListener.handleRespawn creates a new ClientLevel when the dimension changes. */
+        @Override
+        public Object worldIdentity() {
+            return Minecraft.getInstance().level;
         }
     }
 

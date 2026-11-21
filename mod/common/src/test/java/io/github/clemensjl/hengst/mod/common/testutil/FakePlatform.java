@@ -25,6 +25,8 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public double playerZ;
     public float playerYaw;
     public String serverAddress;
+    public int pingMillis = -1;
+    public Object worldIdentity;
     public String languageCode = "en_us";
     public Set<GameKey> down = EnumSet.noneOf(GameKey.class);
     public Map<GameKey, String> labels = new EnumMap<GameKey, String>(GameKey.class);
@@ -155,6 +157,16 @@ public final class FakePlatform implements Platform, GameView, InputView {
             throw serverAddressFailure;
         }
         return serverAddress;
+    }
+
+    @Override
+    public int pingMillis() {
+        return pingMillis;
+    }
+
+    @Override
+    public Object worldIdentity() {
+        return worldIdentity;
     }
 
     @Override

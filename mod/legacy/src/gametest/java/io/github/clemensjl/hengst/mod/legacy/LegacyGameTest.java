@@ -5,6 +5,7 @@ import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -217,6 +218,25 @@ public final class LegacyGameTest implements ClientModInitializer {
         check(layout.draws > 0, "the core draws the HUD in a world");
         BufferedImage hud = shot("hengst-01-hud");
 
+        check(onClient(() -> FeatureState.on(1) && FeatureState.on(2) && FeatureState.on(3) && FeatureState.on(6)),
+                "M0 modules on in the feature state");
+        check(!onClient(() -> FeatureState.on(7)), "direction off in the feature state");
+        onClient(() -> {
+            core.activeProfile().module("fps").setEnabled(false);
+            core.applyConfigForTest();
+            return null;
+        });
+        check(!onClient(() -> FeatureState.on(1)), "FPS off in the feature state after switching it off");
+        onClient(() -> {
+            core.activeProfile().module("fps").setEnabled(true);
+            core.applyConfigForTest();
+            return null;
+        });
+        check(onClient(() -> FeatureState.on(1)), "FPS on again in the feature state");
+        check(onClient(() -> platform.game().pingMillis()) == -1, "no ping in singleplayer");
+        check(onClient(() -> platform.game().worldIdentity()) != null, "world identity in a world");
+        pass("feature state follows the profile; no ping in singleplayer, a world identity in a world");
+
         key(Keyboard.KEY_F1, (char) 0);
         settle();
         check(onClient(() -> platform.game().hudHidden()), "F1 hides the HUD");
@@ -310,6 +330,25 @@ public final class LegacyGameTest implements ClientModInitializer {
         waitTicks(20);
         settle();
         hidden = f1Baseline("hengst-08-f1-baseline");
+
+        onClient(() -> {
+            MinecraftClient.getInstance().setScreen(new ChatScreen());
+            return null;
+        });
+        settle();
+        key(Keyboard.KEY_RSHIFT, (char) 0);
+        waitTicks(3);
+        check(onClient(() -> MinecraftClient.getInstance().currentScreen instanceof ChatScreen),
+                "the settings key with chat open leaves the chat open");
+        onClient(() -> {
+            MinecraftClient.getInstance().setScreen(null);
+            return null;
+        });
+        settle();
+        waitTicks(3);
+        check(onClient(() -> MinecraftClient.getInstance().currentScreen == null),
+                "the settings key pressed in chat does not open the settings later");
+        pass("the settings key does nothing while chat is open");
 
         registerDummyFeatures(core);
         key(Keyboard.KEY_RSHIFT, (char) 0);

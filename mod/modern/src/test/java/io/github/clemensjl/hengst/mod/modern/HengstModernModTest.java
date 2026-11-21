@@ -1,9 +1,16 @@
 package io.github.clemensjl.hengst.mod.modern;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
+import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import io.github.clemensjl.hengst.mod.common.platform.InputView;
@@ -12,8 +19,14 @@ import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
+import java.lang.management.ManagementFactory;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
+import java.util.List;
+import net.minecraft.client.KeyMapping;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -62,6 +75,164 @@ class HengstModernModTest {
         assertDoesNotThrow(() -> HengstModernMod.stopCore(null));
     }
 
+    @Test
+    void aLinkageErrorInAHookDisablesTheMod() {
+        HengstModernMod.ENABLED = true;
+        HengstModernMod.onHookFailure(HengstModernMod.SITE_FRAME, new NoSuchMethodError("Minecraft.level"));
+        assertFalse(HengstModernMod.ENABLED);
+    }
+
+    @Test
+    void aRuntimeExceptionInAHookDoesNotDisableTheMod() {
+        HengstModernMod.ENABLED = true;
+        HengstModernMod.onHookFailure(HengstModernMod.SITE_FRAME, new IllegalStateException("test"));
+        assertTrue(HengstModernMod.ENABLED);
+    }
+
+    @Test
+    void theSettingsKeyOpensTheSettingsAndNoKeyActsWithAScreenOpen(@TempDir Path dir) {
+        UiScreen[] opened = new UiScreen[1];
+        HengstCore core = HengstCore.start(workingPlatform(dir, opened), TimeSource.SYSTEM);
+        KeyMapping[] maps = mappings(core);
+        press(maps[0]);
+        ModernKeys.dispatch(core, maps);
+        assertNotNull(opened[0]);
+        UiScreen settings = opened[0];
+        release(maps[0]);
+        ModernKeys.dispatch(core, maps);
+        press(maps[1]);                                            // the HUD editor key while the settings are open
+        ModernKeys.dispatch(core, maps);
+        assertSame(settings, opened[0]);
+    }
+
+    @Test
+    void dispatchReportsChangesOnlyAndAHeldKeyOnce(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature();
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        KeyMapping[] maps = mappings(core);
+        KeyMapping hold = maps[maps.length - 2];
+        press(hold);
+        ModernKeys.dispatch(core, maps);
+        ModernKeys.dispatch(core, maps);                           // still down, no click: nothing
+        KeyMapping.click(hold.getDefaultKey());                    // a key repeat while held
+        ModernKeys.dispatch(core, maps);
+        assertEquals(Arrays.asList("0 down"), f.events);
+        release(hold);
+        ModernKeys.dispatch(core, maps);
+        ModernKeys.dispatch(core, maps);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+    }
+
+    @Test
+    void aTapWithinOneTickIsAPressAndARelease(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature();
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        KeyMapping[] maps = mappings(core);
+        KeyMapping hold = maps[maps.length - 2];
+        press(hold);
+        release(hold);
+        ModernKeys.dispatch(core, maps);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+    }
+
+    @Test
+    void aPressKeyWithAScreenOpenDoesNothing(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature();
+        UiScreen[] opened = new UiScreen[1];
+        HengstCore core = startWithKeys(dir, opened, f);
+        KeyMapping[] maps = mappings(core);
+        core.onOpenSettingsKey();                                  // a screen is open (as with chat)
+        assertNotNull(opened[0]);
+        press(maps[maps.length - 1]);
+        ModernKeys.dispatch(core, maps);
+        assertTrue(f.events.isEmpty());
+    }
+
+    @Test
+    void losingTheWindowFocusReleasesAHeldHoldKey(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature();
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        KeyMapping[] maps = mappings(core);
+        KeyMapping hold = maps[maps.length - 2];
+        ModernKeys.focus(core, maps, true);
+        press(hold);
+        ModernKeys.dispatch(core, maps);
+        ModernKeys.focus(core, maps, false);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+        ModernKeys.focus(core, maps, false);
+        ModernKeys.dispatch(core, maps);                           // the mapping still reads down: no new press
+        ModernKeys.focus(core, maps, true);
+        ModernKeys.dispatch(core, maps);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+        release(hold);
+        ModernKeys.dispatch(core, maps);
+        press(hold);
+        ModernKeys.dispatch(core, maps);
+        assertEquals(Arrays.asList("0 down", "0 up", "0 down"), f.events);
+    }
+
+    @Test
+    void key_dispatch_allocates_nothing(@TempDir Path dir) {
+        HengstCore core = HengstCore.start(workingPlatform(dir, new UiScreen[1]), TimeSource.SYSTEM);
+        KeyMapping[] maps = mappings(core);
+        for (int i = 0; i < 2000; i++) {
+            ModernKeys.dispatch(core, maps);                       // warm up
+        }
+        com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        long before = mx.getCurrentThreadAllocatedBytes();
+        for (int i = 0; i < 2000; i++) {
+            ModernKeys.dispatch(core, maps);
+        }
+        long allocated = mx.getCurrentThreadAllocatedBytes() - before;
+        assertTrue(allocated < 2048, "allocated " + allocated + " bytes");   // an iterator per call: over 60 KB
+    }
+
+    /** A feature with one HOLD and one PRESS key: the last two indexes of the core's key list. */
+    private static final class KeyFeature extends Feature {
+        final List<String> events = new ArrayList<>();
+
+        KeyFeature() {
+            super("keys", 47, FeatureGroup.HUD, EnumSet.allOf(GameVersion.class));
+        }
+
+        @Override
+        public List<KeySpec> keys() {
+            return Arrays.asList(new KeySpec("test.hold", DefaultKey.NONE, KeySpec.Mode.HOLD),
+                    new KeySpec("test.press", DefaultKey.NONE, KeySpec.Mode.PRESS));
+        }
+
+        @Override
+        public void onKey(int key, boolean down, long nowNanos) {
+            events.add(key + (down ? " down" : " up"));
+        }
+    }
+
+    private static HengstCore startWithKeys(Path dir, UiScreen[] opened, KeyFeature f) {
+        HengstCore core = HengstCore.start(workingPlatform(dir, opened), TimeSource.SYSTEM);
+        core.activeProfile().module("keys").setEnabled(true);
+        core.registerForTest(f);
+        return core;
+    }
+
+    /** One mapping per key of the core, each on its own key code, in the mod's category. */
+    private static KeyMapping[] mappings(HengstCore core) {
+        KeyMapping[] maps = new KeyMapping[core.keySpecs().size()];
+        for (int i = 0; i < maps.length; i++) {
+            maps[i] = new KeyMapping(core.keySpecs().get(i).translationKey(), 3000 + i, ModernKeys.CATEGORY);
+        }
+        return maps;
+    }
+
+    /** What the keyboard handler does for a press without a screen. */
+    private static void press(KeyMapping m) {
+        m.setDown(true);
+        KeyMapping.click(m.getDefaultKey());
+    }
+
+    private static void release(KeyMapping m) {
+        m.setDown(false);
+    }
+
     private static final Canvas CANVAS = new Canvas() {
         @Override public int width() { return 320; }
         @Override public int height() { return 240; }
@@ -85,6 +256,8 @@ class HengstModernModTest {
             @Override public boolean debugOverlayOpen() { return false; }
             @Override public boolean screenOpen() { return opened[0] != null; }
             @Override public String serverAddress() { return null; }
+            @Override public int pingMillis() { return -1; }
+            @Override public Object worldIdentity() { return null; }
         };
         return new Platform() {
             @Override public GameVersion version() { return GameVersion.V1_8_9; }

@@ -48,6 +48,9 @@ test {
     def testRunDir = layout.buildDirectory.dir('test-run').get().asFile
     workingDir = testRunDir
     doFirst { testRunDir.mkdirs() }
+    // 1.21.11's InputConstants loads LWJGL's GLFW natives in its static initializer (ModernKeys.code reads
+    // InputConstants.UNKNOWN): allow native access and LWJGL's Unsafe use on the JDK 25 test JVM without its warnings.
+    jvmArgs '--enable-native-access=ALL-UNNAMED', '--sun-misc-unsafe-memory-access=allow'
 }
 
 // In-game test (Fabric client gametest, source set src/gametest). Not part of build, check or test, not in the jar.

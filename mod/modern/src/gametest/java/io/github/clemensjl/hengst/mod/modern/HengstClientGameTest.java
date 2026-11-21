@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -118,6 +119,23 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         check(layout.draws > 0, "the core draws the HUD in a world");
         BufferedImage hud = shot(ctx, "hengst-01-hud");
 
+        check(ctx.computeOnClient(mc -> FeatureState.on(1) && FeatureState.on(2) && FeatureState.on(3)
+                && FeatureState.on(6)), "M0 modules on in the feature state");
+        check(!ctx.computeOnClient(mc -> FeatureState.on(7)), "direction off in the feature state");
+        ctx.runOnClient(mc -> {
+            core.activeProfile().module("fps").setEnabled(false);
+            core.applyConfigForTest();
+        });
+        check(!ctx.computeOnClient(mc -> FeatureState.on(1)), "FPS off in the feature state after switching it off");
+        ctx.runOnClient(mc -> {
+            core.activeProfile().module("fps").setEnabled(true);
+            core.applyConfigForTest();
+        });
+        check(ctx.computeOnClient(mc -> FeatureState.on(1)), "FPS on again in the feature state");
+        check(ctx.computeOnClient(mc -> platform.game().pingMillis()) == -1, "no ping in singleplayer");
+        check(ctx.computeOnClient(mc -> platform.game().worldIdentity()) != null, "world identity in a world");
+        pass("feature state follows the profile; no ping in singleplayer, a world identity in a world");
+
         input.pressKey(o -> o.keyToggleGui);
         ctx.waitTick();
         check(ctx.computeOnClient(mc -> platform.game().hudHidden()), "F1 hides the HUD");
@@ -171,6 +189,19 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         pass("W held marks the key as down");
 
         KeyMapping settingsKey = ctx.computeOnClient(mc -> mapping(mc, "key.hengst.settings"));
+        ctx.setScreen(() -> new ChatScreen("", false));
+        ctx.waitForScreen(ChatScreen.class);
+        input.pressKey(settingsKey);
+        ctx.waitTicks(2);
+        check(ctx.computeOnClient(mc -> ModernPlatform.currentScreen(mc) instanceof ChatScreen),
+                "the settings key with chat open leaves the chat open");
+        ctx.setScreen(() -> null);
+        ctx.waitForScreen(null);
+        ctx.waitTicks(2);
+        check(ctx.computeOnClient(mc -> ModernPlatform.currentScreen(mc) == null),
+                "the settings key pressed in chat does not open the settings later");
+        pass("the settings key does nothing while chat is open");
+
         input.pressKey(settingsKey);
         ctx.waitForScreen(ModernScreenHost.class);
         check(layout(ctx).draws == 0, "HUD suppressed while the settings are open");

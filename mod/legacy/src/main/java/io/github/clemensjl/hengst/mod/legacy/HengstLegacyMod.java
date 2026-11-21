@@ -3,6 +3,7 @@ package io.github.clemensjl.hengst.mod.legacy;
 import com.mojang.blaze3d.platform.GlStateManager;
 import io.github.clemensjl.hengst.mod.common.AdapterGuard;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
+import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import net.fabricmc.api.ClientModInitializer;
 import net.legacyfabric.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
@@ -14,6 +15,11 @@ import org.apache.logging.log4j.Logger;
 /**
  * Client entrypoint: starts the core and wires the game's hooks to it. If the core fails to start, the mod stays
  * inert: {@link #ENABLED} remains false and every hook returns at once.
+ *
+ * <p>A common jar that is missing or damaged as a whole is not caught: this class refers to common types
+ * ({@link #GUARD} is an {@link AdapterGuard}), so its class initialization fails before any of its code runs, and
+ * Fabric treats a failing entrypoint as fatal. Do not try to catch that; common ships inside the mod jar, so it needs a
+ * damaged jar.
  */
 public final class HengstLegacyMod implements ClientModInitializer {
     private static final Logger LOGGER = LogManager.getLogger("hengst");
@@ -48,7 +54,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        LegacyKeys.register();
+        LegacyKeys.register(GameVersion.V1_8_9);
         core = GUARD.start(LegacyPlatform::new, TimeSource.SYSTEM);
         if (core == null) {
             return;
@@ -81,9 +87,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
             core.onHudRender(HUD_CANVAS, tickDelta);
             GlStateManager.enableDepthTest();
         } catch (RuntimeException | LinkageError e) {
-            if (GUARD.hookFailed(SITE_HUD, e)) {
-                ENABLED = false;
-            }
+            onHookFailure(SITE_HUD, e);
         }
     }
 
@@ -95,9 +99,14 @@ public final class HengstLegacyMod implements ClientModInitializer {
             LegacyKeys.dispatch(client);
             core.onClientTick();
         } catch (RuntimeException | LinkageError e) {
-            if (GUARD.hookFailed(SITE_TICK, e)) {
-                ENABLED = false;
-            }
+            onHookFailure(SITE_TICK, e);
+        }
+    }
+
+    /** Every hook's catch: a linkage error switches the mod off (see {@link AdapterGuard#hookFailed}). Cold path. */
+    static void onHookFailure(int site, Throwable e) {
+        if (GUARD.hookFailed(site, e)) {
+            ENABLED = false;
         }
     }
 
@@ -116,9 +125,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
         try {
             core.shutdown();
         } catch (RuntimeException | LinkageError e) {
-            if (GUARD.hookFailed(SITE_STOP, e)) {
-                ENABLED = false;
-            }
+            onHookFailure(SITE_STOP, e);
         }
     }
 
@@ -127,9 +134,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
         try {
             core.onFrame();
         } catch (RuntimeException | LinkageError e) {
-            if (GUARD.hookFailed(SITE_FRAME, e)) {
-                ENABLED = false;
-            }
+            onHookFailure(SITE_FRAME, e);
         }
     }
 
@@ -144,9 +149,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
                 core.onMouseButton(button, pressed);
             }
         } catch (RuntimeException | LinkageError e) {
-            if (GUARD.hookFailed(SITE_MOUSE, e)) {
-                ENABLED = false;
-            }
+            onHookFailure(SITE_MOUSE, e);
         }
     }
 
