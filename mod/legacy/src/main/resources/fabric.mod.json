@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "id": "hengst",
+  "version": "${version}",
+  "name": "Hengst",
+  "description": "Companion mod for the Hengst launcher: HUD and comfort features. Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.",
+  "authors": ["Clemens Jele"],
+  "contact": {
+    "homepage": "https://github.com/clemensjl/hengst-client",
+    "sources": "https://github.com/clemensjl/hengst-client",
+    "issues": "https://github.com/clemensjl/hengst-client/issues"
+  },
+  "license": "GPL-3.0-or-later",
+  "icon": "assets/hengst/icon.png",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "io.github.clemensjl.hengst.mod.legacy.HengstLegacyMod"
+    ]
+  },
+  "mixins": [
+    "hengst.mixins.json"
+  ],
+  "depends": {
+    "fabricloader": ">=0.20.1",
+    "minecraft": "1.8.9",
+    "legacy-fabric-api": ">=${legacy_fabric_api_min}",
+    "java": ">=8"
+  }
+}

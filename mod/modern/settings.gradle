@@ -1,0 +1,32 @@
+pluginManagement {
+    repositories {
+        maven {
+            name = 'Fabric'
+            url = 'https://maven.fabricmc.net/'
+        }
+        maven {
+            name = 'KikuGie'
+            url = 'https://maven.kikugie.dev/releases'
+        }
+        gradlePluginPortal()
+    }
+    plugins {
+        id 'net.fabricmc.fabric-loom' version '1.19.4'
+        id 'net.fabricmc.fabric-loom-remap' version '1.19.4'
+    }
+}
+
+plugins {
+    id 'dev.kikugie.stonecutter' version '0.10'
+}
+
+rootProject.name = 'modern'
+
+stonecutter {
+    create(rootProject) {
+        versions '1.21.11', '26.3'
+        vcsVersion = '26.3'
+    }
+}
+
+includeBuild '../common'

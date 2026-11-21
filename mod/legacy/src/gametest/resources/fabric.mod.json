@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "id": "hengst-gametest",
+  "version": "0.0.0",
+  "name": "Hengst in-game test",
+  "environment": "client",
+  "entrypoints": {
+    "client": [
+      "io.github.clemensjl.hengst.mod.legacy.LegacyGameTest"
+    ]
+  },
+  "mixins": [
+    "hengst-gametest.mixins.json"
+  ],
+  "depends": {
+    "hengst": "*"
+  }
+}

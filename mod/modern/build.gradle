@@ -1,0 +1,155 @@
+// Shared build script for every Stonecutter version node (versions/<mc>/).
+// 1.21.11 is obfuscated and needs the remapping Loom plugin; 26.3 is unobfuscated.
+// Version and group come from mod/gradle.properties, the single source for all three builds.
+def shared = new Properties()
+file("${rootDir}/../gradle.properties").withInputStream { shared.load(it) }
+
+def remap = project.property('loom_remap').toBoolean()
+apply plugin: remap ? 'net.fabricmc.fabric-loom-remap' : 'net.fabricmc.fabric-loom'
+
+group = shared.maven_group
+version = "${shared.mod_version}+${project.minecraft_version}"
+
+base {
+    archivesName = 'hengst-mod'
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${project.minecraft_version}"
+    if (remap) {
+        mappings loom.officialMojangMappings()
+    }
+    add(remap ? 'modImplementation' : 'implementation', 'net.fabricmc:fabric-loader:0.20.1')
+    add(remap ? 'modImplementation' : 'implementation', "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}")
+
+    implementation "${shared.maven_group}:common:${shared.mod_version}"
+    include "${shared.maven_group}:common:${shared.mod_version}"
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+processResources {
+    // Minimum Fabric API: the version this node is built against, without its "+<mc>" build metadata.
+    def fabricApiMin = project.fabric_api_version.split('\\+')[0]
+    def props = [version: project.version, minecraft_version: project.minecraft_version, java_release: project.java_release,
+                 fabric_api_min: fabricApiMin]
+    inputs.properties props
+
+    filesMatching(['fabric.mod.json', 'hengst.mixins.json']) {
+        expand props
+    }
+}
+
+test {
+    useJUnitPlatform()
+    // The game's log4j config on the test classpath writes logs/ into the working directory: keep that in build/.
+    def testRunDir = layout.buildDirectory.dir('test-run').get().asFile
+    workingDir = testRunDir
+    doFirst { testRunDir.mkdirs() }
+}
+
+// In-game test (Fabric client gametest, source set src/gametest). Not part of build, check or test, not in the jar.
+//   runClientGameTest         fresh run directory (build/run/clientGameTest), the full check list
+//   runClientGameTestRestart  same run directory kept, checks that the layout saved by the first run is loaded
+//   clientGameTests           both, in that order
+// Screenshots: build/run/clientGameTest/screenshots. A failed assertion crashes the client and fails the task.
+fabricApi {
+    configureTests {
+        createSourceSet = true
+        modId = 'hengst-gametest'
+        enableGameTests = false
+        enableClientGameTests = true
+        eula = false
+    }
+}
+
+loom {
+    runs {
+        clientGameTestRestart {
+            inherit clientGameTest
+            // inherit does not copy the run directory
+            runDir 'build/run/clientGameTest'
+            property 'hengst.gametest.phase', 'restart'
+        }
+    }
+}
+
+// Writes soundCategory_master:0.0 into a run directory's options.txt, keeping its other lines.
+def registerMuteTask = { String name, File runDir ->
+    tasks.register(name) {
+        description = "Sets the master volume to 0 in ${runDir.name} before the game starts."
+        outputs.upToDateWhen { false }
+        doLast {
+            runDir.mkdirs()
+            def options = new File(runDir, 'options.txt')
+            def lines = options.exists() ? options.readLines('UTF-8').findAll { !it.startsWith('soundCategory_master:') } : []
+            lines << 'soundCategory_master:0.0'
+            options.write(lines.join('\n') + '\n', 'UTF-8')
+        }
+    }
+}
+
+def muteGameTestSound = registerMuteTask('muteGameTestSound', file('build/run/clientGameTest'))
+muteGameTestSound.configure { mustRunAfter 'deleteGameTestRunDir' }
+tasks.named('runClientGameTest') {
+    dependsOn muteGameTestSound
+}
+tasks.named('runClientGameTestRestart') {
+    dependsOn muteGameTestSound
+    mustRunAfter 'runClientGameTest'
+}
+tasks.register('clientGameTests') {
+    group = 'verification'
+    description = 'Runs the in-game test twice: fresh run directory, then a restart with the saved layout.'
+    dependsOn 'runClientGameTest', 'runClientGameTestRestart'
+}
+
+// Production check: the built mod jar (remapJar on 1.21.11, jar on 26.3) with the Fabric API jar from Maven, in
+// Loom's production launch (intermediary names on 1.21.11, as a launcher runs it). Run directory
+// build/run/prodClient. Options: -PwithGameTest also loads the in-game test as a jar (remapped like the mod on
+// 1.21.11) and runs it, which ends the game; -PmixinVerbose logs every applied mixin. The test jars go to build/gametest-libs, never to build/libs.
+dependencies {
+    productionRuntimeMods "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+}
+def gametestJar = tasks.register('gametestJar', Jar) {
+    from sourceSets.gametest.output
+    archiveClassifier = 'gametest-dev'
+    destinationDirectory = layout.buildDirectory.dir('gametest-libs')
+}
+def prodGametestJar = gametestJar
+if (remap) {
+    prodGametestJar = tasks.register('remapGametestJar', net.fabricmc.loom.task.RemapJarTask) {
+        inputFile = gametestJar.flatMap { it.archiveFile }
+        archiveClassifier = 'gametest'
+        destinationDirectory = layout.buildDirectory.dir('gametest-libs')
+        addNestedDependencies = false
+    }
+}
+def prodRunDir = file('build/run/prodClient')
+def muteProdSound = registerMuteTask('muteProductionSound', prodRunDir)
+tasks.register('runProductionClient', net.fabricmc.loom.task.prod.ClientProductionRunTask) {
+    description = 'Starts the built mod jar with Fabric API in a production (intermediary) environment.'
+    dependsOn muteProdSound
+    runDir = prodRunDir
+    if (project.hasProperty('withGameTest')) {
+        mods.from(prodGametestJar.flatMap { it.archiveFile })
+        jvmArgs.add('-Dfabric.client.gametest')
+    }
+    if (project.hasProperty('mixinVerbose')) {
+        jvmArgs.add('-Dmixin.debug.verbose=true')
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = project.java_release as int
+    options.encoding = 'UTF-8'
+}
+
+// The GPL-3.0 text travels with the jar, under a name that cannot collide with other mods' license files.
+tasks.named('jar') {
+    from("${rootDir}/../../LICENSE") {
+        rename { 'LICENSE_hengst' }
+    }
+}

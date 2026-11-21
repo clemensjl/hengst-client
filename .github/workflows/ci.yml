@@ -8,6 +8,9 @@ on:
     - cron: "0 5 * * 1"
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: windows-latest
@@ -57,3 +60,50 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --loader ${{ matrix.loader }} --offline Dev --dry-run
+
+  mod:
+    # The companion mod under mod/. The workflow triggers stay as they are; the changes step below makes this job
+    # do nothing unless files under mod/ or this workflow changed. It starts no game and runs no in-game tests.
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: changes
+        env:
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = "pull_request" ]; then base="$PR_BASE"; else base="$BEFORE"; fi
+          mod=true
+          if [ -n "$base" ] && ! echo "$base" | grep -Eq '^0+$'; then
+            if files=$(git diff --name-only "$base" HEAD); then
+              if echo "$files" | grep -Eq '^(mod/|\.github/workflows/ci\.yml$)'; then mod=true; else mod=false; fi
+            fi
+          fi
+          echo "mod=$mod" >> "$GITHUB_OUTPUT"
+      - if: steps.changes.outputs.mod == 'true'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '25'
+      - if: steps.changes.outputs.mod == 'true'
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          build-root-directory: mod
+      - if: steps.changes.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p common test
+      - if: steps.changes.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p legacy test
+      - if: steps.changes.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew -p modern :1.21.11:test :26.3:test
+      - if: steps.changes.outputs.mod == 'true'
+        working-directory: mod
+        run: ./gradlew buildAll
