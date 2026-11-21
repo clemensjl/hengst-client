@@ -103,8 +103,12 @@ class HengstCoreAllocationTest {
         core = start(); platform.inWorld = true;
         core.activeProfile().module("keystrokes").setEnabled(false);
         core.activeProfile().module("coordinates").setEnabled(false);
+        // number 200 is outside the Integer cache: a boxed lookup over the catalog would allocate in the window below
+        core.registerForTest(new io.github.clemensjl.hengst.mod.common.testutil.TestFeature("late", 200,
+                java.util.EnumSet.allOf(io.github.clemensjl.hengst.mod.common.platform.GameVersion.class)));
         core.applyConfigForTest();
         assertEquals(2, core.renderer().activeCount());
+        assertEquals(false, FeatureState.on(200));
         assertEquals(false, FeatureState.on(3));
         assertEquals(true, FeatureState.on(2));
         CountingCanvas counting = new CountingCanvas();
@@ -112,11 +116,14 @@ class HengstCoreAllocationTest {
         int calls = 20000;
         boolean sink = false;
         long before = allocated();
-        for (int i = 0; i < calls; i++) { frame(counting); sink ^= FeatureState.on(3) ^ FeatureState.on(2) ^ FeatureState.on(-1) ^ FeatureState.on(999); }
+        for (int i = 0; i < calls; i++) { frame(counting); sink ^= FeatureState.on(3) ^ FeatureState.on(2) ^ FeatureState.on(200) ^ FeatureState.on(-1) ^ FeatureState.on(999); }
         long renderBytes = allocated() - before;
         before = allocated();
         for (int i = 0; i < calls; i++) { core.onClientTick(); }
         long tickBytes = allocated() - before;
+        before = allocated();
+        for (int n = -5; n < 300; n++) { sink ^= FeatureState.on(n); }      // a scan of the whole number range
+        assertEquals(0, allocated() - before);
         System.out.println("HengstCore disabled-features allocation over " + calls + " calls: frame+render+state " + renderBytes
                 + " bytes, tick " + tickBytes + " bytes (" + sink + ")");
         assertEquals(0, renderBytes);

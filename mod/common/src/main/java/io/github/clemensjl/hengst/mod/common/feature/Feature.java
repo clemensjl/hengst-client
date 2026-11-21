@@ -40,9 +40,12 @@ public abstract class Feature {
     }
 
     /**
-     * Called by the core with this feature's own configuration at start, after the settings and the HUD editor
-     * close, on a profile switch and on a server change. Features without a HUD copy their options into primitive
-     * fields here; HUD modules keep reading in {@code tick}. An exception is logged and stops nothing.
+     * Called by the core, once per pass and with this feature's own configuration, for every feature supported on
+     * this version: at start, after the settings and the HUD editor close, on a profile switch and when the server
+     * changes (join, leave, switch). Each pass also rebuilds the HUD and rewrites {@link FeatureState}. Features
+     * without a HUD copy their options into primitive fields here; HUD modules keep reading in {@code tick}. An
+     * exception or linkage error is logged once and stops nothing, but the feature is off in {@link FeatureState}
+     * until a pass in which this method returns normally.
      */
     public void onConfigChanged(ModuleConfig cfg) {}
 }

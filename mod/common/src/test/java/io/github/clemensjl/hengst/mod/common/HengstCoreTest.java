@@ -214,6 +214,108 @@ class HengstCoreTest {
         assertEquals(4, core.renderer().activeCount());
     }
 
+    @Test void a_feature_whose_on_config_changed_throws_is_off_in_the_state_and_the_others_are_applied() {
+        core = start(); platform.inWorld = true;
+        core.activeProfile().module("bad").setEnabled(true);
+        core.activeProfile().module("rec").setEnabled(true);
+        core.registerForTest(new RecordingFeature("bad", 47) {
+            @Override public void onConfigChanged(ModuleConfig cfg) { throw new IllegalStateException("boom"); }
+        });
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        assertFalse(FeatureState.on(47));
+        assertTrue(FeatureState.on(48));
+        assertTrue(FeatureState.on(1));
+    }
+
+    @Test void a_linkage_error_from_one_feature_does_not_abort_the_others() {
+        core = start();
+        core.registerForTest(new RecordingFeature("bad", 47) {
+            @Override public void onConfigChanged(ModuleConfig cfg) { throw new NoClassDefFoundError("gone"); }
+        });
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        assertEquals(1, rec.calls);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("bad"));
+        assertTrue(platform.warnings.get(0).contains("NoClassDefFoundError"));
+    }
+
+    @Test void two_different_failing_features_are_each_named_once() {
+        core = start();
+        core.registerForTest(new RecordingFeature("bad1", 46) {
+            @Override public void onConfigChanged(ModuleConfig cfg) { throw new IllegalStateException("one"); }
+        });
+        core.registerForTest(new RecordingFeature("bad2", 47) {
+            @Override public void onConfigChanged(ModuleConfig cfg) { throw new IllegalStateException("two"); }
+        });
+        core.applyConfigForTest();
+        core.applyConfigForTest();
+        assertEquals(2, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("bad1"));
+        assertTrue(platform.warnings.get(1).contains("bad2"));
+    }
+
+    @Test void a_failing_rebuild_does_not_skip_the_state_rewrite_and_the_notification() {
+        int[] calls = new int[1];
+        boolean[] armed = new boolean[1];
+        core = HengstCore.start(platform, time, clock, (f, server) -> {
+            if (armed[0] && calls[0]++ == 0) { throw new IllegalStateException("rebuild"); }
+            return false;
+        });
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        int before = rec.calls;
+        core.activeProfile().module("fps").setEnabled(false);
+        armed[0] = true;
+        core.applyConfigForTest();                       // the first policy call is the renderer's
+        assertFalse(FeatureState.on(1));
+        assertEquals(before + 1, rec.calls);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("rebuilding the HUD"));
+    }
+
+    @Test void a_failing_rewrite_keeps_the_previous_state_and_still_notifies() {
+        int[] calls = new int[1];
+        boolean[] armed = new boolean[1];
+        core = HengstCore.start(platform, time, clock, (f, server) -> {
+            if (armed[0] && ++calls[0] == 4) { throw new IllegalStateException("rewrite"); }   // 3 enabled modules in the rebuild, then the rewrite
+            return false;
+        });
+        RecordingFeature rec = new RecordingFeature("rec", 48);
+        core.registerForTest(rec);
+        int before = rec.calls;
+        assertTrue(FeatureState.on(1));
+        core.activeProfile().module("fps").setEnabled(false);
+        armed[0] = true;
+        calls[0] = 0;
+        core.applyConfigForTest();
+        assertTrue(FeatureState.on(1));                  // the previously published state stays
+        assertEquals(before + 1, rec.calls);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).contains("feature state"));
+    }
+
+    @Test void a_failing_editor_save_goes_through_the_core_wiring_closes_and_stays_dirty() throws Exception {
+        core = start(); platform.inWorld = true;
+        core.onClientTick();
+        Files.createDirectories(profiles().getParent());
+        Files.write(profiles(), new byte[0]);            // a file where the directory should be
+        core.onOpenHudEditorKey();
+        platform.openedScreen.render(canvas, 0, 0, 0f);
+        platform.openedScreen.mouseClicked(5, 5, 0);
+        platform.openedScreen.mouseDragged(100, 100, 0);
+        platform.openedScreen.mouseReleased(100, 100, 0);
+        platform.openedScreen.keyPressed(UiKey.ESCAPE, false, false);
+        assertEquals(1, platform.closeCount);
+        assertEquals(1, platform.warnings.size());
+        assertTrue(platform.warnings.get(0).startsWith("Could not save the HUD editor (profile default): "));
+        Files.delete(profiles());                        // still dirty: the tick writes it once the directory works
+        time.advanceMillis(5000);
+        core.onClientTick();
+        assertTrue(Files.exists(defaultFile()));
+    }
+
     @Test void a_module_without_an_entry_gets_its_default_place_and_stays_off() throws Exception {
         Files.createDirectories(profiles());
         Files.write(defaultFile(), "{\"schema\":1,\"modules\":{\"fps\":{\"enabled\":true,\"anchor\":\"TOP_RIGHT\",\"x\":-2,\"y\":2}}}".getBytes(UTF_8));

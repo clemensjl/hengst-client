@@ -35,6 +35,9 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Path;
 import java.time.Clock;
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -78,8 +81,8 @@ public final class HengstCore {
     private static final int SITE_SAVE = 5;
     private static final int SITE_FRAME = 6;
     private static final int SITE_SETTINGS = 7;
-    private static final int SITE_CONFIG = 8;
-    private static final int SITES = 9;
+    private static final int SITES = 8;
+    private static final int MAX_CONFIG_KINDS = 32;
     private static final int MAX_KINDS = 4;
 
     private final Platform platform;
@@ -93,6 +96,8 @@ public final class HengstCore {
     private final CpsCounter cps;
     private final HudContext ctx;
     private final HudRenderer renderer;
+    // Failures of applyConfig already logged, "step or feature|exception class"; cleared by a clean pass.
+    private final Set<String> configLogged = new HashSet<String>();
     private final Class<?>[][] loggedKinds = new Class<?>[SITES][MAX_KINDS];
     private final int[] loggedCount = new int[SITES];
     private final boolean[] held = new boolean[2];
@@ -200,23 +205,50 @@ public final class HengstCore {
     }
 
     /**
-     * Applies the loaded profile: rebuilds the renderer, rewrites the feature state and tells every supported feature
-     * its configuration. Cold path; the one place that follows a configuration change.
+     * Applies the loaded profile in three independent steps: rebuilds the renderer, tells every supported feature its
+     * configuration, and publishes the feature state. A step that throws (a runtime exception or a linkage error) is
+     * logged once and does not stop the others. A feature whose notification threw is off in the published state, so it
+     * never runs with stale option fields; if the publishing itself fails, the previous state stays. Cold path; the
+     * one place that follows a configuration change.
      */
     private void applyConfig() {
-        renderer.rebuild(profile);
-        FeatureState.rewrite(registry.all(), profile, gate);
         boolean failed = false;
-        for (Feature f : registry.supportedOn(platform.version())) {
+        try {
+            renderer.rebuild(profile);
+        } catch (RuntimeException | LinkageError e) {
+            failed = true;
+            configFailure("rebuilding the HUD", e);
+        }
+        List<Feature> all = registry.all();
+        List<Feature> healthy = new ArrayList<Feature>(all.size());
+        for (Feature f : all) {
+            if (!f.supports(platform.version())) {
+                healthy.add(f);
+                continue;
+            }
             try {
                 f.onConfigChanged(profile.module(f.id()));
-            } catch (RuntimeException e) {
+                healthy.add(f);
+            } catch (RuntimeException | LinkageError e) {
                 failed = true;
-                failure(SITE_CONFIG, "the configuration of " + f.id(), e);
+                configFailure("the configuration of " + f.id(), e);
             }
         }
+        try {
+            FeatureState.rewrite(healthy, profile, gate);
+        } catch (RuntimeException | LinkageError e) {
+            failed = true;
+            configFailure("publishing the feature state", e);
+        }
         if (!failed) {
-            ok(SITE_CONFIG);
+            configLogged.clear();
+        }
+    }
+
+    /** Logs a failure of {@link #applyConfig} once per step or feature and exception class until a clean pass. */
+    private void configFailure(String what, Throwable e) {
+        if (configLogged.size() < MAX_CONFIG_KINDS && configLogged.add(what + "|" + e.getClass().getName())) {
+            platform.logWarning("Hengst: " + what + " failed: " + e);
         }
     }
 
@@ -482,12 +514,8 @@ public final class HengstCore {
         Session session = new Session(model);
         final String name = profileName;
         final Profile edited = profile;
-        session.delegate = new ScreenClose(() -> {
-            if (model.dirty()) {
-                profileStore.save(name, edited);
-                model.markSaved();
-            }
-        }, this::applyConfig, platform, "the HUD editor (profile " + name + ")");
+        session.delegate = new ScreenClose(model.saver(profileStore, name, edited), this::applyConfig, platform,
+                "the HUD editor (profile " + name + ")");
         show(session, new HudEditorScreen(model, ctx, ctx.i18n(), session));
     }
 

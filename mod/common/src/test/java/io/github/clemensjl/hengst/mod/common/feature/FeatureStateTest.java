@@ -1,6 +1,10 @@
 package io.github.clemensjl.hengst.mod.common.feature;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.clemensjl.hengst.mod.common.config.Profile;
@@ -60,6 +64,42 @@ class FeatureStateTest {
         FeatureGate restricted = new FeatureGate(GameVersion.V26_3, (feature, server) -> { seen[0] = server; return true; });
         restricted.setServer("mc.example.net");
         assertFalse(restricted.active(f, p.module("a")));
-        assertTrue("mc.example.net".equals(seen[0]) && "mc.example.net".equals(restricted.server()));
+        assertEquals("mc.example.net", seen[0]);
+        assertEquals("mc.example.net", restricted.server());
+    }
+
+    @Test void a_rewrite_publishes_a_new_array_and_never_mutates_the_old_one() {
+        List<Feature> features = Arrays.<Feature>asList(new TestFeature("a", 1, all), new TestFeature("c", 900, all));
+        Profile p = new Profile();
+        p.module("a").setEnabled(true);
+        FeatureGate gate = new FeatureGate(GameVersion.V1_8_9, RestrictionPolicy.NONE);
+        FeatureState.rewrite(features, p, gate);
+        boolean[] first = FeatureState.published();
+        boolean[] copy = first.clone();
+        p.module("a").setEnabled(false);
+        p.module("c").setEnabled(true);
+        FeatureState.rewrite(features, p, gate);
+        assertNotSame(first, FeatureState.published());
+        assertTrue(Arrays.equals(copy, first));
+        assertTrue(first[1]);
+        assertFalse(FeatureState.on(1));
+    }
+
+    @Test void a_throw_in_the_middle_of_a_rewrite_leaves_the_published_state_intact() {
+        List<Feature> features = Arrays.<Feature>asList(new TestFeature("a", 1, all), new TestFeature("b", 2, all));
+        Profile p = new Profile();
+        p.module("a").setEnabled(true);
+        p.module("b").setEnabled(true);
+        FeatureState.rewrite(features, p, new FeatureGate(GameVersion.V1_8_9, RestrictionPolicy.NONE));
+        boolean[] before = FeatureState.published();
+        p.module("a").setEnabled(false);
+        FeatureGate throwing = new FeatureGate(GameVersion.V1_8_9, (f, server) -> {
+            if (f.id().equals("b")) { throw new IllegalStateException("policy"); }
+            return false;
+        });
+        assertThrows(IllegalStateException.class, () -> FeatureState.rewrite(features, p, throwing));
+        assertSame(before, FeatureState.published());
+        assertTrue(FeatureState.on(1));
+        assertTrue(FeatureState.on(2));
     }
 }

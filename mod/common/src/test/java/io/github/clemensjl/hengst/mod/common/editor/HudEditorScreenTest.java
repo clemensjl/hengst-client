@@ -72,14 +72,10 @@ class HudEditorScreenTest {
         return screen(editorClose(ProfileStore.DEFAULT, profile));
     }
 
-    /** The close the core builds for the editor: save only a changed layout, rebuild, close. */
+    /** The close the core builds for the editor, with the model's own save step. */
     private Runnable editorClose(String profileName, Profile p) {
-        return new ScreenClose(() -> {
-            if (model.dirty()) {
-                store.save(profileName, p);
-                model.markSaved();
-            }
-        }, () -> renderer.rebuild(p), platform, "the HUD editor (profile " + profileName + ")");
+        return new ScreenClose(model.saver(store, profileName, p), () -> renderer.rebuild(p), platform,
+                "the HUD editor (profile " + profileName + ")");
     }
 
     @Test
