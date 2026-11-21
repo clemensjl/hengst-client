@@ -2,15 +2,13 @@ package io.github.clemensjl.hengst.mod.modern;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertFalse;
-import static org.junit.jupiter.api.Assertions.assertNull;
-import static org.junit.jupiter.api.Assertions.assertSame;
-import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import io.github.clemensjl.hengst.mod.common.platform.InputView;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
+import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -20,6 +18,7 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+/** What belongs to the adapter itself; start and failure handling of the guard are tested in common. */
 class HengstModernModTest {
     @AfterEach
     void reset() {
@@ -27,43 +26,12 @@ class HengstModernModTest {
     }
 
     @Test
-    void aRuntimeExceptionInStartGivesNoCore() {
-        assertNull(HengstModernMod.startCore(() -> failingPlatform(new IllegalStateException("broken"))));
-    }
-
-    @Test
-    void aLinkageErrorInStartGivesNoCore() {
-        assertNull(HengstModernMod.startCore(() -> failingPlatform(new NoClassDefFoundError("common class"))));
-        assertNull(HengstModernMod.startCore(() -> failingPlatform(new ExceptionInInitializerError("static init"))));
-    }
-
-    @Test
-    void aFailingPlatformConstructionGivesNoCore() {
-        assertNull(HengstModernMod.startCore(() -> {
-            throw new NoClassDefFoundError("io/github/clemensjl/hengst/mod/common/platform/Platform");
-        }));
-    }
-
-    @Test
-    void virtualMachineErrorsAreNotSwallowed() {
-        OutOfMemoryError oom = new OutOfMemoryError("test");
-        assertSame(oom, assertThrows(OutOfMemoryError.class,
-                () -> HengstModernMod.startCore(() -> failingPlatform(oom))));
-    }
-
-    @Test
     void aRuntimeExceptionInAHookKeepsTheModRunning() {
         HengstModernMod.ENABLED = true;
-        HengstModernMod.hookFailed(HengstModernMod.SITE_FRAME, new IllegalStateException("one frame"));
-        HengstModernMod.hookFailed(HengstModernMod.SITE_FRAME, new IllegalStateException("again"));
+        // No core in the unit test: the hook bodies fail with a NullPointerException, which the guard absorbs.
+        assertDoesNotThrow(HengstModernMod::onFrame);
+        assertDoesNotThrow(HengstModernMod::onFrame);
         assertTrue(HengstModernMod.ENABLED);
-    }
-
-    @Test
-    void aLinkageErrorInAHookDisablesTheMod() {
-        HengstModernMod.ENABLED = true;
-        HengstModernMod.hookFailed(HengstModernMod.SITE_HUD, new NoSuchMethodError("GuiGraphics.fill"));
-        assertFalse(HengstModernMod.ENABLED);
     }
 
     @Test
@@ -76,15 +44,15 @@ class HengstModernModTest {
     @Test
     void stopWritesPendingChangesEvenAfterAHookFailureSwitchedTheModOff(@TempDir Path dir) throws Exception {
         UiScreen[] opened = new UiScreen[1];
-        HengstCore core = HengstModernMod.startCore(() -> workingPlatform(dir, opened));
+        HengstCore core = HengstModernMod.GUARD.start(() -> workingPlatform(dir, opened), TimeSource.SYSTEM);
         core.onOpenSettingsKey();
         opened[0].render(CANVAS, 0, 0, 0f);
         opened[0].mouseClicked(12, 46, 0);                        // the FPS switch: a change waiting to be saved
         Path profile = dir.resolve("hengst/profiles/default.json");
         assertFalse(Files.exists(profile));
         HengstModernMod.ENABLED = true;
-        HengstModernMod.hookFailed(HengstModernMod.SITE_HUD, new NoSuchMethodError("DrawableHelper.fill"));
-        assertFalse(HengstModernMod.ENABLED);                                 // what a linkage error does to the flag
+        assertTrue(HengstModernMod.GUARD.hookFailed(HengstModernMod.SITE_HUD, new NoSuchMethodError("GuiGraphics.fill")));
+        HengstModernMod.ENABLED = false;                                      // what the hook does on true
         HengstModernMod.stopCore(core);
         assertTrue(Files.exists(profile));
     }
@@ -127,51 +95,6 @@ class HengstModernModTest {
             @Override public void logWarning(String message) { }
             @Override public void openScreen(UiScreen screen) { opened[0] = screen; }
             @Override public void closeScreen() { opened[0] = null; }
-        };
-    }
-
-    /** HengstCore.start asks the platform for its config directory first; this one throws there. */
-    private static Platform failingPlatform(Throwable failure) {
-        return new Platform() {
-            @Override
-            public GameVersion version() {
-                return GameVersion.V26_3;
-            }
-
-            @Override
-            public GameView game() {
-                return null;
-            }
-
-            @Override
-            public InputView input() {
-                return null;
-            }
-
-            @Override
-            public Path configDir() {
-                if (failure instanceof RuntimeException) {
-                    throw (RuntimeException) failure;
-                }
-                throw (Error) failure;
-            }
-
-            @Override
-            public String languageCode() {
-                return "en_us";
-            }
-
-            @Override
-            public void logWarning(String message) {
-            }
-
-            @Override
-            public void openScreen(UiScreen screen) {
-            }
-
-            @Override
-            public void closeScreen() {
-            }
         };
     }
 }

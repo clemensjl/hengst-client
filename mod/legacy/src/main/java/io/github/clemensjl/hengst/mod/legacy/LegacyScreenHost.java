@@ -1,5 +1,6 @@
 package io.github.clemensjl.hengst.mod.legacy;
 
+import io.github.clemensjl.hengst.mod.common.platform.ScrollAccumulator;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import net.minecraft.client.gui.screen.Screen;
 import org.lwjgl.input.Keyboard;
@@ -22,7 +23,7 @@ import org.lwjgl.input.Mouse;
 public final class LegacyScreenHost extends Screen {
     private final UiScreen ui;
     private final LegacyCanvas canvas = new LegacyCanvas();
-    private final LegacyInput.ScrollNotches scroll = new LegacyInput.ScrollNotches();
+    private final ScrollAccumulator scroll = new ScrollAccumulator(120.0);
     private boolean removed;
     private boolean repeatSaved;
     private boolean repeatBefore;
