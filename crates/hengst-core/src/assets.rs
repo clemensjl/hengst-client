@@ -44,6 +44,7 @@ pub async fn install_assets(
         url: index.url.clone(),
         path: index_path.clone(),
         sha1: Some(index.sha1.clone()),
+        sha1_from_cache: false,
     })
     .await?;
     let parsed: AssetIndex = serde_json::from_slice(&tokio::fs::read(&index_path).await?)?;
@@ -58,6 +59,7 @@ pub async fn install_assets(
                 url: format!("{base}/{}/{}", &o.hash[..2], o.hash),
                 path: paths.asset_object(&o.hash),
                 sha1: Some(o.hash.clone()),
+                sha1_from_cache: false,
             });
         }
     }

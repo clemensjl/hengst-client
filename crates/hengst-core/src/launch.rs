@@ -152,6 +152,7 @@ pub async fn prepare_with_runner(
             url: client.url.clone(),
             path: vanilla_jar.clone(),
             sha1: Some(client.sha1.clone()),
+            sha1_from_cache: false,
         });
         client_sha1 = Some(client.sha1.clone());
         classpath.push(merged_jar.clone());
@@ -164,6 +165,7 @@ pub async fn prepare_with_runner(
                 url: c.file.url.clone(),
                 path: p.clone(),
                 sha1: Some(c.file.sha1.clone()),
+                sha1_from_cache: false,
             });
             Some(p)
         }

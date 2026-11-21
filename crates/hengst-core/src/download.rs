@@ -4,7 +4,6 @@ use futures::stream::{self, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub const USER_AGENT: &str = concat!(
@@ -28,6 +27,9 @@ pub struct Download {
     pub url: String,
     pub path: PathBuf,
     pub sha1: Option<String>,
+    /// Set by `fill_missing_sha1` when `sha1` came from the hash cache. Only such a hash may be
+    /// replaced by a freshly fetched sidecar; one from metadata never is.
+    pub sha1_from_cache: bool,
 }
 
 #[derive(Clone)]
@@ -36,8 +38,6 @@ pub struct Downloader {
     concurrency: usize,
     retries: u32,
     sha1_cache: Option<PathBuf>,
-    /// URLs whose hash `fill_missing_sha1` took from the cache (shared between clones).
-    from_cache: Arc<Mutex<HashSet<String>>>,
 }
 
 impl Downloader {
@@ -47,7 +47,6 @@ impl Downloader {
             concurrency: 16,
             retries: 3,
             sha1_cache: None,
-            from_cache: Arc::default(),
         }
     }
 
@@ -91,22 +90,23 @@ impl Downloader {
     }
 
     /// Like `fetch_one`, and also returns the SHA-1 the file was verified against. When the
-    /// expected hash came from the hash cache and the download does not match it, the cache entry
-    /// is evicted, the hash fetched again from `<url>.sha1` and the download retried once with it
-    /// (a republished artifact or an earlier bad answer). A hash the caller supplied is never
-    /// replaced.
+    /// item's hash came from the hash cache (`sha1_from_cache`) and the download does not match
+    /// it, the cache entry is evicted, the hash fetched again from `<url>.sha1` and the download
+    /// retried once with it (a republished artifact or an earlier bad answer). A hash from
+    /// metadata is never replaced.
     pub async fn fetch_verified(&self, item: &Download) -> Result<(bool, Option<String>)> {
         match self.fetch_attempts(item).await {
-            Err(e @ Error::Checksum { .. }) if self.take_cached(&item.url) => {
+            Err(e @ Error::Checksum { .. }) if item.sha1_from_cache => {
                 if let Some(file) = self.cache_file(&item.url) {
                     let _ = tokio::fs::remove_file(file).await;
                 }
-                let fresh = sidecar_sha1(self, item).await?;
+                let (fresh, _) = sidecar_sha1(self, item).await?;
                 if item.sha1.as_deref() == Some(fresh.as_str()) {
                     return Err(e);
                 }
                 let retry = Download {
                     sha1: Some(fresh.clone()),
+                    sha1_from_cache: false,
                     ..item.clone()
                 };
                 Ok((self.fetch_attempts(&retry).await?, Some(fresh)))
@@ -119,14 +119,6 @@ impl Downloader {
         self.sha1_cache
             .as_ref()
             .map(|dir| dir.join(sha1_hex(url.as_bytes())))
-    }
-
-    /// True (once) if the hash for `url` was taken from the cache.
-    fn take_cached(&self, url: &str) -> bool {
-        self.from_cache
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(url)
     }
 
     async fn fetch_attempts(&self, item: &Download) -> Result<bool> {
@@ -183,18 +175,20 @@ pub async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Resul
         .filter(|(_, d)| d.sha1.is_none())
         .map(|(i, d)| (i, d.clone()))
         .collect();
-    let found: Vec<(usize, String)> = stream::iter(todo)
+    let found: Vec<(usize, (String, bool))> = stream::iter(todo)
         .map(|(i, item)| async move { Ok::<_, Error>((i, sidecar_sha1(dl, &item).await?)) })
         .buffer_unordered(dl.concurrency)
         .try_collect()
         .await?;
-    for (i, sha1) in found {
+    for (i, (sha1, from_cache)) in found {
         items[i].sha1 = Some(sha1);
+        items[i].sha1_from_cache = from_cache;
     }
     Ok(())
 }
 
-async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
+/// The hash for `item` and whether it came from the cache.
+async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)> {
     // An old `<path>.sha1` from earlier versions is never read; drop it when we stand on it.
     let mut legacy = item.path.clone().into_os_string();
     legacy.push(".sha1");
@@ -205,11 +199,7 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
         if let Ok(text) = tokio::fs::read_to_string(file).await {
             let hash = text.trim();
             if validate_sha1(hash).is_ok() {
-                dl.from_cache
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(item.url.clone());
-                return Ok(hash.to_ascii_lowercase());
+                return Ok((hash.to_ascii_lowercase(), true));
             }
         }
     }
@@ -232,7 +222,7 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<String> {
         // it is asked for again next time.
         let _ = write_cache_entry(&file, &hash).await;
     }
-    Ok(hash)
+    Ok((hash, false))
 }
 
 async fn write_cache_entry(file: &Path, hash: &str) -> std::io::Result<()> {
@@ -308,6 +298,7 @@ mod tests {
             url: format!("{}/{name}", server.uri()),
             path: dir.join("sub").join(name),
             sha1,
+            sha1_from_cache: false,
         }
     }
 
@@ -489,6 +480,7 @@ mod tests {
             url: format!("{}{p}", server.uri()),
             path: dest.clone(),
             sha1: None,
+            sha1_from_cache: false,
         };
         let mut first = [mk(&a, "/a/lib.jar")];
         fill_missing_sha1(&dl, &mut first).await.unwrap();
@@ -593,6 +585,37 @@ mod tests {
             dl.fetch_one(&it).await,
             Err(Error::Checksum { .. })
         ));
+        assert!(!server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .any(|r| r.url.path().ends_with(".sha1")));
+    }
+
+    #[tokio::test]
+    async fn metadata_hash_equal_to_a_cached_one_is_never_replaced() {
+        let server = hello_server("/lib.jar", HELLO_SHA1).await;
+        let dir = tempfile::tempdir().unwrap();
+        let cache = dir.path().join("cache");
+        let stale = sha1_hex(b"an older release");
+        let mut from_cache = item(&server, dir.path(), "lib.jar", None);
+        std::fs::create_dir_all(&cache).unwrap();
+        let entry = cache.join(sha1_hex(from_cache.url.as_bytes()));
+        std::fs::write(&entry, &stale).unwrap();
+        let dl = Downloader::new(http_client()).with_sha1_cache(cache);
+        fill_missing_sha1(&dl, std::slice::from_mut(&mut from_cache))
+            .await
+            .unwrap();
+        assert!(from_cache.sha1_from_cache);
+        // The same URL with a hash from metadata (here the same value) is not retried.
+        let metadata = item(&server, dir.path(), "lib.jar", Some(stale.clone()));
+        assert!(!metadata.sha1_from_cache);
+        assert!(matches!(
+            dl.fetch_one(&metadata).await,
+            Err(Error::Checksum { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(&entry).unwrap(), stale);
         assert!(!server
             .received_requests()
             .await

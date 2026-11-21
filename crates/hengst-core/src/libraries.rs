@@ -117,6 +117,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
                         url: format!("{}{rel}", base_url(lib)),
                         path: path.clone(),
                         sha1: None,
+                        sha1_from_cache: false,
                     },
                 );
                 out.natives.push(NativeJar {
@@ -131,6 +132,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
                         url: a.url.clone(),
                         path: path.clone(),
                         sha1: Some(a.sha1.clone()),
+                        sha1_from_cache: false,
                     },
                 );
                 out.natives.push(NativeJar {
@@ -164,6 +166,7 @@ pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLib
                         url,
                         path: path.clone(),
                         sha1,
+                        sha1_from_cache: false,
                     },
                 );
             }

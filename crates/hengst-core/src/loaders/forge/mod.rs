@@ -202,6 +202,7 @@ pub async fn fetch_installer(
         url: installer_url(kind, game, maven, ep)?,
         path: join_relative(&paths.libraries(), &rel)?,
         sha1: None,
+        sha1_from_cache: false,
     }];
     let dl = dl.clone().with_sha1_cache(paths.sha1_cache());
     fill_missing_sha1(&dl, &mut item).await?;

@@ -140,6 +140,7 @@ pub async fn fetch_version(
         url: entry.url.clone(),
         path: path.clone(),
         sha1: Some(entry.sha1.clone()),
+        sha1_from_cache: false,
     })
     .await?;
     Ok(serde_json::from_slice(&tokio::fs::read(&path).await?)?)
