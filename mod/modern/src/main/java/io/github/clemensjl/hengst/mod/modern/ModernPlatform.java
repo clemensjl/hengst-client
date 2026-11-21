@@ -16,6 +16,7 @@ import net.minecraft.client.multiplayer.ClientPacketListener;
 import net.minecraft.client.multiplayer.PlayerInfo;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.client.resources.language.LanguageManager;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -59,9 +60,14 @@ public final class ModernPlatform implements Platform {
         return FabricLoader.getInstance().getConfigDir();
     }
 
+    /**
+     * Null while the game has not created its language manager yet: always the case when the core starts in the mod
+     * initializer. The core treats null as not read yet and reads again in the tick.
+     */
     @Override
     public String languageCode() {
-        return Minecraft.getInstance().getLanguageManager().getSelected();
+        LanguageManager languages = Minecraft.getInstance().getLanguageManager();
+        return languages == null ? null : languages.getSelected();
     }
 
     @Override

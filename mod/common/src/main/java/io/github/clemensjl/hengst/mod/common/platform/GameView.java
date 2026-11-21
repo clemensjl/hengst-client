@@ -32,7 +32,8 @@ public interface GameView {
 
     /**
      * The client's world instance, compared by reference only; null without a world. A new instance on joining a world
-     * and on a dimension change. Allocation free.
+     * and on a dimension change. Allocation free. Consumers compare it with the value they stored and replace that
+     * value every tick; they must not keep it beyond the world's life (it references the world object).
      */
     Object worldIdentity();
 }

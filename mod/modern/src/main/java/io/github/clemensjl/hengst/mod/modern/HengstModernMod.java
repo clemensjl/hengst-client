@@ -1,8 +1,15 @@
 package io.github.clemensjl.hengst.mod.modern;
 
 import io.github.clemensjl.hengst.mod.common.AdapterGuard;
+import io.github.clemensjl.hengst.mod.common.FeatureCatalog;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
+import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
+import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
+import java.util.List;
+import java.util.function.Supplier;
+import java.util.function.ToIntFunction;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -64,8 +71,7 @@ public final class HengstModernMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        ModernKeys.register(ModernPlatform.gameVersion());
-        core = GUARD.start(ModernPlatform::new, TimeSource.SYSTEM);
+        core = start(() -> FeatureCatalog.keys(ModernPlatform.gameVersion()), ModernKeys::code, ModernPlatform::new);
         if (core == null) {
             return;
         }
@@ -77,6 +83,22 @@ public final class HengstModernMod implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(HengstModernMod::onEndTick);
         ClientLifecycleEvents.CLIENT_STOPPING.register(HengstModernMod::onStopping);
         ENABLED = true;
+    }
+
+    /**
+     * Registers the key bindings, then starts the core; null if either fails, and the mod stays inert (no listeners,
+     * {@link #ENABLED} false). The registration runs common code (every feature's constructor and keys) and the API
+     * mod's helper, which throws on a duplicate binding name: caught like the core start, logged once.
+     */
+    static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
+            Supplier<? extends Platform> platform) {
+        try {
+            ModernKeys.register(keys.get(), codes);
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.error("[hengst] key bindings failed to register; the mod stays inactive", e);
+            return null;
+        }
+        return GUARD.start(platform, TimeSource.SYSTEM);
     }
 
     //? if >=26.1 {

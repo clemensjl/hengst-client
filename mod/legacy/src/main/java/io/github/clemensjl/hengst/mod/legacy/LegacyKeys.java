@@ -4,8 +4,8 @@ import io.github.clemensjl.hengst.mod.common.FeatureCatalog;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
-import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.List;
+import java.util.function.ToIntFunction;
 import net.legacyfabric.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
@@ -36,17 +36,21 @@ final class LegacyKeys {
     }
 
     /**
-     * From the client initializer, before the core starts: one binding per key of {@code version}, in catalog order, so
-     * the index of a binding is its index for {@link HengstCore#onFeatureKey}. Legacy Fabric API adds the bindings to
-     * GameOptions.allKeys when it loads.
+     * From the client initializer, before the core starts: one binding per key, in list order, so the index of a binding
+     * is its index for {@link HengstCore#onFeatureKey}. Legacy Fabric API adds the bindings to GameOptions.allKeys when
+     * it loads. All key codes are computed before the first binding is built, so an unmapped default key registers
+     * nothing; the binding array is set only when every registration succeeded. Throws what a step throws; the caller
+     * keeps the mod inert then.
      */
-    static void register(GameVersion version) {
-        List<KeySpec> keys = FeatureCatalog.keys(version);
-        KeyBinding[] built = new KeyBinding[keys.size()];
+    static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes) {
+        int[] keyCodes = new int[keys.size()];
+        for (int i = 0; i < keyCodes.length; i++) {
+            keyCodes[i] = codes.applyAsInt(keys.get(i).defaultKey());
+        }
+        KeyBinding[] built = new KeyBinding[keyCodes.length];
         for (int i = 0; i < built.length; i++) {
-            KeySpec spec = keys.get(i);
             built[i] = KeyBindingHelper.registerKeyBinding(
-                    new KeyBinding(spec.translationKey(), code(spec.defaultKey()), CATEGORY));
+                    new KeyBinding(keys.get(i).translationKey(), keyCodes[i], CATEGORY));
         }
         bindings = built;
     }
@@ -65,9 +69,16 @@ final class LegacyKeys {
 
     /** End of a client tick, before the core's tick. */
     static void dispatch(MinecraftClient client) {
-        HengstCore core = HengstLegacyMod.core();
-        focus(core, bindings, Display.isActive());
+        tick(HengstLegacyMod.core(), bindings, Display.isActive());
+    }
+
+    /**
+     * One tick: the keys first, then the focus, so a release forced by a focus loss comes after any press counted in
+     * the same tick and is final.
+     */
+    static void tick(HengstCore core, KeyBinding[] bindings, boolean focused) {
         dispatch(core, bindings);
+        focus(core, bindings, focused);
     }
 
     /**

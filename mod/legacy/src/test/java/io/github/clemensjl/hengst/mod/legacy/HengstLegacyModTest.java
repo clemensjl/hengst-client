@@ -4,9 +4,12 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import io.github.clemensjl.hengst.mod.common.FeatureCatalog;
 import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
@@ -16,6 +19,7 @@ import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import io.github.clemensjl.hengst.mod.common.platform.InputView;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
+import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
@@ -90,19 +94,23 @@ class HengstLegacyModTest {
     }
 
     @Test
-    void theSettingsKeyOpensTheSettingsAndNoKeyActsWithAScreenOpen(@TempDir Path dir) {
+    void theSettingsKeyDoesNothingWhileAnotherScreenIsOpenAndWorksAfterARelease(@TempDir Path dir) {
         UiScreen[] opened = new UiScreen[1];
         HengstCore core = HengstCore.start(workingPlatform(dir, opened), TimeSource.SYSTEM);
         KeyBinding[] maps = mappings(core);
+        opened[0] = OTHER_SCREEN;                                  // a game screen such as chat is open
+        press(maps[0]);
+        LegacyKeys.dispatch(core, maps);
+        assertSame(OTHER_SCREEN, opened[0]);
+        release(maps[0]);
+        LegacyKeys.dispatch(core, maps);
+        opened[0] = null;                                          // the screen closed
+        LegacyKeys.dispatch(core, maps);
+        assertNull(opened[0], "the press with the screen open does not fire later");
         press(maps[0]);
         LegacyKeys.dispatch(core, maps);
         assertNotNull(opened[0]);
-        UiScreen settings = opened[0];
-        release(maps[0]);
-        LegacyKeys.dispatch(core, maps);
-        press(maps[1]);                                            // the HUD editor key while the settings are open
-        LegacyKeys.dispatch(core, maps);
-        assertSame(settings, opened[0]);
+        assertNotSame(OTHER_SCREEN, opened[0]);
     }
 
     @Test
@@ -172,6 +180,77 @@ class HengstLegacyModTest {
     }
 
     @Test
+    void aFocusLossReleaseComesAfterAPressOfTheSameTick(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature();
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        FakeKey[] maps = fakes(core);
+        FakeKey hold = maps[maps.length - 2];
+        LegacyKeys.tick(core, maps, true);
+        hold.clicks = 1;                                           // pressed in the tick the window loses focus
+        hold.down = true;
+        LegacyKeys.tick(core, maps, false);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+        LegacyKeys.tick(core, maps, false);                            // still reads down: the forced release is final
+        LegacyKeys.tick(core, maps, true);
+        assertEquals(Arrays.asList("0 down", "0 up"), f.events);
+    }
+
+    @Test
+    void aThrowingFeatureInTheKeyCatalogLeavesTheModInert() {
+        boolean[] platformCreated = new boolean[1];
+        HengstCore core = assertDoesNotThrow(() -> HengstLegacyMod.start(() -> new ThrowingFeature().keys(), LegacyKeys::code,
+                () -> {
+                    platformCreated[0] = true;
+                    return null;
+                }));
+        assertNull(core);
+        assertFalse(platformCreated[0], "the core is not started");
+        assertFalse(HengstLegacyMod.ENABLED);
+    }
+
+    @Test
+    void anUnmappedDefaultKeyLeavesTheModInert() {
+        boolean[] platformCreated = new boolean[1];
+        HengstCore core = assertDoesNotThrow(() -> HengstLegacyMod.start(() -> FeatureCatalog.keys(GameVersion.V1_8_9), key -> {
+            throw new IllegalArgumentException("no key code for " + key);
+        }, () -> {
+            platformCreated[0] = true;
+            return null;
+        }));
+        assertNull(core);
+        assertFalse(platformCreated[0], "the core is not started");
+        assertFalse(HengstLegacyMod.ENABLED);
+    }
+
+    @Test
+    void the_press_deliver_and_focus_paths_allocate_nothing(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature(true);
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        FakeKey[] maps = fakes(core);
+        for (int i = 0; i < 2000; i++) {
+            tapAndTick(core, maps, i);                             // warm up
+        }
+        f.downs = 0;
+        f.ups = 0;
+        com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        long before = mx.getThreadAllocatedBytes(Thread.currentThread().getId());
+        for (int i = 0; i < 1000; i++) {
+            tapAndTick(core, maps, i);
+        }
+        long allocated = mx.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
+        assertEquals(2000, f.downs, "a press of the HOLD and the PRESS key every tick");
+        assertEquals(1000, f.ups, "a release of the HOLD key every tick");
+        assertTrue(allocated < 2048, "allocated " + allocated + " bytes");
+    }
+
+    /** A click on the HOLD and the PRESS key, released in the same tick; the focus is lost every second tick. */
+    private static void tapAndTick(HengstCore core, FakeKey[] maps, int i) {
+        maps[maps.length - 2].clicks = 1;
+        maps[maps.length - 1].clicks = 1;
+        LegacyKeys.tick(core, maps, (i & 1) == 0);
+    }
+
+    @Test
     void key_dispatch_allocates_nothing(@TempDir Path dir) {
         HengstCore core = HengstCore.start(workingPlatform(dir, new UiScreen[1]), TimeSource.SYSTEM);
         KeyBinding[] maps = mappings(core);
@@ -190,9 +269,18 @@ class HengstLegacyModTest {
     /** A feature with one HOLD and one PRESS key: the last two indexes of the core's key list. */
     private static final class KeyFeature extends Feature {
         final List<String> events = new ArrayList<>();
+        final boolean counting;
+        int downs;
+        int ups;
 
         KeyFeature() {
+            this(false);
+        }
+
+        /** {@code counting}: count instead of recording, for the allocation test. */
+        KeyFeature(boolean counting) {
             super("keys", 47, FeatureGroup.HUD, EnumSet.allOf(GameVersion.class));
+            this.counting = counting;
         }
 
         @Override
@@ -203,9 +291,68 @@ class HengstLegacyModTest {
 
         @Override
         public void onKey(int key, boolean down, long nowNanos) {
+            if (counting) {
+                if (down) {
+                    downs++;
+                } else {
+                    ups++;
+                }
+                return;
+            }
             events.add(key + (down ? " down" : " up"));
         }
     }
+
+    /** A feature whose constructor fails, as a broken feature in the catalog would. */
+    private static final class ThrowingFeature extends Feature {
+        ThrowingFeature() {
+            super("throwing", 48, FeatureGroup.HUD, EnumSet.allOf(GameVersion.class));
+            throw new IllegalStateException("feature constructor failed");
+        }
+    }
+
+    /** A key binding whose clicks and down state the test sets directly; its reads allocate nothing. */
+    private static final class FakeKey extends KeyBinding {
+        int clicks;
+        boolean down;
+
+        FakeKey(String name, int code) {
+            super(name, code, LegacyKeys.CATEGORY);
+        }
+
+        @Override
+        public boolean wasPressed() {
+            if (clicks == 0) {
+                return false;
+            }
+            clicks--;
+            return true;
+        }
+
+        @Override
+        public boolean isPressed() {
+            return down;
+        }
+    }
+
+    private static FakeKey[] fakes(HengstCore core) {
+        FakeKey[] maps = new FakeKey[core.keySpecs().size()];
+        for (int i = 0; i < maps.length; i++) {
+            maps[i] = new FakeKey(core.keySpecs().get(i).translationKey(), 200 + 50 + i);
+        }
+        return maps;
+    }
+
+    /** Another screen of the game (chat, inventory): the core sees a screen that is not its own. */
+    private static final UiScreen OTHER_SCREEN = new UiScreen() {
+        @Override public void render(Canvas canvas, int mouseX, int mouseY, float partialTick) { }
+        @Override public boolean mouseClicked(int mouseX, int mouseY, int button) { return false; }
+        @Override public boolean mouseReleased(int mouseX, int mouseY, int button) { return false; }
+        @Override public boolean mouseDragged(int mouseX, int mouseY, int button) { return false; }
+        @Override public boolean mouseScrolled(int mouseX, int mouseY, double amount) { return false; }
+        @Override public boolean keyPressed(UiKey key, boolean shift, boolean control) { return false; }
+        @Override public void closed() { }
+    };
 
     private static HengstCore startWithKeys(Path dir, UiScreen[] opened, KeyFeature f) {
         HengstCore core = HengstCore.start(workingPlatform(dir, opened), TimeSource.SYSTEM);

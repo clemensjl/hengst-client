@@ -14,7 +14,10 @@ public interface Platform {
     /** The config folder inside the game directory. */
     Path configDir();
 
-    /** Current game language, for example "de_de" (1.8.9 reports "de_DE"). */
+    /**
+     * Current game language, for example "de_de" (1.8.9 reports "de_DE"); null while the game has not loaded its
+     * language yet (the core treats that as not read and reads again in the tick). Throw only on a real failure.
+     */
     String languageCode();
 
     void logWarning(String message);

@@ -24,7 +24,14 @@ class ModernKeysTest {
             ModernKeys.code(k);
         }
         assertEquals(InputConstants.KEY_RSHIFT, ModernKeys.code(DefaultKey.RIGHT_SHIFT));
-        assertEquals(InputConstants.UNKNOWN.getValue(), ModernKeys.code(DefaultKey.NONE));
+        // NONE is the game's "unknown" key, looked up in the key table without running InputConstants' static
+        // initializer (it loads GLFW natives on 1.21.11); the in-game test compares with InputConstants.UNKNOWN itself.
+        //? if >=26.1 {
+        InputConstants.Type keyboard = InputConstants.Type.KEYBOARD;
+        //?} else {
+        /*InputConstants.Type keyboard = InputConstants.Type.KEYSYM;
+        *///?}
+        assertEquals("key.keyboard.unknown", keyboard.getOrCreate(ModernKeys.code(DefaultKey.NONE)).getName());
     }
 
     @Test

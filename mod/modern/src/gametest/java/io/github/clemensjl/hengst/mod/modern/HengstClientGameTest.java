@@ -4,6 +4,7 @@ import com.mojang.blaze3d.platform.InputConstants;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
+import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
@@ -135,6 +136,9 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         check(ctx.computeOnClient(mc -> platform.game().pingMillis()) == -1, "no ping in singleplayer");
         check(ctx.computeOnClient(mc -> platform.game().worldIdentity()) != null, "world identity in a world");
         pass("feature state follows the profile; no ping in singleplayer, a world identity in a world");
+        check(ModernKeys.code(DefaultKey.NONE) == InputConstants.UNKNOWN.getValue(),
+                "the unbound key code is the game's unknown key, got " + ModernKeys.code(DefaultKey.NONE));
+        pass("the unbound key code matches InputConstants.UNKNOWN");
 
         input.pressKey(o -> o.keyToggleGui);
         ctx.waitTick();

@@ -906,6 +906,16 @@ class HengstCoreTest {
         assertEquals(gen + 1, core.context().languageGeneration());      // loaded once per switch, not once per second
     }
 
+    @Test void a_language_not_ready_at_start_is_no_warning_and_read_in_the_first_tick() {
+        platform.languageCode = null;                                    // modern: no language manager in the initializer
+        core = start(); platform.inWorld = true;
+        assertEquals("Done", core.context().i18n().get("hengst.button.done"));
+        platform.languageCode = "de_de";
+        core.onClientTick();
+        assertEquals("Fertig", core.context().i18n().get("hengst.button.done"));
+        assertTrue(platform.warnings.isEmpty(), platform.warnings.toString());
+    }
+
     @Test void a_frame_never_reloads_the_language() {
         core = start(); platform.inWorld = true;
         int gen = core.context().languageGeneration();
