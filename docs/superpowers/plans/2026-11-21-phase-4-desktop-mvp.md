@@ -6,7 +6,7 @@
 
 **Architecture:** Alle Launcher-Logik bleibt in `hengst-core`; neu sind dort die Module `instances` und `auth::browser`. Die Tauri-Crate `apps/desktop/src-tauri` ist eine dünne Schicht aus Commands, eigenen serialisierbaren DTOs und Event-Kanälen; Kerntypen erreichen die Web-Ansicht nie direkt. Die Oberfläche spricht nur über einen typisierten Client (`src/ipc/client.ts`) mit dem Backend; die TypeScript-Typen erzeugt `ts-rs` aus den DTOs, eingecheckt und per Test gegen Drift geprüft.
 
-**Tech Stack:** Tauri 2.12 (`tauri` 2.12.7, `tauri-build` 2.7.6, `@tauri-apps/api` 2.12.5, `@tauri-apps/cli` 2.12.6), Plugins `single-instance` 2.5.5, `opener` 2.7.3, `window-state` 2.5.0; Vite 8.3.8, React 19.3.1, TypeScript, Tailwind CSS 4.3.5 mit `@tailwindcss/vite` 4.3.5, shadcn CLI 4.23.0 (Basis Base UI), i18next 27.2.2 + react-i18next 18.0.3, zustand 5.1.0, Sonner, lucide-react; `ts-rs` 12.0.1; Tests Vitest 5.1.1 + Testing Library + jsdom, `@tauri-apps/api/mocks`, `tauri::test` (Feature `test`), wiremock, WebdriverIO + `tauri-driver` 2.1.0. Neue Kern-Abhängigkeiten nur für PKCE: `sha2`, `base64`, `getrandom`.
+**Tech Stack:** Tauri 2.12 (`tauri` 2.12.7, `tauri-build` 2.7.6, `@tauri-apps/api` 2.12.5, `@tauri-apps/cli` 2.12.6), Plugins `single-instance` 2.5.5, `opener` 2.7.3 (Größe und Position des Fensters merkt ein kleines eigenes Modul `window_state.rs`, nicht das Plugin `window-state`: dessen Datei liegt im App-Konfigurationsordner statt im Datenordner `--home`, siehe Task 2); Vite 8.3.8, React 19.3.1, TypeScript, Tailwind CSS 4.3.5 mit `@tailwindcss/vite` 4.3.5, shadcn CLI 4.23.0 (Basis Base UI), i18next 27.2.2 + react-i18next 18.0.3, zustand 5.1.0, Sonner, lucide-react; `ts-rs` 12.0.1; Tests Vitest 5.1.1 + Testing Library + jsdom, `@tauri-apps/api/mocks`, `tauri::test` (Feature `test`), wiremock, `static_assertions` (Dev), WebdriverIO + `tauri-driver` 2.1.0. Neue Kern-Abhängigkeiten nur für PKCE: `sha2`, `base64`, `getrandom`.
 
 **Spec:** `docs/PLAN.md` (Abschnitte 2, 3, 5.3, 7 mit den M-Punkten, 8, 9, 10, 11, 12) und der Phase-4-Auftrag vom 21.11.2026 (Umfang, Architektur-, Test- und Design-Vorgaben). Offene Punkte aus den Abschlussreviews: `.superpowers/sdd/2026-11-20-phase-2-login/progress.md` (F10, Auth Code + PKCE) und `.superpowers/sdd/2026-11-20-phase-3-loader/progress.md` (F17, Job-Objekt, typisierte Lock-Fehler, Install-Log in der UI, `--resolve-only`).
 
@@ -14,7 +14,7 @@
 
 ## Ausgangslage
 
-- Branch `phase-4-desktop` von `phase-3-loader` (Phasen 2 und 3 sind lokal fertig, aber nicht gemergt; siehe "Beim Menschen"). Ledger unter `.superpowers/sdd/2026-11-21-phase-4a-desktop/`.
+- Branch `phase-4-desktop` von `phase-3-loader` (Phasen 2 und 3 sind lokal fertig, aber nicht gemergt; siehe "Beim Menschen"). Ledger unter `.superpowers/sdd/2026-11-21-phase-4-desktop-mvp/` (dort auch `evidence/`).
 - Kern-API, auf die sich dieser Plan stützt (Stand Commit 9f4c0ac): `launch::{prepare_with_progress, Endpoints, LaunchOptions, Prepared, ensure_launch_allowed, DEV_OFFLINE}`, `progress::{Progress, ProgressSink, Transfer}`, `auth::{MicrosoftAuth, AuthEndpoints, client_id, unix_now, AuthError}`, `auth::msa::{DeviceCode, MsaTokens}` mit `start_device_login`/`poll_device_login`, `auth::flow::{launch_account, LoginSession}` mit `complete_login`, `auth::store::{AccountStore, SecretStore, KeyringSecretStore, MemorySecretStore, StoredAccount, AccountsFile, load_accounts_file}`, `loaders::{LoaderKind, LoaderVersion, LoaderRequest, LoaderEndpoints, list_versions, pick_version}`, `manifest::{fetch_manifest, VersionManifest, VersionEntry, VersionKind}`, `paths::{Paths, validate_id}`, `Error`.
 - `launch::run` erbt die Konsole und kann nicht gestoppt werden; Spielstart mit Ausgabe-Stream kommt in 4b (Task 14).
 
@@ -22,14 +22,14 @@
 
 | Werkzeug | Befund | Folge |
 |---|---|---|
-| Rust | `rustc 1.97.1`, `stable-x86_64-pc-windows-msvc` | reicht; Workspace verlangt 1.89, `tauri` 2.12.7 verlangt 1.90 (https://crates.io/api/v1/crates/tauri): die Desktop-Crate setzt eigenes `rust-version = "1.90"`, Kern und CLI bleiben bei 1.89 |
-| Node | `v22.19.0` | Vite 8.3.8 verlangt `^20.19.0 \|\| >=22.12.0` (https://registry.npmjs.org/vite/latest): passt |
-| pnpm / npm | `11.9.0` / `10.9.3` | pnpm ist der Paketmanager der App |
+| Rust | `rustc 1.97.1`, `stable-x86_64-pc-windows-msvc` | reicht; `[workspace.package] rust-version` bleibt 1.89 für Kern und CLI, `tauri` 2.12.7 verlangt 1.90 (https://crates.io/api/v1/crates/tauri): die Desktop-Crate setzt eigenes `rust-version = "1.90"` (nicht `.workspace = true`). Folge: `cargo test --workspace` und `cargo clippy --workspace` brauchen eine Toolchain ab 1.90 (CI nutzt `stable`, hier 1.97.1); die 1.89-Zusage für Kern und CLI prüft ein eigener CI-Job (`cargo test -p hengst-core -p hengst-cli` auf 1.89, Task 2) |
+| Node | `v22.19.0` | Vite 8.3.8 verlangt `^20.19.0 \|\| >=22.12.0` (https://registry.npmjs.org/vite/latest): passt; festgehalten in `apps/desktop/.nvmrc` (`22.19.0`) und `engines.node` (`>=22.12.0`), Task 2 |
+| pnpm / npm | `11.9.0` / `10.9.3` | pnpm ist der Paketmanager der App, festgehalten über `packageManager: "pnpm@11.9.0"` in `apps/desktop/package.json` (Task 2) |
 | Tauri CLI | `cargo tauri` fehlt | kein Cargo-Install nötig: `@tauri-apps/cli` 2.12.6 als devDependency, Aufruf `pnpm tauri ...` |
 | WebView2 Runtime | `157.0.4341.60` (HKLM `...\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`, Wert `pv`) | vorhanden; Prüfweg laut https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/distribution |
 | tauri-driver | fehlt | Task 12: `cargo install tauri-driver --locked` (2.1.0, https://v2.tauri.app/develop/tests/webdriver/manual-setup/) |
 | msedgedriver | fehlt | Task 12: Skript lädt den Treiber passend zur WebView2-Version 157.0.4341.60 |
-| agentfenster, agentshot | als MCP-Werkzeuge vorhanden | Sichtprüfung jeder UI-Task |
+| agentfenster | als MCP-Werkzeug vorhanden (`desktop='agent'`, unsichtbarer zweiter Desktop) | Sichtprüfung jeder UI-Task; `agentshot` und jede Aufnahme des Nutzer-Desktops sind dafür tabu (sie können private Fenster erfassen) |
 
 ### Geprüfte Fakten aus der Doku (21.11.2026)
 
@@ -55,20 +55,21 @@ Inhalte suchen und Mods installieren (Phase 5), .mrpack, FPS-Profile und JVM-Tun
 
 ## Entscheidungen
 
-- **Typen zwischen Rust und TypeScript:** `ts-rs` 12 statt `tauri-specta`. Grund: stabil, keine RC-Abhängigkeit im Build-Pfad der App, erzeugt nur Typen und lässt die Command-Schicht unverändert. Die Dateien liegen eingecheckt unter `apps/desktop/src/ipc/bindings/`; der Rust-Test `bindings_are_current` erzeugt alle Typen neu und vergleicht sie zeichengenau mit den eingecheckten Dateien (Neuschreiben nur mit `HENGST_UPDATE_BINDINGS=1`). Die Command-Namen stehen einmal in `src-tauri/src/command_list.rs`; `build.rs` und `lib.rs` binden diese Datei per `include!` ein, und der Test `ts_client_covers_every_command` prüft, dass `src/ipc/client.ts` genau diese Namen aufruft.
+- **Typen zwischen Rust und TypeScript:** `ts-rs` 12 statt `tauri-specta`. Grund: stabil, keine RC-Abhängigkeit im Build-Pfad der App, erzeugt nur Typen und lässt die Command-Schicht unverändert. Die Dateien liegen eingecheckt unter `apps/desktop/src/ipc/bindings/`; der Rust-Test `bindings_are_current` erzeugt alle Typen neu und vergleicht sie zeichengenau mit den eingecheckten Dateien (Neuschreiben nur mit `HENGST_UPDATE_BINDINGS=1`).
+- **Eine Liste für Commands:** `src-tauri/src/command_list.rs` enthält die einzige Liste als Makro `with_commands!` mit Einträgen `modul::name` (z. B. `app::app_info`). `build.rs` (Permissions über `AppManifest`) und `lib.rs` (Konstante `COMMANDS` und `generate_handler!`) binden die Datei per `include!` ein und rufen das Makro mit je einem eigenen Callback-Makro auf: Registrierung, Namensliste und erzeugte `allow-<cmd>`-Permissions stammen aus derselben Zeile, ein Command kann nicht registriert und zugleich unbeschränkt sein. Tests: `capability_allows_exactly_the_commands` (Task 2: `capabilities/main.json` hat für jeden Eintrag in `COMMANDS` genau eine `allow-<cmd>`-Permission und keine für einen nicht vorhandenen Command) und `ts_client_covers_every_command` (`src/ipc/client.ts` und `events.ts` rufen genau diese Namen auf). Jeder Task, der Commands hinzufügt, trägt sie nur in `command_list.rs` ein und führt in seinem Files-Block und in seinem `git add` zusätzlich `src-tauri/capabilities/main.json` und `src/ipc/client.ts` (bei Kanälen `events.ts`) auf.
 - **Kanäle:** Ein globaler Kanal `subscribe_events(channel: Channel<AppEvent>)` für Zustandsänderungen, die das Backend selbst auslöst (`DataChanged`, in 4b Spielzustand); je Vorgang ein eigener `Channel` (Login, in 4b Startfortschritt und Log). Keine String-Events per `Emitter`.
 - **UI-Bibliothek:** shadcn/ui mit Base UI als Primitiv-Schicht (`pick-ui-library`: base-ui für zugängliche Primitive; shadcn bietet sie als `--base`). Weitere Wahl nach `pick-ui-library`: Sonner (Toasts), cmdk (Combobox für Versionen, kommt mit shadcn `command`), zustand (Zustand), clsx + cva (von shadcn), in 4b Virtuoso (Log). Kein next-themes: Quelle des Themes sind die Einstellungen im Backend, das Fenster wird mit passender Hintergrundfarbe erzeugt, also kein Aufblitzen. Kein TanStack Query, kein Router: vier Ansichten über einen zustand-Wert.
-- **Fenster:** native Windows-Titelleiste, ein Fenster mit Label `main`, Mindestgröße 960 × 600, Startgröße 1120 × 720, Größe und Position merkt `window-state`. Das Fenster wird in `setup` per `WebviewWindowBuilder` erzeugt (nicht in `tauri.conf.json`), damit Theme und Hintergrundfarbe aus den Einstellungen gesetzt sind, bevor die Web-Ansicht lädt. Zweiter App-Start fokussiert das erste Fenster.
-- **Debug-Startargumente:** Nur in Debug-Builds (`cfg(debug_assertions)`) versteht die App `--home <dir>` und `--window-size <B>x<H>`, im Feature `e2e` zusätzlich `--e2e-base-url <url>` (gleichwertig zu `HENGST_E2E_BASE_URL`); damit startet agentfenster die App per `open_app` mit Argumenten, Testdaten, Mock und fester Größe, ohne Umgebungsvariablen. Release-Builds ignorieren alle drei (Datenordner dort weiter über `HENGST_HOME`).
-- **Entwicklungs-Features der Desktop-Crate:** `dev-offline` (reicht an `hengst-core/dev-offline` durch, zeigt das Offline-Entwicklungskonto) und `e2e` (alle Endpunkte aus `HENGST_E2E_BASE_URL`, `MemorySecretStore` statt Anmeldeinformationsspeicher, Browser-Login per HTTP-Abruf statt echtem Browser). `e2e` außerhalb von Debug-Builds ist ein `compile_error!`. Weder `dev-offline` noch `e2e` sind in einem Release-Build für Nutzer; Über-Ansicht und Fenstertitel zeigen "Development build", sobald eines aktiv ist.
-- **Browser-Login:** Redirect-URI `http://localhost:<Port>` ohne Pfad; der Kern lauscht auf `127.0.0.1:<Port>` und, falls möglich, `[::1]:<Port>` (Browser lösen `localhost` unterschiedlich auf). Eigener Mini-HTTP-Parser (eine GET-Zeile, höchstens 8 KiB, 5 s Lesefrist), kein neues HTTP-Server-Crate. Wartezeit 5 Minuten. Die Web-Ansicht bekommt die Authorize-URL nie (sie enthält `state`); "Browser erneut öffnen" ist ein Command. Die Texte der Antwortseite im Browser übergibt die Oberfläche beim Start (übersetzt), der Kern setzt sie HTML-escaped ein.
+- **Fenster:** native Windows-Titelleiste, ein Fenster mit Label `main`, Mindestgröße 960 × 600, Startgröße 1120 × 720. Größe und Position merkt `window_state.rs` in `<root>/window.json` (Datenordner, damit `--home` und `HENGST_HOME` sie mitnehmen; das Plugin `window-state` kann seine Datei nicht dorthin legen). Die Wiederherstellung entfällt, wenn `--window-size` gegeben ist und im Feature `e2e`; in diesen Läufen wird auch nichts gespeichert, damit Beleg- und Testläufe nie vom Zustand eines früheren Laufs abhängen. Das Fenster wird in `setup` per `WebviewWindowBuilder` erzeugt (nicht in `tauri.conf.json`), damit Theme und Hintergrundfarbe aus den Einstellungen gesetzt sind, bevor die Web-Ansicht lädt. Zweiter App-Start fokussiert das erste Fenster.
+- **Debug-Startargumente:** Nur in Debug-Builds (`cfg(debug_assertions)`) versteht die App `--home <dir>` und `--window-size <B>x<H>`, im Feature `e2e` zusätzlich `--e2e-base-url <url>` (gleichwertig zu `HENGST_E2E_BASE_URL`); damit startet agentfenster die App per `open_app` mit Argumenten, Testdaten, Mock und fester Größe, ohne Umgebungsvariablen. Release-Builds ignorieren alle drei (Datenordner dort weiter über `HENGST_HOME`). Task 2 liest alle drei Argumente in eine Struktur `StartupArgs`; die Verdrahtung von `--e2e-base-url` in die Endpunkte folgt in Task 7.
+- **Entwicklungs-Features der Desktop-Crate:** `dev-offline` (reicht an `hengst-core/dev-offline` durch, zeigt das Offline-Entwicklungskonto) und `e2e` (alle Endpunkte aus `HENGST_E2E_BASE_URL`, `MemorySecretStore` statt Anmeldeinformationsspeicher, Browser-Login per HTTP-Abruf statt echtem Browser). `hengst-testkit` ist eine **optionale** Abhängigkeit der Desktop-Crate, aktiviert nur durch `e2e = ["dep:hengst-testkit"]` (Task 7; zusätzlich Dev-Abhängigkeit für Tests); ein Build ohne `e2e` enthält weder Testkit noch wiremock. `e2e` außerhalb von Debug-Builds ist ein `compile_error!`. Eine einzige Definition entscheidet, ob es ein Entwicklungs-Build ist: `pub const fn dev_build() -> bool { cfg!(debug_assertions) || cfg!(feature = "dev-offline") || cfg!(feature = "e2e") }` in `lib.rs`; `AppInfo.dev_build`, Fenstertitel und Über-Ansicht ("Development build") lesen nur sie. Weder `dev-offline` noch `e2e` sind in einem Release-Build für Nutzer.
+- **Browser-Login:** Redirect-URI `http://localhost:<Port>` ohne Pfad; der Kern lauscht ausschließlich auf `127.0.0.1:<Port>` und, falls möglich, `[::1]:<Port>` (Browser lösen `localhost` unterschiedlich auf), nie auf einer anderen Adresse. Eigener Mini-HTTP-Parser (eine GET-Zeile, höchstens 8 KiB, 5 s Lesefrist), kein neues HTTP-Server-Crate. Jede Verbindung läuft in einer eigenen Aufgabe (höchstens 32 gleichzeitig; bei Überschreitung wird die älteste noch lesende Verbindung geschlossen), damit eine hängende Verbindung die echte Weiterleitung nicht aufhält. Genau ein gültiger Rückruf (passendes `state`) wird angenommen; jede andere Anfrage bekommt 404 oder 400, ohne das Warten zu beenden. Die Erfolgsseite geht erst nach dem erfolgreichen Token-Tausch an den Browser (scheitert der Tausch, die Fehlerseite). Der Port wird bei Erfolg, Fehler, Zeitablauf und Abbruch freigegeben. Wartezeit 5 Minuten. Der PKCE-Verifier liegt im Kern-Typ `Secret`. Die Web-Ansicht bekommt die Authorize-URL nie (sie enthält `state`); "Browser erneut öffnen" ist ein Command. Die Texte der Antwortseite im Browser übergibt die Oberfläche beim Start (übersetzt), der Kern setzt sie HTML-escaped ein. Die Redirect-URI `http://localhost` muss der Eigentümer vorab in Azure eintragen (siehe "Beim Menschen"); bis dahin laufen alle Tests gegen die Mock-Dienste, die echte Anmeldung ist ein offener manueller Schritt.
 - **Auswahl des Kontos:** Das gewählte Microsoft-Konto ist `AccountsFile.default` des Kerns, also dasselbe wie in der CLI. Neu angemeldete Konten werden gewählt. Das Offline-Entwicklungskonto (nur `dev-offline`) wird über die Einstellung `devAccount: true` gewählt; Release-Builds lesen diese Einstellung nie.
 - **Instanzen:** Ordner `<root>/instances/<id>/`, darin `instance.json`; der Ordner ist zugleich Spielordner wie heute (CLI-Kompatibilität, keine Unterordner). `id` ist der Ordnername (geprüft mit `validate_id`), der Anzeigename steht in `instance.json`. Eine neue Instanz bekommt als `id` den CLI-Standardnamen `<game>` bzw. `<game>-<loader-slug>`, wenn er frei ist, sonst `<...>-2`, `-3` usw.; so nutzt `hengst launch 1.20.1 --loader forge` denselben Ordner wie die erste App-Instanz "1.20.1 Forge". Ordner ohne `instance.json` (von der CLI angelegt) übernimmt die App, wenn sich der Name als Standardname einer bekannten Spielversion lesen lässt; alle anderen bleiben unangetastet und unsichtbar.
 - **Loader-Version:** wird beim Anlegen festgeschrieben (Vorauswahl: empfohlene Version laut `pick_version`). Übernommene CLI-Ordner haben `version: null` und bekommen beim ersten erfolgreichen Start in 4b die aufgelöste Version eingetragen.
 - **Löschen von Instanzen:** in den Windows-Papierkorb (Crate `trash`), damit es umkehrbar ist; der Dialog nennt Welten und Papierkorb ausdrücklich.
-- **Einstellungen:** Datei `<root>/settings.json` mit eigenem `format`-Feld, gehört der Desktop-Crate (die CLI liest sie nicht). Eine kaputte Datei wird nach `settings.json.broken-<unix>` verschoben, die App startet mit Standardwerten und meldet das einmal.
+- **Einstellungen:** Datei `<root>/settings.json` mit eigenem `format`-Feld, gehört der Desktop-Crate (die CLI liest sie nicht). Eine kaputte Datei wird nach `settings.json.broken-<unix>` verschoben, die App startet mit Standardwerten; die Meldung dazu liefert genau der erste `settings_get` nach dem Start aus (danach nie wieder). Schreibzugriffe laufen alle über `SettingsHandle::update` (Sperre, auf Kopie ändern, speichern, erst dann übernehmen). Die Web-Ansicht darf per `settings_update` nur Felder ändern, die ein Nutzer in den Einstellungen ändert (Sprache, Design, Arbeitsspeicher, Java-Pfad, Minimieren beim Start), jedes in Rust geprüft; `dev_account` und `selected_instance` ändern nur `account_select`, die Login-Vorgänge und die Instanz-Commands, der Datenordner wird nur angezeigt.
 - **Fehler:** Jeder Command liefert `Result<T, ErrorDto>`. `ErrorDto` trägt einen `code` (Union-Typ im Frontend), `params` (Strings für die Übersetzung), eine optionale `action` und `detail` (englischer Kerntext für "Details"). Die Abbildung `error_dto(&hengst_core::Error)` matcht erschöpfend ohne `_`-Zweig, damit jede neue Kernvariante den Build bricht, bis sie abgebildet ist.
-- **Ordner und URLs öffnen:** nur über `open_location(target: OpenTarget)` und `open_url(target: UrlTarget)`, beides Enums; freie Pfade oder URLs aus JavaScript gibt es nicht. Das `opener`-Plugin wird nur aus Rust benutzt, die Capability gewährt keine `opener:`-Permission.
+- **Ordner und URLs öffnen:** nur über `open_url(target: UrlTarget)` (Task 4, Enum mit festen https-Adressen) und `open_location(target: OpenTarget)` (Task 10); freie Pfade oder URLs aus JavaScript gibt es nicht. Logdateien öffnet erst 4b (Task 16) über einen geprüften Pfad. Das `opener`-Plugin wird nur aus Rust benutzt, die Capability gewährt keine `opener:`-Permission.
 - **Sprache und Ton:** Deutsch und Englisch ab Task 3 über i18next; Deutsch duzt, Satzanfang groß, Rest klein; keine Emojis. Ohne Einstellung folgt die Sprache `navigator.language` (de* = Deutsch, sonst Englisch).
 - **Ende-zu-Ende-Tests:** WebdriverIO über `tauri-driver` gegen den Debug-Build mit `--features e2e,dev-offline` und einen Mock-Dienst aus der neuen Crate `crates/hengst-testkit`; Selektoren über Rolle und zugänglichen Namen (prüft nebenbei die Beschriftung). Sichtprüfung getrennt davon mit agentfenster. Begründung in Task 12.
 - **Branch und Arbeitsweise:** streng nacheinander 1 → 12, keine parallelen Builds (RAM), kein Spielstart in 4a.
@@ -79,23 +80,27 @@ Inhalte suchen und Mods installieren (Phase 5), .mrpack, FPS-Profile und JVM-Tun
 - "Minecraft" nie im Produktnamen; Hinweis "Not an official Minecraft product" bleibt in README und kommt in die App (Über-Ansicht, 4b Task 20; in 4a schon im Fußbereich der Einstellungen).
 - Kein Spielstart mit Offline-Konto in Release-Builds: nur mit Feature `dev-offline`.
 - Code, Kommentare, Fehlertexte im Rust-Code, README: Englisch. `docs/` und dieser Plan: Deutsch mit echten Umlauten. UI-Texte nur über i18n, Deutsch und Englisch vollständig.
-- Tokens nie loggen, ausgeben, serialisieren oder an die Web-Ansicht geben; DTOs enthalten keine `Secret`-Felder.
+- Tokens nie loggen, ausgeben, serialisieren oder an die Web-Ansicht geben; DTOs enthalten keine `Secret`-Felder. **Invariante (F20):** kein Token-Typ (`Secret`, `MsaTokens`, `LoginSession`) implementiert `Serialize`; zwei Tests in der Desktop-Crate halten das fest (`tests/no_tokens.rs`, angelegt in Task 7, erweitert in Task 10): `token_types_do_not_implement_serialize` (`static_assertions::assert_not_impl_any!`) und `no_dto_or_event_contains_a_token` (jedes DTO und Ereignis wird mit einem bekannten falschen Token `FAKE-ACCESS-TOKEN-7f3a` in den Quelldaten gebaut und serialisiert; der Token-String darf nirgends vorkommen). Jeder neue DTO-Typ wird in diesen Test aufgenommen.
 - Keine Telemetrie, keine Netzaufrufe aus JavaScript (`connect-src` nur IPC).
 - Keine Emojis in Code, UI, Doku, Commits. Icons (lucide) sind erlaubt.
 - Keine Minecraft-Assets, -Schriften oder -Logos.
 - Alle Basis-URLs injizierbar; Standardtests ohne Live-Aufrufe; kein Kontakt zu Microsoft-Servern in Tests.
-- Rust: jeder Task endet mit `cargo test --workspace --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo fmt --all` ohne Diff.
-- Frontend (ab Task 2): `pnpm -C apps/desktop typecheck`, `pnpm -C apps/desktop test`, `pnpm -C apps/desktop format:check` grün.
-- UI-Tasks: `produkt-regelwerk` im BAUEN-Modus (Zustandsliste vor dem Code, Gegenprüfung C1 bis C27 nach dem Code), Sichtprüfung der laufenden App mit agentfenster in hell und dunkel, Deutsch und Englisch, bei 960 × 600 und 1920 × 1080; Screenshots unter `.superpowers/sdd/2026-11-21-phase-4a-desktop/evidence/task-<n>/`. Jede neue Animation nach `motion-design`, geprüft nach `~/.claude/skills/review-animations/SKILL.md`. Neue Komponenten erst nach `~/.claude/skills/pick-ui-library/SKILL.md`, sonst shadcn.
-- Jeder Task endet mit einem Commit, Dateien einzeln gestaged, Trailer `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`. Kein Push.
+- Rust: jeder Task endet mit `cargo test --workspace --all-features`, `cargo clippy --workspace --all-targets --all-features -- -D warnings`, `cargo fmt --all` ohne Diff. Mit der Desktop-Crate als Workspace-Mitglied brauchen diese Befehle weder pnpm noch WebView2: `build.rs` legt ein Platzhalter-`apps/desktop/dist/index.html` an, wenn `dist` fehlt (das Verzeichnis ist in `.gitignore`, `generate_context!` bettet es beim Kompilieren ein; `beforeBuildCommand` läuft nur unter `tauri build`/`tauri dev`, nie unter `cargo`), `icons/icon.ico` ist eingecheckt, und die Command-Tests laufen mit `tauri::test::mock_builder` (Mock-Laufzeit, kein Webview). Das bleibt so: nichts in `build.rs` oder in den Tests darf ein gebautes Frontend voraussetzen. Die Toolchain muss ab 1.89 für Kern und CLI, ab 1.90 für alles mit der Desktop-Crate reichen (siehe Werkzeuge).
+- Frontend (ab Task 2): `pnpm -C apps/desktop typecheck`, `pnpm -C apps/desktop test`, `pnpm -C apps/desktop format:check` grün; dieselben Befehle laufen in CI (Job `desktop-frontend`, angelegt in Task 2, weil dort die ersten Frontend-Tests entstehen). Node und pnpm sind über `.nvmrc`, `engines` und `packageManager` festgelegt.
+- UI-Tasks folgen `DESIGN.md` (Werte nur von dort, nicht aus diesem Plan): `produkt-regelwerk` im BAUEN-Modus (Zustandsliste vor dem Code, Gegenprüfung C1 bis C27 nach dem Code), danach Sichtprüfung der laufenden App in hell und dunkel, Deutsch und Englisch, bei 960 × 600 und bei großer Größe (1920 × 1080); die Belege (Screenshots, Elementbaum-Auszüge) liegen unter `.superpowers/sdd/2026-11-21-phase-4-desktop-mvp/evidence/task-<n>/`. Aufnahmen nur mit den Agent-Desktop-Werkzeugen (agentfenster auf dem unsichtbaren zweiten Desktop) oder den Screenshots der App über WebDriver, nie vom Bildschirm des Nutzers (kann private Fenster zeigen; also kein `agentshot`, keine Aufnahme von `desktop='user'`). Jede neue Animation nach `motion-design`, geprüft nach `~/.claude/skills/review-animations/SKILL.md`. Neue Komponenten erst nach `~/.claude/skills/pick-ui-library/SKILL.md`, sonst shadcn.
+- **CSP- und Prototyp-Prüfung (F2b):** Jeder Task, der eine Frontend-Bibliothek hinzufügt, die Styles oder Skripte einschleusen kann (Task 3: shadcn-Basis, Base UI, Sonner; Task 8: Dialog, AlertDialog, DropdownMenu; Task 11: Popover, Command/cmdk, Select, Tooltip; in 4b Task 19: Virtuoso), wiederholt nach dem Bauen: Debug-Build der App starten, die neuen Zustände durchklicken und die Web-Konsole lesen (keine `Content-Security-Policy`-Meldung), und in der Konsole `Object.isFrozen(Object.prototype)` auswerten (muss `true` sein, `freezePrototype`). Der Rust-Test `csp_forbids_unsafe_inline_for_scripts_and_style_elements` (Task 2) läuft in jedem Task mit. Braucht eine Bibliothek ein Inline-`<style>` oder -Skript: nie `'unsafe-inline'` für `script-src` oder `style-src` setzen; stattdessen erst eine Nonce-Option der Bibliothek nutzen (Tauri ergänzt Nonces und Hashes für die gebaute Seite über seine CSP-Unterstützung; Elemente, die erst zur Laufzeit entstehen, muss die Bibliothek selbst mit dem Nonce versehen), sonst den SHA-256-Hash des festen Style-Texts in `app.security.csp` eintragen, sonst die Bibliothek wechseln. `style-src-attr 'unsafe-inline'` bleibt nur für `style="..."`-Attribute. `devCsp` gilt nur für `pnpm tauri dev`; geprüft wird immer der Build.
+- **Arbeitsweise:** höchstens ein Schreiber im Repository zur Zeit (Reviews dürfen parallel lesen). Jeder Task endet mit grünen Rust- und Frontend-Prüfungen (siehe oben) und einem Commit, dessen Nachricht mit `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>` endet. Dateien werden namentlich gestaged (Verzeichnisse nur für erzeugte Mengen wie `src/ipc/bindings`, `src/components/ui`, `icons` und für Verzeichnisse, die nur Dateien dieses Tasks enthalten; nie `git add -A` oder `.`); vor dem Commit zeigt `git diff --cached --name-only` genau die Files-Liste des Tasks. Kein Push.
+- **Commands (F2/F3):** Commands stehen nur in `command_list.rs` (siehe Entscheidungen); jeder Task, der welche hinzufügt, nimmt `src-tauri/capabilities/main.json` und `src/ipc/client.ts` (bzw. `events.ts`) in Files und `git add` auf.
+- **Azure und echte Anmeldung:** Die Redirect-URI `http://localhost` muss der Eigentümer in Azure eintragen, bevor die Browser-Anmeldung real funktionieren kann (siehe "Beim Menschen"). Alle Tests der Anmeldung laufen deshalb gegen die Mock-Dienste; die echte Anmeldung ist ein manueller Schritt und bleibt in 4a als offen aufgeführt.
 
 ## Review Focus
 
-1. **Token erreicht die Web-Ansicht oder einen sichtbaren Text** (Login-Events, Fehlerdetails, Kontolisten, später Spielargumente): kein Token-String in irgendeinem serialisierten DTO. Tests `login_events_never_contain_tokens` (Task 7) und `error_detail_never_contains_secret` (Task 4).
+1. **Token erreicht die Web-Ansicht oder einen sichtbaren Text** (Login-Events, Fehlerdetails, Kontolisten, später Spielargumente): kein Token-String in irgendeinem serialisierten DTO. Tests `login_events_never_contain_tokens` (Task 7), `error_detail_never_contains_secret` (Task 4), `no_dto_or_event_contains_a_token` und `token_types_do_not_implement_serialize` (Task 7, erweitert in Task 10).
 2. **CLI-Ordner trifft App-Instanz** (`instances/1.20.1-forge` ohne `instance.json` existiert, Nutzer legt "1.20.1 Forge" an; Snapshot-Ids mit Bindestrichen wie `26.4-snapshot-6-fabric`): Übernahme statt Überschreiben, neue Instanz bekommt `-2`, Spielstände bleiben. Tests `create_never_reuses_an_existing_folder`, `adopts_cli_folders_by_default_name` (Task 9).
 3. **Mojang hat die App noch nicht freigegeben, Netz weg, Anmeldeinformationsspeicher verweigert**: verständliche Meldung mit passender Aktion statt Absturz oder Rohtext; die Kontoliste funktioniert ohne Schlüsselspeicher. Tests `not_approved_login_maps_to_app_not_approved` (Task 7), `accounts_list_works_without_secret_store` (Task 7), E2E `shows_not_approved_explanation` (Task 12).
 4. **Kaputte oder zu neue Dateien** (`instance.json` mit `format: 2`, abgeschnittenes JSON, kaputte `settings.json`): Instanz erscheint als "nicht lesbar" bzw. "neuere Version", wird nie überschrieben; Einstellungen fallen mit Sicherungskopie auf Standard zurück. Tests `too_new_instance_is_listed_and_never_written`, `broken_instance_is_listed_not_deleted` (Task 9), `broken_settings_are_moved_aside` (Task 3).
 5. **Doppelklick und gleichzeitige Vorgänge** (zweimal "Instanz anlegen", zweiter Login während der erste wartet, Löschen während Anlegen): genau ein Vorgang, Knopf gesperrt mit Ladezustand. Tests `double_submit_creates_one_instance` (Task 11, Vitest), `second_login_cancels_the_first` (Task 7), `create_and_delete_are_serialized` (Task 10).
+6. **Der lokale Port des Browser-Logins** (hängende Verbindung, zweiter Rückruf, falsches `state`, Abbruch): der Port ist danach frei, nur ein gültiger Rückruf zählt, die Erfolgsseite erscheint erst nach dem Token-Tausch. Tests `stalled_connection_does_not_block_the_real_callback`, `second_callback_is_refused`, `wrong_state_is_rejected_and_the_wait_continues_until_timeout`, `dropping_finish_frees_the_port`, `success_page_is_sent_only_after_the_exchange` (alle Task 5).
 
 ---
 
@@ -105,18 +110,19 @@ Inhalte suchen und Mods installieren (Phase 5), .mrpack, FPS-Profile und JVM-Tun
 Cargo.toml                                   + members apps/desktop/src-tauri, crates/hengst-testkit
 DESIGN.md                                    Design-Tokens, Komponenten, Layout, Zustände (Task 1)
 crates/hengst-core/src/
-  manifest.rs                                + load_cached
+  manifest.rs                                + load_cached, fetch_manifest schreibt über Temp + Rename
   error.rs                                   + LockTimeout, Cancelled, Instance*, LoaderHint
-  loaders/mod.rs                             LoaderKind: serde als Slug, display_name; LoaderHint
+  loaders/mod.rs                             LoaderKind: display_name (Task 4), serde als Slug (Task 9); LoaderHint
   loaders/forge/mod.rs                       lock_file liefert Error::LockTimeout
   auth/browser.rs                            Auth Code + PKCE mit Loopback (Task 5)
   auth/error.rs                              + BrowserLoginTimedOut, LoopbackUnavailable, BrowserLoginFailed
   auth/store.rs                              SecretStore für Box<dyn SecretStore>
   instances.rs                               instance.json, anlegen, listen, übernehmen (Task 9)
 crates/hengst-testkit/                       publish = false: Mock-Dienste für Tests und E2E
-  src/lib.rs, src/auth.rs, src/mojang.rs, src/bin/hengst-mock.rs
+  src/lib.rs, src/auth.rs, src/mojang.rs, src/bin/hengst-mock.rs, tests/mock_binary.rs
+.github/workflows/ci.yml                     + Jobs msrv und desktop-frontend (Task 2)
 apps/desktop/
-  package.json, pnpm-lock.yaml, index.html, vite.config.ts, tsconfig*.json, components.json, .prettierrc
+  package.json (packageManager, engines), .nvmrc, pnpm-lock.yaml, index.html, vite.config.ts, tsconfig*.json, components.json, .prettierrc
   brand/mark.svg, brand/README.md            Platzhalter-Zeichen, einzige Tauschstelle
   src/main.tsx, src/styles/index.css
   src/app/{App.tsx,Shell.tsx,Sidebar.tsx,views.ts}
@@ -127,16 +133,17 @@ apps/desktop/
   src/features/about/AboutPanel.tsx
   src/features/settings/SettingsView.tsx
   src/features/errors/{ErrorPanel.tsx,errorCopy.ts}
+  src/dev/ErrorGallery.tsx                   nur im Vite-Dev-Server (Task 4)
   src/features/accounts/{AccountChip.tsx,AccountMenu.tsx,SignInDialog.tsx,RemoveAccountDialog.tsx}
   src/features/instances/{InstancesView.tsx,InstanceRow.tsx,CreateInstanceDialog.tsx,DeleteInstanceDialog.tsx,naming.ts,versionFilter.ts}
   src/components/ui/*                        von shadcn erzeugt
   src/lib/utils.ts
-  src-tauri/Cargo.toml, build.rs, tauri.conf.json, capabilities/main.json, icons/
-  src-tauri/src/{main.rs,lib.rs,command_list.rs,state.rs,events.rs,error.rs,settings.rs,open.rs,startup.rs}
+  src-tauri/Cargo.toml, build.rs, tauri.conf.json, capabilities/main.json, icons/ (eingecheckt)
+  src-tauri/src/{main.rs,lib.rs,command_list.rs,state.rs,events.rs,error.rs,settings.rs,open.rs,startup.rs,window_state.rs}
   src-tauri/src/dto/{mod.rs,app.rs,versions.rs,accounts.rs,instances.rs,settings.rs,error.rs}
   src-tauri/src/commands/{mod.rs,app.rs,versions.rs,settings.rs,accounts.rs,instances.rs,open.rs}
   src-tauri/src/accounts.rs                  Kontodienst, Login-Vorgänge
-  src-tauri/tests/bindings.rs
+  src-tauri/tests/{bindings.rs,capabilities.rs,config.rs,no_tokens.rs}
   e2e/wdio.conf.ts, e2e/setup-driver.ps1, e2e/support/app.ts, e2e/specs/{accounts.e2e.ts,instances.e2e.ts}
                                              (WebdriverIO-Pakete in apps/desktop/package.json, kein eigenes package.json)
 ```
@@ -149,9 +156,9 @@ apps/desktop/
 - Create: `DESIGN.md` (Repository-Wurzel, Englisch wie README, weil es Entwickler- und Beitragenden-Doku neben dem Code ist; Tokens sind sprachneutral)
 
 **Interfaces:**
-- Produces: Token-Namen, die Task 3 als CSS-Variablen anlegt und alle UI-Tasks benutzen: `--bg`, `--surface`, `--surface-raised`, `--border`, `--border-strong`, `--text`, `--text-muted`, `--accent`, `--accent-hover`, `--accent-pressed`, `--on-accent`, `--focus`, `--danger`, `--on-danger`, `--warning`, `--success`, `--log-error`, `--log-warn`, `--log-info`, `--log-debug`; Abstände `--space-1..7`; Radien `--radius-control`, `--radius-panel`, `--radius-pill`; Dauern `--dur-press`, `--dur-popover-in`, `--dur-popover-out`, `--dur-dialog-in`, `--dur-dialog-out`; Kurve `--ease-out`.
+- Produces: Token-Namen, die Task 3 als CSS-Variablen anlegt und alle UI-Tasks benutzen: `--bg`, `--surface`, `--surface-raised`, `--border`, `--border-strong`, `--border-control`, `--text`, `--text-muted`, `--accent`, `--accent-hover`, `--accent-pressed`, `--on-accent`, `--focus`, `--danger`, `--on-danger`, `--warning`, `--success`, `--log-error`, `--log-warn`, `--log-info`, `--log-debug`; Abstände `--space-1..7`; Radien `--radius-control`, `--radius-panel`, `--radius-pill`; Dauern `--dur-press`, `--dur-popover-in`, `--dur-popover-out`, `--dur-dialog-in`, `--dur-dialog-out`; Kurve `--ease-out`.
 
-Vorgaben, die DESIGN.md festschreibt (Werte sind Entscheidungen dieses Plans; die Kontrastprüfung in Task 3 kann einzelne Werte nachschärfen, dann wird DESIGN.md im selben Commit angepasst):
+Vorgaben, die DESIGN.md festschreibt. Die Hex-Werte der Tabelle sind Ausgangswerte; maßgeblich sind ab Task 1 die Werte in `DESIGN.md`, spätere Tasks und Tests lesen sie von dort und nicht aus diesem Plan. Die Kontrastprüfung in Task 3 kann Werte nachschärfen, dann wird DESIGN.md im selben Commit angepasst:
 
 Richtung: ruhiges Werkzeug, das man täglich mehrmals öffnet. Eine Stelle darf auffallen: Startseite mit Instanzname in großer Schrift und dem Spielen-Knopf (4b). Alles andere still: Flächen durch Hintergrundstufen und Linien getrennt, keine Karten-Raster mit Schatten, keine Verläufe, keine Großbuchstaben-Labels, keine nummerierten Marker, kein "→" an Knöpfen. Nach `frontend-design` geprüft gegen die fünf Standardmuster (Creme + Terrakotta, Fast-Schwarz + Neon, Zeitungsraster, SaaS-Karten, Template-Chrome): keins davon.
 
@@ -162,6 +169,7 @@ Richtung: ruhiges Werkzeug, das man täglich mehrmals öffnet. Eine Stelle darf 
 | `--surface-raised` | `#FDFDFE` | `#22262B` |
 | `--border` | `#D9DCE1` | `#2E333A` |
 | `--border-strong` | `#B9BEC6` | `#454C55` |
+| `--border-control` | Wert nach DESIGN.md | Wert nach DESIGN.md |
 | `--text` | `#1A1D21` | `#E7E9EC` |
 | `--text-muted` | `#59616D` | `#9AA3AE` |
 | `--accent` | `#1D6F80` | `#4FB0C2` |
@@ -175,6 +183,7 @@ Richtung: ruhiges Werkzeug, das man täglich mehrmals öffnet. Eine Stelle darf 
 | `--success` | `#2D7A4E` | `#5BB683` |
 | `--log-error` / `-warn` / `-info` / `-debug` | `#B42318` / `#8A5A00` / `#1A1D21` / `#59616D` | `#F0645A` / `#E0A93B` / `#E7E9EC` / `#9AA3AE` |
 
+- Rollen der Linien-Token (Ergebnis der Vorabprüfung: `--border-strong` erreicht gegen `--bg` nur 1,70:1 hell und 2,12:1 dunkel): `--border` und `--border-strong` sind **dekorativ**: sie trennen Bereiche, Listenzeilen, Panels und Dialoge, die auch durch Flächenstufe, Abstand oder Beschriftung erkennbar sind, und tragen keine Information; dafür gilt kein Mindestkontrast. Jede Linie, die die einzige Begrenzung eines bedienbaren Elements ist (Input, Select- und Combobox-Auslöser, Checkbox, Radio-Segment, Secondary-Button), nutzt `--border-control` und erreicht mindestens 3:1 gegen `--bg`, `--surface` und `--surface-raised` (WCAG 1.4.11). shadcn-`--input` zeigt auf `--border-control`. DESIGN.md hält diese Rollen und die endgültigen Werte fest.
 - Typografie: Systemschrift, weil die App nur unter Windows läuft und sich wie ein Windows-Werkzeug anfühlen soll (keine Schriftdatei im Bundle): `"Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif`, Überschriften `"Segoe UI Variable Display"`, Log und Codes `"Cascadia Mono", Consolas, monospace`. Skala (px/Zeilenhöhe): Text 16/24 (auch in Eingabefeldern, FO15), sekundär 14/20, Fußnote 13/18, h2 18/26 Semibold, h1 24/32 Semibold, Startseiten-Titel 32/40 Semibold (4b), Log 13/20 Mono. Zeilenlänge Fließtext höchstens 72 Zeichen.
 - Abstände: 4-px-Raster, `--space-1..7` = 4, 8, 12, 16, 24, 32, 48.
 - Radien: 6 px Bedienelemente, 10 px Panels und Dialoge, 999 px Chips. Bewusst zwei Stufen, nicht ein Radius für alles.
@@ -201,33 +210,36 @@ git commit -m "docs: add DESIGN.md for the desktop app"
 ### Task 2: Walking Skeleton (Fenster, ein Command, ein Ereignisstrom)
 
 **Files:**
-- Modify: `Cargo.toml` (Member `apps/desktop/src-tauri`), `crates/hengst-core/src/manifest.rs` (+ `load_cached`), `.gitignore` (+ `apps/desktop/node_modules/`, `apps/desktop/dist/`, `apps/desktop/e2e/.driver/`)
-- Create: `apps/desktop/package.json`, `index.html`, `vite.config.ts`, `tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, `.prettierrc`, `components.json` (shadcn init), `src/main.tsx`, `src/app/App.tsx`, `src/features/about/AboutPanel.tsx`, `src/ipc/client.ts`, `src/ipc/events.ts`, `src/ipc/bindings/*.ts`, `src/lib/utils.ts`, `src/styles/index.css`
-- Create: `apps/desktop/src-tauri/Cargo.toml`, `build.rs`, `tauri.conf.json`, `capabilities/main.json`, `icons/` (Platzhalter aus `pnpm tauri icon`), `src/main.rs`, `src/lib.rs`, `src/command_list.rs`, `src/state.rs`, `src/events.rs`, `src/error.rs`, `src/startup.rs`, `src/dto/{mod.rs,app.rs,versions.rs,error.rs}`, `src/commands/{mod.rs,app.rs,versions.rs}`, `tests/bindings.rs`
-- Test: `apps/desktop/src-tauri/src/commands/versions.rs` (`#[cfg(test)]`), `apps/desktop/src-tauri/tests/bindings.rs`, `apps/desktop/src/ipc/client.test.ts`
+- Modify: `Cargo.toml` (Member `apps/desktop/src-tauri`), `crates/hengst-core/src/manifest.rs` (+ `load_cached`, atomares Schreiben in `fetch_manifest`), `.gitignore` (+ `apps/desktop/node_modules/`, `apps/desktop/dist/`, `apps/desktop/e2e/.driver/`, `apps/desktop/src-tauri/gen/`), `.github/workflows/ci.yml` (Jobs `msrv` und `desktop-frontend`)
+- Create: `apps/desktop/package.json` (mit `packageManager` und `engines`), `.nvmrc`, `index.html`, `vite.config.ts`, `tsconfig.json`, `tsconfig.app.json`, `tsconfig.node.json`, `.prettierrc`, `components.json` (shadcn init), `src/main.tsx`, `src/app/App.tsx`, `src/features/about/AboutPanel.tsx`, `src/ipc/client.ts`, `src/ipc/events.ts`, `src/ipc/bindings/*.ts`, `src/lib/utils.ts`, `src/styles/index.css`
+- Create: `apps/desktop/src-tauri/Cargo.toml`, `build.rs`, `tauri.conf.json`, `capabilities/main.json`, `icons/` (Platzhalter aus `pnpm tauri icon`, eingecheckt), `src/main.rs`, `src/lib.rs`, `src/command_list.rs`, `src/state.rs`, `src/events.rs`, `src/error.rs`, `src/startup.rs`, `src/window_state.rs`, `src/dto/{mod.rs,app.rs,versions.rs,error.rs}`, `src/commands/{mod.rs,app.rs,versions.rs}`, `tests/bindings.rs`, `tests/capabilities.rs`, `tests/config.rs`
+- Test: `crates/hengst-core/src/manifest.rs` (`#[cfg(test)]`), `apps/desktop/src-tauri/src/commands/versions.rs` und `src/window_state.rs` (`#[cfg(test)]`), `apps/desktop/src-tauri/tests/{bindings.rs,capabilities.rs,config.rs}`, `apps/desktop/src/ipc/client.test.ts`
 
 **Interfaces:**
 - Consumes: `manifest::{fetch_manifest, VersionManifest, VersionKind}`, `paths::Paths::{default_root, manifest_file}`, `launch::Endpoints`.
-- Produces (Kern): `manifest::load_cached(paths: &Paths) -> Result<Option<VersionManifest>>` (fehlende Datei `Ok(None)`, kaputte Datei `Err(Json)`).
+- Produces (Kern): `manifest::load_cached(paths: &Paths) -> Result<Option<VersionManifest>>` (fehlende **oder abgeschnittene/unlesbare** Datei `Ok(None)`: ein halb geschriebener Cache zählt als nicht vorhanden, nur ein Lesefehler des Dateisystems ist `Err(Io)`). `fetch_manifest` schreibt den Cache über eine Temp-Datei (`paths::unique_temp`) und `rename`, nie direkt, damit ein paralleles `load_cached` nie eine halbe Datei sieht.
 - Produces (Desktop, Rust):
-  - Crate `hengst-desktop` (`[lib] name = "hengst_desktop_lib"`), `rust-version = "1.90"`, Features `dev-offline = ["hengst-core/dev-offline"]`, `e2e = []`; dev-dependency `tauri` mit Feature `test`.
+  - Crate `hengst-desktop` (`[lib] name = "hengst_desktop_lib"`), eigenes `rust-version = "1.90"` (nicht `rust-version.workspace`), Features `dev-offline = ["hengst-core/dev-offline"]`, `e2e = []` (Task 7 ergänzt `dep:hengst-testkit`); dev-dependency `tauri` mit Feature `test`, `tempfile`. `lib.rs` enthält `#[cfg(all(feature = "e2e", not(debug_assertions)))] compile_error!(...)` und `pub const fn dev_build() -> bool { cfg!(debug_assertions) || cfg!(feature = "dev-offline") || cfg!(feature = "e2e") }`, die einzige Definition.
   - `pub struct AppState { pub paths: Paths, pub endpoints: Endpoints, pub events: EventHub, pub versions: VersionsCache }` mit `AppState::new(paths: Paths, endpoints: Endpoints) -> AppState`; spätere Tasks fügen Felder hinzu.
+  - `pub struct VersionsCache { memory: Mutex<Option<VersionManifest>>, refresh_started: AtomicBool }` mit `fn get(&self, paths: &Paths) -> Result<Option<VersionManifest>>` (Speicher, sonst `load_cached`), `fn put(&self, m: VersionManifest)`, `fn claim_refresh(&self) -> bool` (liefert genau einmal je App-Lauf `true`).
+  - `window_state.rs`: `pub struct WindowState { pub format: u32, pub width: u32, pub height: u32, pub x: i32, pub y: i32, pub maximized: bool }`, `pub fn load(paths: &Paths) -> Option<WindowState>` (Datei `<root>/window.json`; fehlend, kaputt oder `format` ≠ 1 gleich `None`), `pub fn save(paths: &Paths, s: &WindowState) -> Result<()>` (Temp + Rename), `pub fn should_restore(size_arg_given: bool, e2e: bool) -> bool` (`!size_arg_given && !e2e`), `pub fn fits_on_a_monitor(s: &WindowState, monitors: &[(i32, i32, u32, u32)]) -> bool` (Fenster liegt zu mindestens 100 × 50 px in einem Monitor). `startup.rs` ruft `load` nur bei `should_restore`, setzt Größe (mindestens 960 × 600) und Position nur bei `fits_on_a_monitor`, sonst Standard, und speichert beim Schließen des Fensters (`CloseRequested`) nur bei `should_restore`.
   - `pub struct EventHub` mit `fn subscribe(&self, sink: EventSink<AppEvent>)` (ersetzt einen früheren Abonnenten) und `fn emit(&self, e: AppEvent)` (ohne Abonnent: verworfen). `pub type EventSink<T> = Arc<dyn Fn(T) + Send + Sync>`; Commands wickeln `Channel<T>` in einen `EventSink`.
-  - `AppEvent` (`#[serde(tag = "event", content = "data", rename_all = "camelCase")]`): `DataChanged { scope: DataScope }`; `DataScope`: `Versions`, `Settings`, `Accounts`, `Instances`.
+  - `AppEvent` (`#[serde(tag = "event", content = "data", rename_all = "camelCase")]`): `DataChanged { scope: DataScope }`, `Notice { kind: NoticeKind }`; `DataScope`: `Versions`, `Settings`, `Accounts`, `Instances`; `NoticeKind`: `VersionsRefreshFailed` (nicht blockierender Hinweis, kein Fehlerzustand).
   - DTOs (alle `#[derive(Serialize, Deserialize, TS)]`, `#[serde(rename_all = "camelCase")]`): `AppInfo { version: String, data_dir: String, dev_build: bool, dev_offline: bool }`; `VersionFilter { release: bool, snapshot: bool, beta: bool, alpha: bool }`; `GameVersionKind` (`release`, `snapshot`, `beta`, `alpha`, `other`); `GameVersionDto { id: String, kind: GameVersionKind, release_time: String }`; `GameVersionsDto { versions: Vec<GameVersionDto>, latest_release: String, latest_snapshot: String, from_cache: bool }`.
   - `ErrorDto { code: ErrorCode, params: BTreeMap<String, String>, action: Option<ErrorAction>, detail: String }` mit vorerst `ErrorCode::{Internal, Network}` und `ErrorAction` (`#[serde(tag = "kind", rename_all = "camelCase")]`) mit nur `Retry`, also JSON `{"kind":"retry"}`; Task 4 vervollständigt beide.
   - Commands: `app_info() -> Result<AppInfo, ErrorDto>`, `subscribe_events(channel: Channel<AppEvent>) -> Result<(), ErrorDto>`, `game_versions(filter: VersionFilter) -> Result<GameVersionsDto, ErrorDto>`. Logik in einfachen Funktionen `commands::versions::game_versions_impl(state: &AppState, filter: VersionFilter) -> Result<GameVersionsDto, ErrorDto>`, die `#[tauri::command]`-Hüllen rufen nur diese auf.
-  - `command_list.rs`: `pub const COMMANDS: &[&str] = &["app_info", "subscribe_events", "game_versions"];`
+  - `command_list.rs`: die einzige Liste, `macro_rules! with_commands { ($callback:ident) => { $callback!(app::app_info, app::subscribe_events, versions::game_versions) }; }`. `lib.rs` definiert `macro_rules! names { ($($m:ident :: $n:ident),* $(,)?) => { &[$(stringify!($n)),*] }; }` und `pub const COMMANDS: &[&str] = with_commands!(names);`, dazu `macro_rules! handler { ($($m:ident :: $n:ident),* $(,)?) => { tauri::generate_handler![$(commands::$m::$n),*] }; }` und `.invoke_handler(with_commands!(handler))`; `build.rs` bindet dieselbe Datei per `include!` ein und baut mit einem eigenen `names!` die Permission-Liste. Spätere Tasks ändern nur diese Datei.
 - Produces (Frontend): `src/ipc/client.ts` mit `export const api = { appInfo(): Promise<AppInfo>, gameVersions(filter: VersionFilter): Promise<GameVersionsDto> }`, `subscribeEvents(onEvent: (e: AppEvent) => void): Promise<void>` in `events.ts`; `export class IpcError extends Error { constructor(readonly dto: ErrorDto) }`; jede Ablehnung von `invoke` wird zu `IpcError` (ist der Ablehnungswert kein `ErrorDto`, entsteht `{ code: "internal", params: {}, action: null, detail: String(value) }`).
 
-Verhalten `game_versions`: Liegt ein Cache vor, kommt sofort die gefilterte Liste daraus (`from_cache: true`), und einmal je App-Lauf startet im Hintergrund `fetch_manifest`; unterscheidet sich das Ergebnis (`latest` oder Anzahl), sendet der Hub `DataChanged { scope: Versions }`. Ohne Cache wartet der Aufruf auf `fetch_manifest` (`from_cache: false`). Reihenfolge wie im Manifest (neueste zuerst).
+Verhalten `game_versions`: Liegt ein Cache vor (`VersionsCache::get`), kommt sofort die gefilterte Liste daraus (`from_cache: true`), und einmal je App-Lauf (`claim_refresh`) startet im Hintergrund `fetch_manifest`; unterscheidet sich das Ergebnis (`latest` oder Anzahl), sendet der Hub `DataChanged { scope: Versions }`. Scheitert die Aktualisierung, wird der Fehler geloggt (`eprintln!`, ohne Query-Teil der URL) und der Hub sendet `AppEvent::Notice { kind: VersionsRefreshFailed }`; die Oberfläche zeigt daraufhin einen nicht blockierenden Hinweis (Toast, Task 3), die gespeicherte Liste bleibt in Gebrauch. Ohne Cache wartet der Aufruf auf `fetch_manifest` (`from_cache: false`). Reihenfolge wie im Manifest (neueste zuerst).
 
 Konfiguration:
 - `tauri.conf.json`: `productName` "Hengst Client", `identifier` "io.github.clemensjl.hengst-client", `version` "0.1.0", `build.devUrl` `http://localhost:1420`, `build.frontendDist` `../dist`, `beforeDevCommand` `pnpm dev`, `beforeBuildCommand` `pnpm build`, `app.windows: []` (Fenster entsteht in `setup`), `app.withGlobalTauri: false`, `app.security.freezePrototype: true`, `app.security.csp`: `default-src 'self'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`; `app.security.devCsp` wie `csp`, aber `connect-src ipc: http://ipc.localhost ws://localhost:1420` und `script-src 'self' 'unsafe-inline'` (Vite-Preamble von React-Refresh); `bundle.active: false` in 4a.
-- `build.rs`: `tauri_build::try_build(Attributes::new().app_manifest(AppManifest::new().commands(COMMANDS)))` mit `include!("src/command_list.rs")`; legt `../dist/index.html` mit einem Satz "Front end not built: run pnpm build in apps/desktop" an, wenn `../dist` fehlt (damit `cargo test --workspace` ohne pnpm baut).
-- `capabilities/main.json`: `identifier` "main", `windows` ["main"], `permissions`: die erzeugten `allow-<cmd>` für jeden Eintrag in `COMMANDS` und keine Plugin- oder `core:`-Permission außer denen, die der Kanal nachweislich braucht (Step 5 ermittelt sie).
+- `build.rs`: bindet `src/command_list.rs` per `include!` ein, legt zuerst `../dist/index.html` mit einem Satz "Front end not built: run pnpm build in apps/desktop" an, wenn `../dist` fehlt, und ruft dann `tauri_build::try_build(Attributes::new().app_manifest(AppManifest::new().commands(with_commands!(names))))`. Mechanismus dafür, dass `cargo test --workspace` und `cargo clippy --workspace` weder pnpm noch WebView2 brauchen: `tauri::generate_context!` verlangt beim Kompilieren nur, dass `frontendDist` existiert (das Platzhalterverzeichnis ist in `.gitignore`, ein echter `pnpm build` ersetzt es); `beforeBuildCommand` läuft nur unter `pnpm tauri build`/`dev`; `icons/icon.ico` ist eingecheckt; Tests benutzen `tauri::test::mock_builder` und starten kein Webview.
+- `capabilities/main.json`: `identifier` "main", `windows` ["main"], `permissions`: die erzeugten `allow-<cmd>`-Permissions für jeden Eintrag in `COMMANDS` (Tauri bildet den Namen mit Bindestrichen statt Unterstrichen, z. B. `allow-app-info`; in Step 5 am erzeugten Manifest bestätigen) und keine Plugin- oder `core:`-Permission außer denen, die der Kanal nachweislich braucht (Step 5 ermittelt sie und trägt sie in die Konstante `EXTRA_PERMISSIONS` des Tests ein). Der Test `capability_allows_exactly_the_commands` hält das fest.
 - `vite.config.ts`: Port 1420 `strictPort`, `server.watch.ignored: ["**/src-tauri/**"]`, Plugins `react()`, `tailwindcss()`, Alias `@` → `./src`, `test` mit `environment: "jsdom"`.
-- `package.json` Skripte: `dev` (vite), `build` (`tsc -b && vite build`), `typecheck` (`tsc -b --noEmit`), `test` (`vitest run`), `format`/`format:check` (prettier), `tauri` (tauri), `e2e` (Task 12). Versionen exakt wie im Tech-Stack, übrige per `pnpm add` mit exakter Version (`save-exact`).
+- `package.json` Skripte: `dev` (vite), `build` (`tsc -b && vite build`), `typecheck` (`tsc -b --noEmit`), `test` (`vitest run`), `format`/`format:check` (prettier), `tauri` (tauri), `e2e` (Task 12). Versionen exakt wie im Tech-Stack, übrige per `pnpm add` mit exakter Version (`save-exact`). `"packageManager": "pnpm@11.9.0"`, `"engines": { "node": ">=22.12.0" }`; `.nvmrc` enthält `22.19.0`.
+- `ci.yml` (Änderung in diesem Task): Job `msrv` (`dtolnay/rust-toolchain@1.89`, `cargo test -p hengst-core -p hengst-cli`) und Job `desktop-frontend` (`windows-latest`, `pnpm/action-setup` liest `packageManager`, `actions/setup-node` mit `node-version-file: apps/desktop/.nvmrc`, dann `pnpm -C apps/desktop install --frozen-lockfile`, `typecheck`, `test`, `format:check`). Der bestehende Job `test` läuft mit `stable` und deckt `cargo test --workspace --all-features` samt `bindings_are_current` ab.
 - shadcn: `pnpm dlx shadcn@4.23.0 init -t vite --base base` in `apps/desktop`; danach muss `components.json` und das erzeugte `button` Base UI importieren (`@base-ui-components/react` o. ä.). Erzeugt die CLI Radix-Importe, `--base` mit dem Wert wiederholen, den `pnpm dlx shadcn@4.23.0 init --help` für Base UI nennt.
 
 - [ ] **Step 1: Failing Tests schreiben**
@@ -236,7 +248,42 @@ Kern (`manifest.rs`):
 ```rust
 #[test]
 fn load_cached_reads_what_fetch_manifest_saved_and_none_without_file() {
-    // leerer Paths -> Ok(None); Datei mit gültigem Manifest -> Some(m) mit m.latest.release == "1.21.11"; "{" -> Err(Error::Json(_))
+    // leerer Paths -> Ok(None); Datei mit gültigem Manifest -> Some(m) mit m.latest.release == "1.21.11"; "{" (abgeschnitten) -> Ok(None)
+}
+
+#[tokio::test]
+async fn fetch_manifest_replaces_the_cache_through_a_temp_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let server = MockServer::start().await;
+    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(sample())).mount(&server).await;
+    fetch_manifest(&reqwest::Client::new(), &paths, &server.uri()).await.unwrap();
+    let names: Vec<String> = std::fs::read_dir(paths.manifest_file().parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names.len(), 1, "no temp file may stay behind: {names:?}");
+    assert_eq!(load_cached(&paths).unwrap().unwrap().latest.release, "1.21.11");
+}
+
+#[tokio::test]
+async fn load_cached_never_sees_a_partial_file_while_the_cache_is_rewritten() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let server = MockServer::start().await;
+    Mock::given(method("GET")).respond_with(ResponseTemplate::new(200).set_body_json(sample())).mount(&server).await;
+    let client = reqwest::Client::new();
+    fetch_manifest(&client, &paths, &server.uri()).await.unwrap();
+    let reader_paths = paths.clone();
+    let reader = tokio::task::spawn_blocking(move || {
+        for _ in 0..300 {
+            assert!(load_cached(&reader_paths).unwrap().is_some(), "a rewrite must never expose a truncated cache");
+        }
+    });
+    for _ in 0..30 {
+        fetch_manifest(&client, &paths, &server.uri()).await.unwrap();
+    }
+    reader.await.unwrap();
 }
 ```
 
@@ -267,9 +314,69 @@ fn hub_delivers_to_latest_subscriber_only() {
 #[test]
 fn app_info_answers_over_ipc() {
     // tauri::test::mock_builder() mit invoke_handler + AppState, get_ipc_response("app_info")
-    // -> JSON mit "version" == env!("CARGO_PKG_VERSION") und "devBuild" == cfg!(debug_assertions)
+    // -> JSON mit "version" == env!("CARGO_PKG_VERSION") und "devBuild" == dev_build()
+}
+#[test]
+fn dev_build_is_debug_or_dev_offline_or_e2e() {
+    assert_eq!(
+        hengst_desktop_lib::dev_build(),
+        cfg!(debug_assertions) || cfg!(feature = "dev-offline") || cfg!(feature = "e2e")
+    );
+}
+#[tokio::test]
+async fn failed_background_refresh_is_logged_and_surfaced_as_a_notice() {
+    // Cache mit 1.21.10 schreiben, Server antwortet auf den Abruf mit 200 und dem Body "{" (kein gültiges Manifest)
+    let (state, events) = test_state_with_event_log(&server);
+    let first = game_versions_impl(&state, VersionFilter { release: true, snapshot: false, beta: false, alpha: false }).await.unwrap();
+    assert_eq!(ids(&first), ["1.21.10"]);
+    wait_until(|| events.lock().unwrap().contains(&AppEvent::Notice { kind: NoticeKind::VersionsRefreshFailed })).await;
+    let again = game_versions_impl(&state, VersionFilter { release: true, snapshot: false, beta: false, alpha: false }).await.unwrap();
+    assert_eq!(ids(&again), ["1.21.10"]);
+    assert!(events.lock().unwrap().iter().all(|e| !matches!(e, AppEvent::DataChanged { scope: DataScope::Versions })));
+}
+#[tokio::test]
+async fn refresh_runs_once_per_app_run() {
+    // Server zählt Abrufe: drei game_versions_impl-Aufrufe mit Cache -> genau ein Abruf von fetch_manifest
 }
 ```
+
+`src/window_state.rs`:
+```rust
+#[test]
+fn window_state_round_trips_and_a_broken_file_counts_as_absent() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let s = WindowState { format: 1, width: 1120, height: 720, x: 40, y: 30, maximized: false };
+    save(&paths, &s).unwrap();
+    assert_eq!(load(&paths), Some(s));
+    std::fs::write(paths.root().join("window.json"), "{").unwrap();
+    assert_eq!(load(&paths), None);
+}
+#[test]
+fn window_file_lives_in_the_data_directory() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    save(&paths, &WindowState { format: 1, width: 960, height: 600, x: 0, y: 0, maximized: false }).unwrap();
+    assert!(dir.path().join("window.json").is_file());
+}
+#[test]
+fn restore_is_skipped_with_a_size_argument_and_in_e2e() {
+    assert!(should_restore(false, false));
+    assert!(!should_restore(true, false));
+    assert!(!should_restore(false, true));
+}
+#[test]
+fn a_window_that_is_off_every_monitor_is_not_restored() {
+    let monitors = [(0, 0, 1920, 1080)];
+    let on = WindowState { format: 1, width: 1120, height: 720, x: 100, y: 100, maximized: false };
+    let off = WindowState { x: 5000, ..on.clone() };
+    assert!(fits_on_a_monitor(&on, &monitors));
+    assert!(!fits_on_a_monitor(&off, &monitors));
+}
+```
+
+`tests/bindings.rs`:
+```rust
 
 `tests/bindings.rs`:
 ```rust
@@ -283,6 +390,53 @@ fn bindings_are_current() {
 fn ts_client_covers_every_command() {
     // liest apps/desktop/src/ipc/client.ts und events.ts, sammelt invoke("<name>"
     // assert_eq!(gesammelt als Menge, COMMANDS als Menge)
+}
+```
+
+`tests/capabilities.rs`:
+```rust
+use std::collections::BTreeSet;
+
+const EXTRA_PERMISSIONS: &[&str] = &[]; // Step 5 trägt hier die nachweislich nötigen core:-Permissions ein
+
+fn allow_name(cmd: &str) -> String {
+    format!("allow-{}", cmd.replace('_', "-"))
+}
+
+#[test]
+fn capability_allows_exactly_the_commands() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities/main.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let granted: BTreeSet<String> = json["permissions"].as_array().unwrap().iter().map(|p| p.as_str().unwrap().to_string()).collect();
+    let expected: BTreeSet<String> = hengst_desktop_lib::COMMANDS
+        .iter()
+        .map(|c| allow_name(c))
+        .chain(EXTRA_PERMISSIONS.iter().map(|p| p.to_string()))
+        .collect();
+    assert_eq!(granted, expected, "every command needs one allow entry and no entry may name a missing command");
+    assert!(granted.iter().all(|p| !p.starts_with("opener:")), "opener is used from Rust only");
+}
+
+#[test]
+fn command_names_are_unique() {
+    let set: BTreeSet<&&str> = hengst_desktop_lib::COMMANDS.iter().collect();
+    assert_eq!(set.len(), hengst_desktop_lib::COMMANDS.len());
+}
+```
+
+`tests/config.rs`:
+```rust
+#[test]
+fn csp_forbids_unsafe_inline_for_scripts_and_style_elements() {
+    let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/tauri.conf.json")).unwrap();
+    let conf: serde_json::Value = serde_json::from_str(&text).unwrap();
+    let csp = conf["app"]["security"]["csp"].as_str().unwrap();
+    let directive = |name: &str| csp.split(';').map(str::trim).find(|d| d.starts_with(&format!("{name} "))).unwrap_or("").to_string();
+    assert!(!directive("script-src").contains("'unsafe-inline'"));
+    assert!(!directive("script-src").contains("'unsafe-eval'"));
+    assert!(!directive("style-src").contains("'unsafe-inline'"));
+    assert!(csp.contains("connect-src ipc: http://ipc.localhost"));
+    assert_eq!(conf["app"]["security"]["freezePrototype"], true);
 }
 ```
 
@@ -302,28 +456,28 @@ it("wraps a non-DTO rejection as internal", async () => { /* wirft "boom" -> dto
 
 - [ ] **Step 2: Tests laufen lassen, sie scheitern**
 
-Run: `cargo test -p hengst-core load_cached` und `cargo test -p hengst-desktop`, `pnpm -C apps/desktop test`
+Run: `cargo test -p hengst-core manifest` und `cargo test -p hengst-desktop`, `pnpm -C apps/desktop test`
 Expected: FAIL (Funktionen, Crate, Client fehlen)
 
 - [ ] **Step 3: Implementieren**
 
-Gerüst wie in Interfaces und Konfiguration. `startup.rs`: `pub fn run()` registriert in dieser Reihenfolge `tauri_plugin_single_instance::init` (Callback: Fenster `main` zeigen, entminimieren, fokussieren), `tauri_plugin_window_state`, `tauri_plugin_opener`, `.manage(AppState::new(...))`, `.invoke_handler(generate_handler![...])`, `setup` erzeugt das Fenster `main` (Titel "Hengst Client", plus " (Development build)" bei `dev_build`, min 960 × 600, Start 1120 × 720, Hintergrund `--bg` hell, bis Task 3 das Theme liest). Debug-Argumente `--home`, `--window-size` in `startup.rs` (nur `cfg(debug_assertions)`). `AboutPanel` zeigt Version, Datenordner, Anzahl Versionen und neueste Release/Snapshot mit Lade-, Leer- und Fehlerzustand und abonniert `DataChanged(Versions)` zum Nachladen. Bindings erzeugen mit `HENGST_UPDATE_BINDINGS=1 cargo test -p hengst-desktop --test bindings`.
+Gerüst wie in Interfaces und Konfiguration. `startup.rs`: `pub fn run()` registriert in dieser Reihenfolge `tauri_plugin_single_instance::init` (Callback: Fenster `main` zeigen, entminimieren, fokussieren), `tauri_plugin_opener`, `.manage(AppState::new(...))`, `.invoke_handler(with_commands!(handler))`, `setup` erzeugt das Fenster `main` (Titel "Hengst Client", plus " (Development build)" bei `dev_build()`, min 960 × 600, Start 1120 × 720 oder der gespeicherte Zustand nach `window_state::should_restore`, Hintergrund `--bg` hell, bis Task 3 das Theme liest) und speichert den Fensterzustand beim Schließen. Es gibt kein Plugin `window-state`. Debug-Argumente `--home`, `--window-size`, `--e2e-base-url` werden in `startup.rs` in `StartupArgs` gelesen (nur `cfg(debug_assertions)`). `AboutPanel` zeigt Version, Datenordner, Anzahl Versionen und neueste Release/Snapshot mit Lade-, Leer- und Fehlerzustand und abonniert `DataChanged(Versions)` zum Nachladen. Bindings erzeugen mit `HENGST_UPDATE_BINDINGS=1 cargo test -p hengst-desktop --test bindings`. Die CI-Jobs `msrv` und `desktop-frontend` kommen in diesem Task in `ci.yml`.
 
 - [ ] **Step 4: Tests grün**
 
 Run: `cargo test --workspace --all-features` und `pnpm -C apps/desktop typecheck && pnpm -C apps/desktop test`
 Expected: PASS
 
-- [ ] **Step 5: App starten, Capability und CSP prüfen**
+- [ ] **Step 5: App starten, Capability und CSP prüfen, Sichtprüfung**
 
-Run: `pnpm -C apps/desktop tauri build --debug --no-bundle` und dann `target/debug/hengst-desktop.exe --home %TEMP%\hengst-4a-t2`
-Expected: Fenster öffnet, AboutPanel zeigt echte Versionszahlen. Mit agentfenster (`open_app` auf die Exe mit den Argumenten, `read_desktop`): Panel-Text lesen, Screenshot unter `evidence/task-2/`. Zweiter Start der Exe fokussiert das erste Fenster, kein zweites Fenster (`list_windows`). Für den Kanal nötige `core:`-Permission: wenn `subscribe_events` ohne Zusatz abgelehnt wird, die in der Fehlermeldung genannte Permission einzeln eintragen und hier notieren. In der Web-Konsole (Debug-Build, Devtools) keine CSP-Verletzung; meldet Tauris Nonce-Ergänzung einen Konflikt mit `style-src-attr`, `dangerousDisableAssetCspModification: ["style-src-attr"]` setzen. Ein Aufruf `invoke("plugin:opener|open_url", ...)` aus der Konsole wird abgelehnt.
+Run: `pnpm -C apps/desktop tauri build --debug --no-bundle` und dann `target/debug/hengst-desktop.exe --home %TEMP%\hengst-4a-t2 --window-size 960x600`
+Expected (Sichtprüfung mit agentfenster, `open_app` auf die Exe mit den Argumenten, `read_desktop`, `list_windows`): Das Fenster öffnet in der festen Größe (Außenmaß aus `list_windows` entspricht 960 × 600 plus Rahmen und Titelleiste, höchstens 40 px Abweichung; ein zweiter Start mit `--window-size 1120x720` ergibt das größere Maß, und kein Lauf liest oder schreibt `window.json`), und das AboutPanel zeigt echte Daten (Versionszahl der App, Datenordner `%TEMP%\hengst-4a-t2`, Anzahl der Versionen aus dem Mojang-Manifest und die neueste Release-Id), nicht Platzhalter. Panel-Text per `read_desktop` festhalten, Screenshot (nur vom Agent-Desktop) unter `evidence/task-2/`. Zweiter Start der Exe fokussiert das erste Fenster, kein zweites Fenster (`list_windows`). Ohne `--window-size`: Fenster verschieben, schließen, erneut starten, es erscheint an der gemerkten Stelle, und `%TEMP%\hengst-4a-t2\window.json` existiert. Für den Kanal nötige `core:`-Permission: wenn `subscribe_events` ohne Zusatz abgelehnt wird, die in der Fehlermeldung genannte Permission einzeln in `capabilities/main.json` und in `EXTRA_PERMISSIONS` (`tests/capabilities.rs`) eintragen und hier notieren; das Permission-Namensschema (`allow-app-info`) am erzeugten Manifest unter `src-tauri/gen/schemas` bestätigen. In der Web-Konsole (Debug-Build, Devtools) keine CSP-Verletzung und `Object.isFrozen(Object.prototype)` ist `true`; meldet Tauris Nonce-Ergänzung einen Konflikt mit `style-src-attr`, `dangerousDisableAssetCspModification: ["style-src-attr"]` setzen (der Test `csp_forbids_unsafe_inline_for_scripts_and_style_elements` bleibt grün). Ein Aufruf `invoke("plugin:opener|open_url", ...)` aus der Konsole wird abgelehnt.
 
 - [ ] **Step 6: Lint, Format, Commit**
 
 Run: `cargo fmt --all && cargo clippy --workspace --all-targets --all-features -- -D warnings && cargo test --workspace --all-features && pnpm -C apps/desktop format:check`
 ```bash
-git add Cargo.toml Cargo.lock .gitignore crates/hengst-core/src/manifest.rs apps/desktop/package.json apps/desktop/pnpm-lock.yaml apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/tsconfig.json apps/desktop/tsconfig.app.json apps/desktop/tsconfig.node.json apps/desktop/.prettierrc apps/desktop/components.json apps/desktop/src apps/desktop/src-tauri
+git add Cargo.toml Cargo.lock .gitignore .github/workflows/ci.yml crates/hengst-core/src/manifest.rs apps/desktop/package.json apps/desktop/.nvmrc apps/desktop/pnpm-lock.yaml apps/desktop/index.html apps/desktop/vite.config.ts apps/desktop/tsconfig.json apps/desktop/tsconfig.app.json apps/desktop/tsconfig.node.json apps/desktop/.prettierrc apps/desktop/components.json apps/desktop/src apps/desktop/src-tauri
 git commit -m "feat(desktop): walking skeleton with versions command and event channel"
 ```
 
@@ -333,19 +487,22 @@ git commit -m "feat(desktop): walking skeleton with versions command and event c
 
 **Files:**
 - Create: `apps/desktop/src-tauri/src/settings.rs`, `src/dto/settings.rs`, `src/commands/settings.rs`
-- Create: `apps/desktop/src/app/{Shell.tsx,Sidebar.tsx,views.ts}`, `src/stores/app.ts`, `src/theme/theme.ts`, `src/i18n/{index.ts,de.json,en.json}`, `src/features/settings/SettingsView.tsx`, `brand/mark.svg`, `brand/README.md`, `src/styles/tokens.test.ts`, `src/i18n/i18n.test.ts`, `src/theme/theme.test.ts`
-- Modify: `src/styles/index.css` (Tokens aus DESIGN.md), `src/app/App.tsx`, `src-tauri/src/{state.rs,startup.rs,command_list.rs,dto/mod.rs}`, `src-tauri/icons/` (aus `brand/mark.svg`)
+- Create: `apps/desktop/src/app/{Shell.tsx,Sidebar.tsx,views.ts}`, `src/stores/app.ts`, `src/theme/theme.ts`, `src/i18n/{index.ts,de.json,en.json}`, `src/features/settings/SettingsView.tsx`, `brand/mark.svg`, `brand/README.md`, `src/styles/tokens.test.ts`, `src/i18n/i18n.test.ts`, `src/theme/theme.test.ts`; shadcn-Komponenten `button`, `radio-group`, `sonner`, `skeleton`, `tooltip`, `separator` per `pnpm dlx shadcn@4.23.0 add` (erzeugt unter `src/components/ui/`)
+- Modify: `src/styles/index.css` (Tokens aus DESIGN.md), `src/app/App.tsx`, `src/main.tsx`, `src/ipc/client.ts` (`settingsGet`, `settingsUpdate`), `src-tauri/capabilities/main.json` (`allow-settings-get`, `allow-settings-update`), `src-tauri/src/{state.rs,startup.rs,command_list.rs,dto/mod.rs}`, `src-tauri/icons/` (aus `brand/mark.svg`), `src/ipc/bindings/` (erzeugt), `apps/desktop/package.json`, `pnpm-lock.yaml`, `components.json`
 
 **Interfaces:**
 - Consumes: `AppState`, `EventHub`, `ErrorDto` (Task 2), Tokens (Task 1).
 - Produces (Rust):
   - `settings.rs`: `pub const SETTINGS_FORMAT: u32 = 1;` `#[serde(rename_all = "camelCase")] pub struct Settings { pub format: u32, pub language: Option<Language>, pub theme: Theme, pub memory_mb: u32, pub java_override: Option<PathBuf>, pub minimize_on_launch: bool, pub selected_instance: Option<String>, pub dev_account: bool }`, Standard: `language None`, `theme System`, `memory_mb 2048`, `java_override None`, `minimize_on_launch true`, `selected_instance None`, `dev_account false`. `Language`: `De`, `En` (serde `"de"`, `"en"`); `Theme`: `System`, `Light`, `Dark`.
   - `pub fn load_settings(paths: &Paths, now: u64) -> (Settings, Option<SettingsNotice>)` (fehlend: Standard; kaputt oder `format` > 1: Datei nach `settings.json.broken-<now>` verschieben, Standard, `SettingsNotice::Reset`), `pub fn save_settings(paths: &Paths, s: &Settings) -> hengst_core::Result<()>` (Temp + Rename).
-  - `SettingsPatch` (alle Felder `Option`, `java_override: Option<Option<String>>`), `SettingsDto` (wie `Settings` ohne `format`, Pfade als String, dazu `notice: Option<SettingsNotice>`).
-  - Commands `settings_get() -> Result<SettingsDto, ErrorDto>`, `settings_update(patch: SettingsPatch) -> Result<SettingsDto, ErrorDto>` (prüft `memory_mb` in 512..=65536, sonst `ErrorCode::InvalidInput` mit `params.field = "memoryMb"`; sendet `DataChanged(Settings)`). `ErrorCode::InvalidInput` kommt hier dazu.
-  - `AppState.settings: Mutex<Settings>`; `startup.rs` erzeugt das Fenster mit `theme` (`Light`/`Dark`, bei `System` keins) und Hintergrund aus `--bg` des aufgelösten Themes.
+  - `pub enum Patch<T> { Keep, Set(T), Clear }` (`Debug, Clone, PartialEq`, `Default` ist `Keep`; `#[serde(tag = "op", content = "value", rename_all = "camelCase")]`, JSON `{"op":"keep"}`, `{"op":"set","value":...}`, `{"op":"clear"}`; ts-rs-Typ im Frontend) ersetzt jedes verschachtelte `Option<Option<_>>`: "setzen", "löschen" und "unverändert lassen" sind drei verschiedene Fälle.
+  - `#[serde(deny_unknown_fields, rename_all = "camelCase")] pub struct SettingsPatch { #[serde(default)] pub language: Patch<Language>, #[serde(default)] pub theme: Option<Theme>, #[serde(default)] pub memory_mb: Option<u32>, #[serde(default)] pub java_override: Patch<String>, #[serde(default)] pub minimize_on_launch: Option<bool> }` (`Patch::default()` ist `Keep`). Der Patch enthält nur Felder, die ein Nutzer in den Einstellungen ändern kann; `dev_account`, `selected_instance`, `format` und der Datenordner fehlen absichtlich (unbekannte Felder werden abgelehnt). `SettingsDto` (wie `Settings` ohne `format`, Pfade als String, dazu `notice: Option<SettingsNotice>`).
+  - Prüfung in Rust vor dem Speichern, Fehler `ErrorCode::InvalidInput` mit `params.field`: `memory_mb` in 512..=65536 (`"memoryMb"`); `java_override` `Set(pfad)`: der Pfad muss absolut sein, als Datei existieren (kein Ordner) und `java.exe` oder `javaw.exe` heißen (ohne Rücksicht auf Groß-/Kleinschreibung), sonst `"javaOverride"` (in 4b Task 20 kommt der Pfad aus einem Rust-Dialog; die Prüfung gilt trotzdem für jeden Weg); `Clear` löscht ihn.
+  - `pub struct SettingsHandle` (`Clone`, intern `Arc`): `fn new(paths: Paths, settings: Settings) -> SettingsHandle`, `fn get(&self) -> Settings` (Kopie), `fn update(&self, f: impl FnOnce(&mut Settings) -> hengst_core::Result<()>) -> hengst_core::Result<Settings>` (nimmt die Sperre, ändert eine Kopie, ruft `save_settings`, übernimmt die Kopie erst nach erfolgreichem Speichern, gibt sie zurück; ein Fehler ändert weder Datei noch Speicher). Alle Schreiber (`settings_update`, Konten und Instanzen in Task 7 und 10) gehen durch `update`, es gibt keinen zweiten Schreibweg.
+  - Commands `settings_get() -> Result<SettingsDto, ErrorDto>` (nimmt `AppState.pending_notice` mit `Option::take`: die Meldung `SettingsNotice::Reset` kommt in genau einer Antwort, jede weitere hat `notice: None`, auch das Nachladen nach `DataChanged(Settings)`), `settings_update(patch: SettingsPatch) -> Result<SettingsDto, ErrorDto>` (prüft, speichert über `SettingsHandle::update`, sendet `DataChanged(Settings)`). `ErrorCode::InvalidInput` kommt hier dazu.
+  - `AppState.settings: SettingsHandle` und `AppState.pending_notice: Mutex<Option<SettingsNotice>>`; `AppState::new` ruft `load_settings(&paths, unix_now())` auf und befüllt beides; `startup.rs` erzeugt das Fenster mit `theme` (`Light`/`Dark`, bei `System` keins) und Hintergrund aus `--bg` des aufgelösten Themes.
 - Produces (Frontend):
-  - `stores/app.ts`: `type Resource<T> = { status: "idle" | "loading" | "ready" | "error"; data?: T; error?: ErrorDto }`; Store `useApp` mit `view: View`, `settings: Resource<SettingsDto>`, `versions: Resource<GameVersionsDto>`, Aktionen `setView(v)`, `loadSettings()`, `updateSettings(p)`, `loadVersions(filter)`; `startEventLoop()` abonniert `subscribeEvents` und lädt bei `DataChanged` die betroffene Ressource neu.
+  - `stores/app.ts`: `type Resource<T> = { status: "idle" | "loading" | "ready" | "error"; data?: T; error?: ErrorDto }`; Store `useApp` mit `view: View`, `settings: Resource<SettingsDto>`, `versions: Resource<GameVersionsDto>`, Aktionen `setView(v)`, `loadSettings()`, `updateSettings(p: SettingsPatch)`, `loadVersions(filter)`; `startEventLoop()` abonniert `subscribeEvents`, lädt bei `DataChanged` die betroffene Ressource neu und zeigt bei `Notice { kind: "versionsRefreshFailed" }` einen Toast ("Die Versionsliste konnte nicht aktualisiert werden. Die gespeicherte Liste wird verwendet."). Der Toast zur beschädigten Einstellungsdatei kommt nur aus der ersten `settings_get`-Antwort mit `notice` (in `main.tsx`), nie aus dem Nachladen.
   - `views.ts`: `type View = "instances" | "settings"` (4b ergänzt `"play"`, `"log"`); Startansicht in 4a `instances`.
   - `theme.ts`: `resolveTheme(setting: "system" | "light" | "dark", prefersDark: boolean): "light" | "dark"`, `applyTheme(resolved)` setzt/entfernt `.dark` an `<html>`; bei `system` Listener auf `matchMedia("(prefers-color-scheme: dark)")`.
   - `i18n/index.ts`: `initI18n(language: "de" | "en" | null, navigatorLanguage: string)`, `pickLanguage(setting, navigatorLanguage): "de" | "en"`; Namensräume flach mit Präfixen `nav.`, `settings.`, `about.`, `errors.`, `accounts.`, `instances.`, `common.`.
@@ -363,6 +520,57 @@ Rust (`settings.rs`):
 #[test] fn too_new_settings_are_moved_aside_not_overwritten() { /* format 2 -> wie oben */ }
 #[test] fn memory_outside_range_is_invalid_input() { /* patch memory_mb 100 -> code InvalidInput, params["field"] == "memoryMb", Datei unverändert */ }
 #[test] fn update_emits_settings_changed() { /* Hub-Sink sieht DataChanged { scope: Settings } */ }
+#[test]
+fn notice_is_delivered_once() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("settings.json"), "{").unwrap();
+    let state = AppState::new(Paths::new(dir.path()), test_endpoints());
+    let first = settings_get_impl(&state).unwrap();
+    assert_eq!(first.notice, Some(SettingsNotice::Reset));
+    assert_eq!(settings_get_impl(&state).unwrap().notice, None);
+    assert_eq!(settings_get_impl(&state).unwrap().notice, None);
+}
+#[test]
+fn patch_distinguishes_keep_set_and_clear() {
+    let keep: SettingsPatch = serde_json::from_str("{}").unwrap();
+    assert_eq!(keep.language, Patch::Keep);
+    let set: SettingsPatch = serde_json::from_str(r#"{"language":{"op":"set","value":"de"}}"#).unwrap();
+    assert_eq!(set.language, Patch::Set(Language::De));
+    let clear: SettingsPatch = serde_json::from_str(r#"{"language":{"op":"clear"}}"#).unwrap();
+    assert_eq!(clear.language, Patch::Clear);
+    // gespeichert: Clear setzt language auf None, Keep lässt "de" stehen, Set("de") dann Keep -> weiter "de"
+}
+#[test]
+fn patch_cannot_touch_dev_account_or_selected_instance() {
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"devAccount":true}"#).is_err());
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"selectedInstance":"x"}"#).is_err());
+    assert!(serde_json::from_str::<SettingsPatch>(r#"{"format":2}"#).is_err());
+}
+#[test]
+fn java_override_must_be_an_existing_java_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let java = dir.path().join("java.exe");
+    let javaw = dir.path().join("JAVAW.EXE");
+    let other = dir.path().join("notepad.exe");
+    let folder = dir.path().join("java.exe.d");
+    for f in [&java, &javaw, &other] { std::fs::write(f, b"").unwrap(); }
+    std::fs::create_dir(&folder).unwrap();
+    let state = state_in(dir.path());
+    let set = |p: &std::path::Path| settings_update_impl(&state, SettingsPatch { java_override: Patch::Set(p.display().to_string()), ..Default::default() });
+    assert!(set(&java).is_ok());
+    assert!(set(&javaw).is_ok());
+    for bad in [other.clone(), folder.clone(), dir.path().join("missing").join("java.exe"), std::path::PathBuf::from("java.exe")] {
+        let e = set(&bad).unwrap_err();
+        assert_eq!(e.code, ErrorCode::InvalidInput);
+        assert_eq!(e.params["field"], "javaOverride");
+    }
+    let cleared = settings_update_impl(&state, SettingsPatch { java_override: Patch::Clear, ..Default::default() }).unwrap();
+    assert_eq!(cleared.java_override, None);
+}
+#[test]
+fn a_failed_save_changes_neither_file_nor_memory() {
+    // settings.json als Ordner anlegen (Speichern schlägt fehl) -> settings_update_impl Err; state.settings.get().theme unverändert
+}
 ```
 
 Frontend:
@@ -370,7 +578,17 @@ Frontend:
 // tokens.test.ts: liest src/styles/index.css, löst --text/--bg, --text-muted/--bg, --text-muted/--surface,
 // --on-accent/--accent, --on-danger/--danger in :root und .dark auf
 it.each(textPairs)("%s on %s has contrast >= 4.5 in both themes", ...)
-it.each([["--border-strong", "--bg"], ["--focus", "--bg"], ["--accent", "--bg"]])("%s against %s >= 3", ...)
+// Werte kommen aus der CSS-Datei, die DESIGN.md umsetzt; der Test enthält keine Hex-Werte
+const interactiveBorders = ["--border-control"];   // einzige Begrenzung eines bedienbaren Elements (Input, Select, Checkbox, Radio, Secondary-Button)
+const decorativeBorders = ["--border", "--border-strong"];   // Trennlinien und Panelränder ohne Information, ausgenommen
+it.each(interactiveBorders.flatMap((b) => ["--bg", "--surface", "--surface-raised"].map((s) => [b, s])))("%s against %s >= 3 in both themes", ...)
+it.each([["--focus", "--bg"], ["--accent", "--bg"]])("%s against %s >= 3 in both themes", ...)
+it("decorative borders are exempt, but shadcn --input points at --border-control", () => {
+  for (const theme of [":root", ".dark"]) {
+    expect(cssVar(theme, "--input")).toBe(cssVar(theme, "--border-control"));
+    for (const b of decorativeBorders) expect(cssVar(theme, "--input")).not.toBe(cssVar(theme, b));
+  }
+});
 // i18n.test.ts
 it("de and en have the same keys", ...)          // flache Schlüsselmengen gleich
 it("no translation is empty", ...)
@@ -389,7 +607,7 @@ Expected: FAIL
 
 - [ ] **Step 4: Implementieren**
 
-Tokens als CSS-Variablen in `:root` und `.dark`, Tailwind-v4-`@theme inline` bildet sie auf Utility-Namen ab, shadcn-Variablen (`--background`, `--primary` usw.) zeigen auf die Tokens, Dark-Variante per `@custom-variant dark`. Shell nach DESIGN.md (Seitenleiste mit Zeichen oben, Navigation als `<nav aria-label>` mit Buttons und `aria-current="page"`, Kopfzeile mit Seitentitel als `<h1>`, rechts Platz für den Konto-Chip ab Task 8). `brand/README.md` (Englisch): Zeichen ersetzen = `brand/mark.svg` tauschen, `pnpm tauri icon brand/mark.svg` ausführen, nichts sonst; das Frontend importiert das Zeichen nur aus `brand/mark.svg`. `main.tsx` lädt zuerst `settings_get`, dann i18n und Theme, dann rendert es (Ladefläche in `--bg`, kein Text-Aufblitzen). Notice `Reset` zeigt einmal einen Sonner-Toast "Einstellungen waren beschädigt und wurden zurückgesetzt".
+Tokens (Werte aus `DESIGN.md`, nicht aus diesem Plan) als CSS-Variablen in `:root` und `.dark`, Tailwind-v4-`@theme inline` bildet sie auf Utility-Namen ab, shadcn-Variablen (`--background`, `--primary` usw.) zeigen auf die Tokens, `--input` auf `--border-control` (bedienbare Elemente) und nie auf `--border` oder `--border-strong` (dekorativ), Dark-Variante per `@custom-variant dark`. Shell nach DESIGN.md (Seitenleiste mit Zeichen oben, Navigation als `<nav aria-label>` mit Buttons und `aria-current="page"`, Kopfzeile mit Seitentitel als `<h1>`, rechts Platz für den Konto-Chip ab Task 8). `brand/README.md` (Englisch): Zeichen ersetzen = `brand/mark.svg` tauschen, `pnpm tauri icon brand/mark.svg` ausführen, nichts sonst; das Frontend importiert das Zeichen nur aus `brand/mark.svg`. `main.tsx` lädt zuerst `settings_get`, dann i18n und Theme, dann rendert es (Ladefläche in `--bg`, kein Text-Aufblitzen). Notice `Reset` zeigt einmal einen Sonner-Toast "Einstellungen waren beschädigt und wurden zurückgesetzt" (aus der ersten `settings_get`-Antwort; Sonner und `radio-group` werden in diesem Task per shadcn hinzugefügt).
 
 - [ ] **Step 5: Tests grün**
 
@@ -399,12 +617,12 @@ Expected: PASS
 - [ ] **Step 6: Sichtprüfung**
 
 Run: `pnpm -C apps/desktop tauri build --debug --no-bundle`, Start mit `--home %TEMP%\hengst-4a-t3 --window-size 960x600`, dann `--window-size 1920x1080`.
-Expected (agentfenster `open_app`, `read_desktop`, `press_key tab`): Leiste bei 960 px als Icon-Leiste mit Namen im Elementbaum, bei 1920 px mit Text; Wechsel Hell/Dunkel und Deutsch/Englisch in den Einstellungen wirkt sofort und überlebt einen Neustart; Fokusring an jedem Tab-Schritt sichtbar, Reihenfolge Leiste → Kopfzeile → Inhalt. Kaputte `settings.json` vorab in den Home-Ordner legen: Toast erscheint einmal. Vier Screenshots (hell/dunkel × de/en) je Größe nach `evidence/task-3/`. Gegenprüfung C1 bis C27 (C8, C12, C14, C16, C18 sind hier relevant) mit Ergebnis im Bericht.
+Expected (agentfenster `open_app`, `read_desktop`, `press_key tab`): Leiste bei 960 px als Icon-Leiste mit Namen im Elementbaum, bei 1920 px mit Text; Wechsel Hell/Dunkel und Deutsch/Englisch in den Einstellungen wirkt sofort und überlebt einen Neustart; Fokusring an jedem Tab-Schritt sichtbar, Reihenfolge Leiste → Kopfzeile → Inhalt. Kaputte `settings.json` vorab in den Home-Ordner legen: Toast erscheint einmal. Vier Screenshots (hell/dunkel × de/en) je Größe nach `evidence/task-3/`. Gegenprüfung C1 bis C27 (C8, C12, C14, C16, C18 sind hier relevant) mit Ergebnis im Bericht. **CSP- und Prototyp-Prüfung** (neu: shadcn-Basis mit Base UI, Sonner, RadioGroup, Tooltip): Web-Konsole beim Durchklicken lesen, keine CSP-Meldung, `Object.isFrozen(Object.prototype)` ist `true`; Sonner fügt zur Laufzeit ein `<style>`-Element ein: erst prüfen, ob die installierte Version eine Nonce-Option kennt, sonst den Hash des festen Style-Textes in `app.security.csp` eintragen, nie `'unsafe-inline'` für `style-src` oder `script-src` (Regel in Global Constraints).
 
 - [ ] **Step 7: Lint, Format, Commit**
 
 ```bash
-git add apps/desktop/src apps/desktop/brand apps/desktop/src-tauri/src apps/desktop/src-tauri/icons
+git add apps/desktop/src apps/desktop/brand apps/desktop/src-tauri/src apps/desktop/src-tauri/icons apps/desktop/src-tauri/capabilities/main.json apps/desktop/src-tauri/tauri.conf.json apps/desktop/components.json apps/desktop/package.json apps/desktop/pnpm-lock.yaml
 git commit -m "feat(desktop): app shell, settings file, theme and German/English UI"
 ```
 
@@ -413,21 +631,24 @@ git commit -m "feat(desktop): app shell, settings file, theme and German/English
 ### Task 4: Typisierte Fehler in Kern und App
 
 **Files:**
-- Modify: `crates/hengst-core/src/error.rs`, `crates/hengst-core/src/loaders/mod.rs` (`no_versions`, `LoaderHint`), `crates/hengst-core/src/loaders/forge/mod.rs` (`lock_file`), `apps/cli/src/main.rs` (nur falls Fehlertexte sich ändern: sie ändern sich nicht)
-- Modify: `apps/desktop/src-tauri/src/{error.rs,dto/error.rs}`
-- Create: `apps/desktop/src/features/errors/{ErrorPanel.tsx,errorCopy.ts,errorCopy.test.ts,ErrorPanel.test.tsx}`
+- Modify: `crates/hengst-core/src/error.rs`, `crates/hengst-core/src/loaders/mod.rs` (`no_versions`, `LoaderHint`, `LoaderKind::display_name`), `crates/hengst-core/src/loaders/forge/mod.rs` (`lock_file`), `apps/cli/src/main.rs` (`loader_name` ruft `LoaderKind::display_name`, Ausgaben unverändert)
+- Modify: `apps/desktop/src-tauri/src/{error.rs,dto/error.rs,dto/mod.rs,command_list.rs,commands/mod.rs}`, `src-tauri/capabilities/main.json` (`allow-open-url`), `apps/desktop/src/ipc/client.ts` (`openUrl`), `src/ipc/bindings/` (erzeugt), `src/main.tsx` (nur im Dev-Server: Hash `#error-gallery`)
+- Create: `apps/desktop/src-tauri/src/{open.rs,commands/open.rs}`
+- Create: `apps/desktop/src/features/errors/{ErrorPanel.tsx,errorCopy.ts,errorCopy.test.ts,ErrorPanel.test.tsx}`, `apps/desktop/src/dev/ErrorGallery.tsx`
 - Modify: `apps/desktop/src/i18n/{de.json,en.json}`
 
 **Interfaces:**
 - Produces (Kern):
   - `Error::LockTimeout { label: String, waited_secs: u64, lock: PathBuf }` mit exakt dem bisherigen Text `"another install of {label} is still running after {waited_secs} s (lock {lock}); try again later"` (statt `Error::Io(TimedOut)`); `lock` ist `Display` über `.display()`.
   - `Error::Cancelled` mit Text `"the operation was cancelled"`.
+  - `LoaderKind::display_name(self) -> &'static str` (`"Fabric"`, `"Quilt"`, `"Legacy Fabric"`, `"NeoForge"`, `"Forge"`; die Quelle für jeden Loader-Namen, den ein Nutzer sieht; ersetzt `loader_name` in der CLI).
   - `pub enum LoaderHint { NeoForgeStartsAt1201, FabricStartsAt114, LegacyFabricServesOld }` mit `Display` = bisherige Texte (`"NeoForge starts at 1.20.1"`, `"Fabric starts at 1.14; try --loader legacy-fabric"`, `"Legacy Fabric serves 1.13.2 and older; try --loader fabric"`); `Error::NoLoaderVersions.hint: Option<LoaderHint>`. Die Fehlermeldung bleibt zeichengleich.
 - Produces (Desktop):
   - `ErrorCode` (serde `camelCase`, ts-rs Union): `network`, `offline`, `serverError`, `checksumMismatch`, `unsafeData`, `unknownVersion`, `noJavaRuntime`, `offlineAccountBlocked`, `noLoaderVersions`, `unknownLoaderVersion`, `loaderUnsupported`, `installerInvalid`, `installFailed`, `installStepFailed`, `nativesInUse`, `lockTimeout`, `credentialStore`, `missingClientId`, `appMisconfigured`, `appNotApproved`, `loginDeclined`, `loginExpired`, `deviceCodeExpired`, `noXboxAccount`, `xboxRegionBlocked`, `xboxAdultVerification`, `xboxChildAccount`, `xboxRefused`, `gameNotOwned`, `noProfile`, `accountNotFound`, `noAccount`, `cancelled`, `invalidInput`, `fileSystem`, `internal`. Task 5 ergänzt `browserLoginTimedOut`, `loopbackUnavailable`, `browserLoginFailed`; Task 9 `instanceNotFound`, `instanceExists`, `instanceFormatTooNew`, `invalidInstanceName`; Task 10 `busy`.
-  - `ErrorAction` (`#[serde(tag = "kind", rename_all = "camelCase")]`): `Retry`, `SignIn`, `OpenLog { path: String }`, `OpenUrl { target: UrlTarget }`, `OpenSettings`. `UrlTarget` (Task 10 nutzt sie zum Öffnen): `Repository`, `SignInHelp`, `XboxSignup`, `MinecraftProfile`.
+  - `ErrorAction` (`#[serde(tag = "kind", rename_all = "camelCase")]`): `Retry`, `SignIn`, `OpenUrl { target: UrlTarget }`, `OpenSettings`. Es gibt bewusst keine Aktion mit einem Pfad: `OpenLog { path }` hat in 4a keinen Verbraucher und kommt in 4b Task 16 zusammen mit der Pfadprüfung. `UrlTarget` (`#[serde(rename_all = "camelCase")]`, einfaches Enum aus festen https-Adressen, JSON z. B. `"signInHelp"`): `Repository`, `SignInHelp`, `XboxSignup`, `MinecraftProfile`, `DeviceLogin` (alle hier, damit Task 8 sie ohne Vorgriff nutzen kann).
+  - `open.rs`: `pub fn resolve_url(t: &UrlTarget) -> &'static str` (`Repository` = `https://github.com/clemensjl/hengst-client`, `SignInHelp` = `https://github.com/clemensjl/hengst-client#readme`, `XboxSignup` = `https://www.xbox.com/`, `MinecraftProfile` = `https://www.minecraft.net/msaprofile/mygames/editprofile`, `DeviceLogin` = `https://www.microsoft.com/link`). Command `open_url(target: UrlTarget) -> Result<(), ErrorDto>` in `commands/open.rs` öffnet nur `resolve_url(target)` über `tauri_plugin_opener::OpenerExt::opener().open_url`; Eintrag `open::open_url` in `command_list.rs`, `allow-open-url` in `capabilities/main.json`, `api.openUrl(target)` in `client.ts`. (`OpenTarget` und `open_location` bleiben Task 10.)
   - `pub fn error_dto(e: &hengst_core::Error) -> ErrorDto`, erschöpfend über `Error` und `AuthError` ohne `_`-Zweig; `detail` = `e.to_string()`.
-  - Abbildung (Code, Aktion, Params): `Http` → network, Retry, `url`; `Status` → serverError, Retry, `status`; `Offline` → offline, Retry; `Checksum` → checksumMismatch, Retry; `UnsafePath`, `UnknownPlaceholder`, `ParentMismatch` → unsafeData; `UnknownVersion` → unknownVersion, `version`; `NoRuntime` → noJavaRuntime, OpenSettings; `OfflineLaunchDisabled` → offlineAccountBlocked; `NoLoaderVersions` → noLoaderVersions, `loader`, `game`, `hint` (Variantenname in camelCase, z. B. `fabricStartsAt114`); `UnknownLoaderVersion` → unknownLoaderVersion, `loader`, `game`, `version`; `LoaderUnsupported` → loaderUnsupported, `loader`, `game`, `reason`; `TooLarge`, `InvalidChecksumFile`, `NoChecksum` → serverError; `Installer`, `Zip` → installerInvalid; `InstallFailed` → installFailed, Retry; `Processor` → installStepFailed, OpenLog(log), `step`, `code`; `NativesInUse` → nativesInUse; `LockTimeout` → lockTimeout, Retry; `CredentialStore` → credentialStore; `Cancelled` → cancelled; `Io` → fileSystem; `Json` → internal; Auth: `MissingClientId` → missingClientId; `DeviceCodeExpired` → deviceCodeExpired, SignIn; `LoginDeclined` → loginDeclined, SignIn; `AppMisconfigured` → appMisconfigured; `LoginExpired` → loginExpired, SignIn, `name`; `NoXboxAccount` → noXboxAccount, OpenUrl(XboxSignup); `XboxRegionBlocked`, `XboxAdultVerification`, `XboxChildAccount` je eigener Code; `XboxRefused` → xboxRefused, `code`; `AppNotApproved` → appNotApproved, OpenUrl(SignInHelp); `GameNotOwned` → gameNotOwned; `NoProfile` → noProfile, OpenUrl(MinecraftProfile); `AccountNotFound` → accountNotFound; `NoAccount` → noAccount, SignIn; `BadResponse` → serverError, Retry.
+  - Abbildung (Code, Aktion, Params): `Http` → network, Retry, `url`; `Status` → serverError, Retry, `status`; `Offline` → offline, Retry; `Checksum` → checksumMismatch, Retry; `UnsafePath`, `UnknownPlaceholder`, `ParentMismatch` → unsafeData; `UnknownVersion` → unknownVersion, `version`; `NoRuntime` → noJavaRuntime, OpenSettings; `OfflineLaunchDisabled` → offlineAccountBlocked; `NoLoaderVersions` → noLoaderVersions, `loader`, `loaderSlug`, `game`, `hint` (Variantenname in camelCase, z. B. `fabricStartsAt114`); `UnknownLoaderVersion` → unknownLoaderVersion, `loader`, `loaderSlug`, `game`, `version`; `LoaderUnsupported` → loaderUnsupported, `loader`, `loaderSlug`, `game`, `reason`; dabei ist `loaderSlug` der Wert aus dem Kernfehler (der Slug, z. B. `legacy-fabric`) und `loader` der Anzeigename, gewonnen aus `LoaderKind::from_str(slug).display_name()` (bei einem unbekannten Slug der Slug selbst), nie der Slug als Anzeigetext; `TooLarge`, `InvalidChecksumFile`, `NoChecksum` → serverError; `Installer`, `Zip` → installerInvalid; `InstallFailed` → installFailed, Retry; `Processor` → installStepFailed, keine Aktion, `step`, `code` (der Logpfad `log` bleibt im Kern und geht nicht an die Web-Ansicht); `NativesInUse` → nativesInUse; `LockTimeout` → lockTimeout, Retry; `CredentialStore` → credentialStore; `Cancelled` → cancelled; `Io` → fileSystem; `Json` → internal; Auth: `MissingClientId` → missingClientId; `DeviceCodeExpired` → deviceCodeExpired, SignIn; `LoginDeclined` → loginDeclined, SignIn; `AppMisconfigured` → appMisconfigured; `LoginExpired` → loginExpired, SignIn, `name`; `NoXboxAccount` → noXboxAccount, OpenUrl(XboxSignup); `XboxRegionBlocked`, `XboxAdultVerification`, `XboxChildAccount` je eigener Code; `XboxRefused` → xboxRefused, `code`; `AppNotApproved` → appNotApproved, OpenUrl(SignInHelp); `GameNotOwned` → gameNotOwned; `NoProfile` → noProfile, OpenUrl(MinecraftProfile); `AccountNotFound` → accountNotFound; `NoAccount` → noAccount, SignIn; `BadResponse` → serverError, Retry.
 - Produces (Frontend): `errorCopy.ts`: `export const errorKeys: Record<ErrorCode, { title: string; body: string }>` (i18n-Schlüssel; `Record` macht fehlende Codes zum Typfehler), `describeError(dto: ErrorDto, t: TFunction): { title: string; body: string; actionLabel?: string }`; `ErrorPanel` Props `{ error: ErrorDto; onRetry?: () => void; onAction?: (a: ErrorAction) => void }` mit "Details" (aufklappbar, `detail` in Mono, kopierbar) und `role="alert"`.
 
 - [ ] **Step 1: Failing Tests schreiben**
@@ -438,6 +659,11 @@ Kern:
 assert!(matches!(&err, Error::LockTimeout { waited_secs, .. } if *waited_secs == timing.limit.as_secs()));
 assert!(err.to_string().contains("another install of forge for Minecraft 1.20.1 is still running after"));
 // loaders/mod.rs
+#[test] fn display_names_are_the_user_facing_names() {
+    assert_eq!(LoaderKind::LegacyFabric.display_name(), "Legacy Fabric");
+    assert_eq!(LoaderKind::NeoForge.display_name(), "NeoForge");
+    assert_eq!(LoaderKind::Forge.display_name(), "Forge");
+}
 #[test] fn hints_are_typed_and_keep_their_text() {
     let e = no_versions(LoaderKind::Fabric, "1.8.9");
     assert!(matches!(e, Error::NoLoaderVersions { hint: Some(LoaderHint::FabricStartsAt114), .. }));
@@ -450,13 +676,25 @@ Desktop (`error.rs`):
 #[test] fn every_error_maps_to_a_code() {
     // Tabelle: je Variante ein Beispielwert -> erwarteter ErrorCode und ErrorAction
     // z. B. Error::Processor { jar: "binarypatcher".into(), code: 1, log: "C:/h/logs/x.log".into() }
-    //   -> code InstallStepFailed, action OpenLog { path: "C:/h/logs/x.log" }, params["step"] == "binarypatcher", params["code"] == "1"
+    //   -> code InstallStepFailed, action None, params["step"] == "binarypatcher", params["code"] == "1"
     // Error::Auth(AppNotApproved) -> AppNotApproved, OpenUrl { target: SignInHelp }
-    // Error::NoLoaderVersions { hint: Some(FabricStartsAt114), .. } -> params["hint"] == "fabricStartsAt114"
+    // Error::NoLoaderVersions { loader: "legacy-fabric", hint: Some(FabricStartsAt114), .. } -> params["hint"] == "fabricStartsAt114", params["loader"] == "Legacy Fabric", params["loaderSlug"] == "legacy-fabric"
+}
+#[test] fn processor_error_carries_no_path_to_the_web_view() {
+    let dto = error_dto(&Error::Processor { jar: "binarypatcher".into(), code: 1, log: "C:/h/logs/x.log".into() });
+    assert_eq!(dto.code, ErrorCode::InstallStepFailed);
+    assert!(dto.action.is_none());
+    assert!(!serde_json::to_string(&dto.params).unwrap().contains("x.log"));
 }
 #[test] fn error_detail_never_contains_secret() {
     // alle Beispielwerte der Tabelle aus every_error_maps_to_a_code serialisieren;
     // kein JSON enthält "Secret(", "<redacted>" oder "accessToken"; params enthalten nur die je Variante genannten Schlüssel
+}
+#[test] fn url_targets_are_fixed_https_urls() {
+    for t in [UrlTarget::Repository, UrlTarget::SignInHelp, UrlTarget::XboxSignup, UrlTarget::MinecraftProfile, UrlTarget::DeviceLogin] {
+        assert!(resolve_url(&t).starts_with("https://"));
+    }
+    assert_eq!(resolve_url(&UrlTarget::DeviceLogin), "https://www.microsoft.com/link");
 }
 #[test] fn serialized_shape_is_stable() {
     // JSON von error_dto(&Error::Cancelled) == {"code":"cancelled","params":{},"action":null,"detail":"the operation was cancelled"}
@@ -469,11 +707,13 @@ it("every error code has German and English title and body", ...)   // über Obj
 it("noLoaderVersions with hint shows the hint sentence", ...)        // params.hint "fabricStartsAt114" -> Text enthält "1.14"
 it("ErrorPanel shows retry only when onRetry is given and calls it once on double click", ...)
 it("details are collapsed and contain the detail text", ...)
+it("noLoaderVersions shows the display name, never the slug", ...)   // params.loader "Legacy Fabric" erscheint, "legacy-fabric" nicht
+it("onAction with openUrl calls api.openUrl with the target and nothing else", ...)
 ```
 
 - [ ] **Step 2: Tests laufen lassen, sie scheitern**
 
-Run: `cargo test -p hengst-core hints_are_typed` und `cargo test -p hengst-desktop error`, `pnpm -C apps/desktop test errorCopy`
+Run: `cargo test -p hengst-core hints_are_typed`, `cargo test -p hengst-core display_names` und `cargo test -p hengst-desktop error`, `pnpm -C apps/desktop test errorCopy`
 Expected: FAIL
 
 - [ ] **Step 3: Implementieren** wie in Interfaces; Texte der Fehler nach `frontend-design` ("was ist passiert, was tun", keine Entschuldigung). Beispiel `appNotApproved` siehe Task 8.
@@ -483,10 +723,16 @@ Expected: FAIL
 Run: `cargo test --workspace --all-features` und `pnpm -C apps/desktop typecheck && pnpm -C apps/desktop test`
 Expected: PASS, CLI-Tests unverändert grün (Texte gleich).
 
+- [ ] **Step 4b: Sichtprüfung der Fehlerzustände**
+
+`ErrorPanel` ist reine Darstellung; gerendert wird er im Vite-Dev-Server, nicht in der Tauri-App. `src/dev/ErrorGallery.tsx` (nur geladen, wenn `import.meta.env.DEV` und `location.hash === "#error-gallery"`, per dynamischem Import, damit der Produktionsbuild sie nicht enthält) zeigt `ErrorPanel` für feste Beispiel-DTOs: `network` mit Retry, `appNotApproved` mit `openUrl`, `noLoaderVersions` mit Hinweis und `params.loader` "Legacy Fabric", `credentialStore`, `internal` mit langem `detail` (300 Zeichen ohne Leerzeichen), jeweils mit eingeklappten und aufgeklappten Details.
+Run: `pnpm -C apps/desktop dev`, dann mit agentfenster (`browser` auf `http://localhost:1420/#error-gallery`, Agent-Desktop) Screenshots in hell und dunkel (Theme aus Task 3, über die Browser-Einstellung für die Farbvorliebe oder die Einstellungen der App) und Deutsch und Englisch, bei 960 × 600 und bei 1920 × 1080, nach `evidence/task-4/`.
+Expected: jeder Zustand zeigt Titel, Text und passende Aktion in beiden Sprachen und Themes; das lange `detail` bricht um oder scrollt und sprengt weder Panel noch Fenster; Fokusring auf "Erneut versuchen" und "Details" sichtbar. Die Funktionsprüfung in der laufenden App folgt in Task 8 (`appNotApproved`).
+
 - [ ] **Step 5: Lint, Format, Commit**
 
 ```bash
-git add crates/hengst-core/src/error.rs crates/hengst-core/src/loaders/mod.rs crates/hengst-core/src/loaders/forge/mod.rs apps/desktop/src-tauri/src apps/desktop/src/features/errors apps/desktop/src/i18n apps/desktop/src/ipc/bindings
+git add crates/hengst-core/src/error.rs crates/hengst-core/src/loaders/mod.rs crates/hengst-core/src/loaders/forge/mod.rs apps/cli/src/main.rs apps/desktop/src-tauri/src apps/desktop/src-tauri/capabilities/main.json apps/desktop/src/features/errors apps/desktop/src/dev apps/desktop/src/main.tsx apps/desktop/src/ipc/client.ts apps/desktop/src/i18n apps/desktop/src/ipc/bindings
 git commit -m "feat: typed lock timeout, cancel and loader hints; error DTO mapping for the desktop app"
 ```
 
@@ -496,21 +742,23 @@ git commit -m "feat: typed lock timeout, cancel and loader hints; error DTO mapp
 
 **Files:**
 - Create: `crates/hengst-core/src/auth/browser.rs`
-- Modify: `crates/hengst-core/src/auth/mod.rs` (`pub mod browser;`), `crates/hengst-core/src/auth/error.rs`, `crates/hengst-core/Cargo.toml` + `Cargo.toml` (`sha2`, `base64`, `getrandom` per `cargo add`, Versionen im Lockfile)
-- Modify: `apps/desktop/src-tauri/src/error.rs` (neue Codes)
+- Modify: `crates/hengst-core/src/auth/mod.rs` (`pub mod browser;`), `crates/hengst-core/src/auth/msa.rs` (`parse_tokens`, `error_code`, `map_client_error` auf `pub(super)`), `crates/hengst-core/src/auth/error.rs`, `crates/hengst-core/Cargo.toml` + `Cargo.toml` (`sha2`, `base64`, `getrandom` per `cargo add`, Versionen im Lockfile), `Cargo.lock`
+- Modify: `apps/desktop/src-tauri/src/error.rs`, `apps/desktop/src-tauri/src/dto/error.rs` (neue Codes), `apps/desktop/src/ipc/bindings/` (erzeugt), `apps/desktop/src/i18n/{de.json,en.json}`, `apps/desktop/src/features/errors/errorCopy.ts`
 
 **Interfaces:**
 - Consumes: `MicrosoftAuth { http, ep, client_id }`, `AuthEndpoints.msa` (`.../consumers/oauth2/v2.0`), `SCOPE`, `msa::MsaTokens`, `parse_tokens`, `error_code`, `map_client_error` (bestehende private Helfer in `msa.rs`, für `browser.rs` auf `pub(super)` heben).
 - Produces:
   - `pub struct BrowserLoginPages { pub success_title: String, pub success_body: String, pub failure_title: String, pub failure_body: String }`
-  - `pub struct BrowserLogin` (nicht `Clone`; `Debug` zeigt nur `redirect_uri`) mit `pub fn authorize_url(&self) -> &str` und `pub fn redirect_uri(&self) -> &str`.
+  - `pub struct BrowserLogin` (nicht `Clone`; `Debug` zeigt nur `redirect_uri`; besitzt die lauschenden Sockets, ein Drop gibt den Port frei; der PKCE-Verifier liegt als `Secret`, `state` als `String`) mit `pub fn authorize_url(&self) -> &str` und `pub fn redirect_uri(&self) -> &str`.
   - `impl MicrosoftAuth { pub async fn start_browser_login(&self) -> Result<BrowserLogin>; pub async fn finish_browser_login(&self, login: BrowserLogin, pages: &BrowserLoginPages, timeout: Duration) -> Result<MsaTokens>; }`
   - `pub const BROWSER_LOGIN_TIMEOUT: Duration = Duration::from_secs(300);`
-  - `AuthError::{BrowserLoginTimedOut, LoopbackUnavailable, BrowserLoginFailed { code: String }}` mit Texten `"the browser sign-in was not completed within 5 minutes"`, `"the launcher cannot listen on localhost for the sign-in answer"`, `"the browser sign-in failed ({code})"`.
+  - `AuthError::{BrowserLoginTimedOut, LoopbackUnavailable, BrowserLoginFailed { code: String }}` mit Texten `"the browser sign-in was not completed within 5 minutes"`, `"the launcher cannot listen on localhost for the sign-in answer"`, `"the browser sign-in failed ({code})"`. `code` stammt aus der URL und ist deshalb höchstens 64 Zeichen lang und enthält nur `[A-Za-z0-9_.-]` (andere Zeichen werden verworfen; bleibt nichts übrig, ist es `unknown`); er erreicht über `ErrorDto.params` die Oberfläche.
 
-Ablauf (festgelegt): `start_browser_login` bindet `127.0.0.1:0`, dann versucht es `[::1]:<derselbe Port>` (Fehler dort ignoriert); Bindefehler auf IPv4 → `LoopbackUnavailable`. Verifier = 32 Zufallsbytes (`getrandom`) Base64url ohne Padding (43 Zeichen), Challenge = Base64url(SHA-256(Verifier)), `state` = 16 Zufallsbytes Base64url. Authorize-URL `{msa}/authorize` mit `client_id`, `response_type=code`, `redirect_uri=http://localhost:<port>`, `response_mode=query`, `scope=XboxLive.signin offline_access`, `code_challenge`, `code_challenge_method=S256`, `state`, `prompt=select_account` (mit `reqwest::Url` gebaut, korrekt kodiert). `finish_browser_login` nimmt Verbindungen bis `timeout` an: je Verbindung höchstens 8 KiB bis `\r\n\r\n`, 5 s Lesefrist; nur `GET /?...` zählt, andere Pfade → 404 und weiter warten; falsches oder fehlendes `state` → 400 und weiter warten; `error=access_denied` → Seite mit `failure_*`, `LoginDeclined`; anderes `error=` → `failure_*`, `BrowserLoginFailed { code }` (nur der Code, nie `error_description`); `code` + richtiges `state` → Seite mit `success_*`, dann POST `{msa}/token` mit `grant_type=authorization_code`, `client_id`, `code`, `redirect_uri` (gleich wie oben), `code_verifier`, `scope`; Antwort wie beim Device Code ausgewertet (`map_client_error`). Seiten: `text/html; charset=utf-8`, `Cache-Control: no-store`, Titel und Text HTML-escaped, kein Script, kein externes CSS.
+Ablauf (festgelegt): `start_browser_login` bindet `127.0.0.1:0`, dann versucht es `[::1]:<derselbe Port>` (Fehler dort ignoriert); Bindefehler auf IPv4 → `LoopbackUnavailable`. Gebunden wird nie auf einer anderen Adresse als Loopback. Verifier = 32 Zufallsbytes (`getrandom`) Base64url ohne Padding (43 Zeichen, als `Secret`), Challenge = Base64url(SHA-256(Verifier)), `state` = 16 Zufallsbytes Base64url. Authorize-URL `{msa}/authorize` mit `client_id`, `response_type=code`, `redirect_uri=http://localhost:<port>`, `response_mode=query`, `scope=XboxLive.signin offline_access`, `code_challenge`, `code_challenge_method=S256`, `state`, `prompt=select_account` (mit `reqwest::Url` gebaut, korrekt kodiert).
 
-- [ ] **Step 1: Failing Tests schreiben** (`browser.rs`, wiremock für `/token`, Redirect per `reqwest::get` auf die Loopback-URI)
+`finish_browser_login(login, pages, timeout)` wartet in einer Schleife auf Rückrufe bis `timeout`. Jede angenommene Verbindung läuft in einer **eigenen Aufgabe** (`JoinSet`; höchstens 32 gleichzeitig, bei Überschreitung wird die älteste noch lesende Verbindung geschlossen), die höchstens 8 KiB bis `\r\n\r\n` liest (5 s Lesefrist) und die Anfrage einordnet: kein `GET /?...` (anderer Pfad oder Verb, kaputte Zeile) → die Aufgabe antwortet selbst mit 404 bzw. 400; sonst reicht sie die Parameter mit einem `oneshot`-Antwortkanal an die Schleife. Eine hängende Verbindung blockiert dadurch nur ihre eigene Aufgabe, nie die echte Weiterleitung. Die Schleife prüft `state`: falsch oder fehlend → Antwort 400 über den Antwortkanal, Warten geht weiter (bis `timeout`, dann `BrowserLoginTimedOut`); richtig → **das ist der einzige angenommene Rückruf**: `error=access_denied` → Fehlerseite (`failure_*`) und `LoginDeclined`; anderes `error=` → Fehlerseite und `BrowserLoginFailed { code }` (nur der bereinigte Code, nie `error_description`); `code` → POST `{msa}/token` mit `grant_type=authorization_code`, `client_id`, `code`, `redirect_uri` (gleich wie oben), `code_verifier`, `scope`, Antwort wie beim Device Code ausgewertet (`map_client_error`). **Die Erfolgsseite (`success_*`) geht erst an den Browser, nachdem der Tausch gelungen ist**; scheitert er, bekommt der Browser die Fehlerseite (`failure_*`). Während des Tauschs beantwortet die Schleife weitere Rückrufe weiter mit 400. Danach (Erfolg, Fehler, Zeitablauf) und bei jedem Abbruch (Drop des Futures) werden alle Aufgaben abgebrochen und beide Sockets geschlossen: der Port ist sofort wieder frei. Alle Antworten: `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `Connection: close`; Seiten `text/html; charset=utf-8`, Titel und Text HTML-escaped, kein Script, kein externes CSS; 404 und 400 haben nur einen kurzen Klartext-Body.
+
+- [ ] **Step 1: Failing Tests schreiben** (`browser.rs`, wiremock für `/token`, Redirect per `reqwest::get` auf die Loopback-URI; Hilfen im Testmodul: `redirect_port(&login) -> u16`, `callback(port, query) -> reqwest::Response` (GET `http://127.0.0.1:<port>/?<query>`), `assert_port_free(port)` (bindet `127.0.0.1:<port>` innerhalb von 2 s, Wiederholung alle 50 ms, sonst Fehlschlag))
 
 ```rust
 #[tokio::test] async fn authorize_url_carries_pkce_and_consumers_scope() {
@@ -521,26 +769,123 @@ Ablauf (festgelegt): `start_browser_login` bindet `127.0.0.1:0`, dann versucht e
 #[tokio::test] async fn redirect_with_code_exchanges_it_with_the_verifier() {
     // Mock /token erwartet body_string_contains "grant_type=authorization_code", "code=abc", "code_verifier=<v>", "redirect_uri=http%3A%2F%2Flocalhost%3A<port>"
     // GET <redirect>?code=abc&state=<state> -> 200, Body enthält success_title; Ergebnis: access_token.expose() == "at", refresh == "rt"
+    // danach assert_port_free(port)
 }
 #[tokio::test] async fn wrong_state_is_ignored_and_login_keeps_waiting() { /* erst state=x -> 400, dann richtig -> Ok */ }
 #[tokio::test] async fn other_paths_get_404() { /* GET /favicon.ico -> 404, danach richtiger Redirect -> Ok */ }
-#[tokio::test] async fn access_denied_maps_to_login_declined() { /* ?error=access_denied&error_description=secret+text&state=<s> -> Body enthält failure_title, nicht "secret text"; Err(Auth(LoginDeclined)) */ }
+#[tokio::test] async fn access_denied_maps_to_login_declined() { /* ?error=access_denied&error_description=secret+text&state=<s> -> Body enthält failure_title, nicht "secret text"; Err(Auth(LoginDeclined)); assert_port_free(port) */ }
 #[tokio::test] async fn other_error_keeps_only_the_code() { /* ?error=server_error&state=<s> -> BrowserLoginFailed { code } mit code == "server_error" */ }
-#[tokio::test] async fn times_out_without_redirect() { /* timeout 200 ms -> Err(Auth(BrowserLoginTimedOut)) */ }
 #[tokio::test] async fn invalid_client_on_exchange_maps_to_app_misconfigured() { /* /token 400 {"error":"invalid_client"} -> AppMisconfigured */ }
 #[tokio::test] async fn page_texts_are_escaped() { /* success_title "<b>&" -> Body enthält "&lt;b&gt;&amp;" */ }
 #[tokio::test] async fn ipv6_localhost_reaches_the_listener_when_available() { /* GET http://[::1]:<port>/?code&state -> Ok; überspringt mit eprintln, falls ::1 nicht bindbar */ }
 #[test] fn debug_never_shows_verifier_or_state() { /* format!("{login:?}") enthält weder Verifier noch state */ }
 #[tokio::test] async fn oversized_request_is_dropped() { /* 9 KiB Header ohne Ende -> Verbindung geschlossen, danach richtiger Redirect -> Ok */ }
+
+#[tokio::test]
+async fn times_out_without_redirect() {
+    let (auth, _server) = auth_with_token_endpoint(0).await;   // /token darf nie aufgerufen werden
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let err = auth.finish_browser_login(login, &pages(), Duration::from_millis(200)).await.unwrap_err();
+    assert!(matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)));
+    assert_port_free(port).await;
+}
+
+#[tokio::test]
+async fn wrong_state_is_rejected_and_the_wait_continues_until_timeout() {
+    let (auth, _server) = auth_with_token_endpoint(0).await;   // wiremock expect(0): kein Tausch mit falschem state
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let finish = tokio::spawn(async move { auth.finish_browser_login(login, &pages(), Duration::from_millis(600)).await });
+    let first = callback(port, "code=abc&state=wrong").await;
+    let second = callback(port, "code=abc").await;
+    assert_eq!(first.status(), 400);
+    assert_eq!(second.status(), 400);
+    assert!(!finish.is_finished(), "a rejected callback must not end the wait");
+    let err = finish.await.unwrap().unwrap_err();
+    assert!(matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)));
+    assert_port_free(port).await;
+}
+
+#[tokio::test]
+async fn second_callback_is_refused() {
+    // /token antwortet nach 300 ms (set_delay) mit gültigen Tokens und erwartet genau einen Aufruf (expect(1))
+    let (auth, _server) = auth_with_slow_token_endpoint(Duration::from_millis(300), 1).await;
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let state = login.state_for_test().to_string();
+    let finish = tokio::spawn(async move { auth.finish_browser_login(login, &pages(), Duration::from_secs(5)).await });
+    let first = tokio::spawn({ let s = state.clone(); async move { callback(port, &format!("code=abc&state={s}")).await } });
+    tokio::time::sleep(Duration::from_millis(100)).await;    // der Tausch läuft noch
+    let second = callback(port, &format!("code=other&state={state}")).await;
+    assert_eq!(second.status(), 400, "only one valid callback is accepted");
+    assert_eq!(first.await.unwrap().status(), 200);
+    assert!(finish.await.unwrap().is_ok());
+    // wiremock prüft beim Drop des Servers: genau ein /token-Aufruf
+}
+
+#[tokio::test]
+async fn success_page_is_sent_only_after_the_exchange() {
+    // /token antwortet nach 300 ms mit 400 {"error":"invalid_grant"}
+    let (auth, _server) = auth_with_failing_token_endpoint(Duration::from_millis(300)).await;
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let state = login.state_for_test().to_string();
+    let finish = tokio::spawn(async move { auth.finish_browser_login(login, &pages(), Duration::from_secs(5)).await });
+    let started = std::time::Instant::now();
+    let body = callback(port, &format!("code=abc&state={state}")).await.text().await.unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(300), "the browser answer waits for the token exchange");
+    assert!(body.contains("FAILURE-TITLE") && !body.contains("SUCCESS-TITLE"));   // pages() nutzt diese Titel
+    assert!(finish.await.unwrap().is_err());
+    assert_port_free(port).await;
+}
+
+#[tokio::test]
+async fn stalled_connection_does_not_block_the_real_callback() {
+    let (auth, _server) = auth_with_token_endpoint(1).await;
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let state = login.state_for_test().to_string();
+    let finish = tokio::spawn(async move { auth.finish_browser_login(login, &pages(), Duration::from_secs(10)).await });
+    // 40 Verbindungen öffnen und nichts senden (mehr als das Limit von 32)
+    let mut stalled = Vec::new();
+    for _ in 0..40 { stalled.push(tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap()); }
+    let started = std::time::Instant::now();
+    let r = callback(port, &format!("code=abc&state={state}")).await;
+    assert_eq!(r.status(), 200);
+    assert!(started.elapsed() < Duration::from_secs(2), "the 5 s read timeout of a stalled connection must not delay the redirect");
+    assert!(finish.await.unwrap().is_ok());
+    drop(stalled);
+}
+
+#[tokio::test]
+async fn dropping_finish_frees_the_port() {
+    let (auth, _server) = auth_with_token_endpoint(0).await;
+    let login = auth.start_browser_login().await.unwrap();
+    let port = redirect_port(&login);
+    let finish = tokio::spawn(async move { auth.finish_browser_login(login, &pages(), Duration::from_secs(300)).await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    finish.abort();                       // Abbruch wie bei login_cancel
+    let _ = finish.await;
+    assert_port_free(port).await;         // ein neuer Listener kann den Port sofort binden
+}
+
+#[tokio::test]
+async fn error_code_is_capped_and_sanitized() {
+    // state richtig, error=<80 Mal "a"> -> BrowserLoginFailed { code } mit code == "a" * 64
+    // error=a%3Cb%3E%26x -> code == "abx"
+    // error=%0D%0A -> code == "unknown"
+    // jeweils ein eigener Durchlauf (start_browser_login, callback, finish)
+}
 ```
-`verifier_for_test()` und `state_for_test()` sind `#[cfg(test)]`.
+`verifier_for_test()` (liefert `login.verifier.expose()`) und `state_for_test()` sind `#[cfg(test)]`; `pages()` setzt die Titel `SUCCESS-TITLE` und `FAILURE-TITLE`.
 
 - [ ] **Step 2: Tests laufen lassen, sie scheitern**
 
 Run: `cargo test -p hengst-core browser`
 Expected: FAIL
 
-- [ ] **Step 3: Implementieren** nach "Ablauf"; Desktop-`error_dto` um die drei Codes ergänzen (`browserLoginTimedOut` → SignIn, `loopbackUnavailable` → keine Aktion, `browserLoginFailed` → SignIn, `params.code`), Übersetzungen ergänzen.
+- [ ] **Step 3: Implementieren** nach "Ablauf"; Desktop-`error_dto` um die drei Codes ergänzen (`browserLoginTimedOut` → SignIn, `loopbackUnavailable` → keine Aktion, `browserLoginFailed` → SignIn, `params.code`), Übersetzungen ergänzen. Es gibt keinen echten Microsoft-Kontakt: die echte Anmeldung braucht die Redirect-URI aus "Beim Menschen" und bleibt ein offener manueller Schritt.
 
 - [ ] **Step 4: Tests grün**
 
@@ -559,8 +904,8 @@ git commit -m "feat(core): Microsoft sign-in through the system browser with PKC
 ### Task 6: Testkit-Crate mit Mock-Diensten
 
 **Files:**
-- Create: `crates/hengst-testkit/Cargo.toml` (`publish = false`, Abhängigkeiten `wiremock`, `serde_json`, `tokio`, `hengst-core`, `zip`, `reqwest`), `src/lib.rs`, `src/auth.rs`, `src/mojang.rs`, `src/bin/hengst-mock.rs`
-- Modify: `Cargo.toml` (Member)
+- Create: `crates/hengst-testkit/Cargo.toml` (`publish = false`, Abhängigkeiten `wiremock`, `serde_json`, `tokio`, `hengst-core`, `zip`, `reqwest`), `src/lib.rs`, `src/auth.rs`, `src/mojang.rs`, `src/bin/hengst-mock.rs`, `tests/mock_binary.rs`
+- Modify: `Cargo.toml` (Member), `Cargo.lock`
 
 **Interfaces:**
 - Consumes: `AuthEndpoints`, `launch::Endpoints`, `loaders::LoaderEndpoints`, `download::sha1_hex`.
@@ -589,6 +934,10 @@ Bestehende Tests in `crates/hengst-core/tests/` bleiben unverändert (keine Umst
 #[tokio::test] async fn mojang_mock_lists_all_kinds_and_fabric_versions() {
     // fetch_manifest -> 4 Versionen; loaders::list_versions(Fabric, "9.9") -> ids ["0.100.0-beta.1", "0.99.0"] oder in der Reihenfolge, die der Fabric-Leser liefert; pick_version(None) == "0.99.0"
 }
+```
+
+`crates/hengst-testkit/tests/mock_binary.rs` (Integrationstest: `CARGO_BIN_EXE_<name>` gibt es nur dort, nicht in `#[cfg(test)]`-Modulen von `src/`):
+```rust
 #[test] fn mock_binary_prints_its_url() {
     // std::process::Command auf env!("CARGO_BIN_EXE_hengst-mock"), stdin piped; erste stdout-Zeile parst als {"url": ...}; stdin schließen -> Prozess endet binnen 5 s
 }
@@ -609,7 +958,7 @@ Expected: PASS
 - [ ] **Step 5: Lint, Format, Commit**
 
 ```bash
-git add Cargo.toml Cargo.lock crates/hengst-testkit
+git add Cargo.toml Cargo.lock crates/hengst-testkit/Cargo.toml crates/hengst-testkit/src crates/hengst-testkit/tests
 git commit -m "test: add hengst-testkit with mock Microsoft, Xbox, Mojang and Fabric services"
 ```
 
@@ -618,28 +967,30 @@ git commit -m "test: add hengst-testkit with mock Microsoft, Xbox, Mojang and Fa
 ### Task 7: Konten im Backend (Liste, Wechsel, Abmelden, Login-Vorgänge)
 
 **Files:**
-- Create: `apps/desktop/src-tauri/src/accounts.rs`, `src/dto/accounts.rs`, `src/commands/accounts.rs`
-- Modify: `crates/hengst-core/src/auth/store.rs` (`impl<S: SecretStore + ?Sized> SecretStore for Box<S>`), `apps/desktop/src-tauri/src/{state.rs,startup.rs,command_list.rs,dto/mod.rs}`, `apps/desktop/src-tauri/Cargo.toml` (dev-dependency `hengst-testkit`)
+- Create: `apps/desktop/src-tauri/src/accounts.rs`, `src/dto/accounts.rs`, `src/commands/accounts.rs`, `src-tauri/tests/no_tokens.rs`
+- Modify: `crates/hengst-core/src/auth/store.rs` (`impl<S: SecretStore + ?Sized> SecretStore for Box<S>`), `apps/desktop/src-tauri/src/{state.rs,startup.rs,command_list.rs,commands/mod.rs,dto/mod.rs,lib.rs}`, `apps/desktop/src-tauri/capabilities/main.json` (`allow-accounts-list`, `allow-account-select`, `allow-account-remove`, `allow-login-start`, `allow-login-cancel`, `allow-login-reopen-browser`), `apps/desktop/src-tauri/Cargo.toml` (`hengst-testkit` als **optionale** Abhängigkeit: `e2e = ["dep:hengst-testkit"]`, zusätzlich als Dev-Abhängigkeit; Dev-Abhängigkeit `static_assertions`), `apps/desktop/src/ipc/{client.ts,events.ts,client.test.ts}`, `apps/desktop/src/ipc/bindings/` (erzeugt), `Cargo.lock`
 
 **Interfaces:**
-- Consumes: `AccountStore`, `load_accounts_file`, `KeyringSecretStore`, `MemorySecretStore`, `MicrosoftAuth::{start_browser_login, finish_browser_login, start_device_login, poll_device_login, complete_login}`, `client_id`, `unix_now`, `BrowserLoginPages`, `BROWSER_LOGIN_TIMEOUT`, `error_dto`, `EventHub`, `Settings.dev_account`, Testkit (Task 6).
+- Consumes: `AccountStore`, `load_accounts_file`, `KeyringSecretStore`, `MemorySecretStore`, `MicrosoftAuth::{start_browser_login, finish_browser_login, start_device_login, poll_device_login, complete_login}`, `client_id`, `unix_now`, `BrowserLoginPages`, `BROWSER_LOGIN_TIMEOUT`, `error_dto`, `EventHub`, `Settings.dev_account`, `SettingsHandle` (Task 3), `UrlTarget` (Task 4), Testkit (Task 6).
 - Produces:
-  - DTOs: `AccountKindDto` (`microsoft`, `offlineDev`); `AccountDto { id: String, name: String, kind: AccountKindDto, selected: bool, sign_in_required: bool }` (`id` = UUID bzw. `"offline-dev"`); `AccountsDto { accounts: Vec<AccountDto>, can_sign_in: bool }` (`can_sign_in` false, wenn keine Client-ID); `LoginMethod` (`browser`, `deviceCode`); `LoginPagesDto { success_title, success_body, failure_title, failure_body }`; `OperationId(u64)` (TS `number`); `LoginEvent` (`#[serde(tag = "event", content = "data", rename_all = "camelCase")]`): `BrowserOpened`, `DeviceCode { user_code: String, verification_uri: String, expires_at: u64 }`, `Completing`, `SignedIn { account: AccountDto }`, `Failed { error: ErrorDto }`, `Cancelled`.
-  - `pub struct Accounts` in `accounts.rs` mit `fn new(paths: &Paths, secrets: Box<dyn SecretStore>, auth: Option<MicrosoftAuth>, opener: BrowserOpener) -> Accounts`; `fn list(&self, settings: &Settings) -> Result<AccountsDto>` (liest nur `accounts.json`, kein Schlüsselspeicher); `fn select(&self, id: &str, settings: &mut Settings) -> Result<()>` (`"offline-dev"` setzt `dev_account = true` nur mit `dev-offline`, sonst `AccountNotFound`; Microsoft-Konto: `set_default`, `dev_account = false`); `fn remove(&self, id: &str) -> Result<()>`; `async fn login(&self, method: LoginMethod, pages: BrowserLoginPages, sink: EventSink<LoginEvent>) -> Result<AccountDto>`; `fn mark_sign_in_required(&self, uuid: &str)` (für 4b, wenn `launch_account` `LoginExpired` meldet).
+  - DTOs: `AccountKindDto` (`microsoft`, `offlineDev`); `AccountDto { id: String, name: String, kind: AccountKindDto, selected: bool, sign_in_required: bool }` (`id` = UUID bzw. `"offline-dev"`); `AccountsDto { accounts: Vec<AccountDto>, can_sign_in: bool }` (`can_sign_in` false, wenn keine Client-ID); `LoginMethod` (`browser`, `deviceCode`); `LoginPagesDto { success_title, success_body, failure_title, failure_body }`; `OperationId(u64)` (TS `number`); `LoginEvent` (`#[serde(tag = "event", content = "data", rename_all = "camelCase")]`): **`Started { op: OperationId }` (immer das erste Ereignis, noch vor `login_start`-Rückgabe)**, `BrowserOpened`, `DeviceCode { user_code: String, verification_uri: String, expires_at: u64 }`, `Completing`, `SignedIn { account: AccountDto }`, `Failed { error: ErrorDto }`, `Cancelled`. Ereignisse eines Vorgangs gehen nur an dessen eigenen Kanal.
+  - `pub struct Accounts` in `accounts.rs` mit `fn new(paths: &Paths, secrets: Box<dyn SecretStore>, auth: Option<MicrosoftAuth>, opener: BrowserOpener) -> Accounts`; intern eine `std::sync::Mutex<()>` (`io_lock`), die **jeden Schreibzugriff auf `accounts.json`** (`save_session`, `set_default`, `remove`, `mark_sign_in_required`) serialisiert (nie über ein `await` gehalten). `fn list(&self, settings: &Settings) -> Result<AccountsDto>` (liest nur `accounts.json`, kein Schlüsselspeicher); `fn select(&self, id: &str, settings: &SettingsHandle) -> Result<()>` (`"offline-dev"` setzt `dev_account = true` nur mit `dev-offline`, sonst `AccountNotFound`; Microsoft-Konto: `set_default` und `dev_account = false`; die Einstellung wird im selben Aufruf über `SettingsHandle::update` gespeichert, nicht erst später); `fn remove(&self, id: &str) -> Result<()>`; `async fn login(&self, method: LoginMethod, pages: BrowserLoginPages, settings: SettingsHandle, op: OperationId, sink: EventSink<LoginEvent>) -> Result<AccountDto>` (sendet als Erstes `Started { op }`; nach `save_session` und `set_default` setzt es `dev_account = false` über `SettingsHandle::update`); `fn mark_sign_in_required(&self, uuid: &str)` (für 4b, wenn `launch_account` `LoginExpired` meldet).
   - `pub type BrowserOpener = Arc<dyn Fn(&str) -> Result<()> + Send + Sync>`: in Release/Debug `opener.open_url(url)`, mit Feature `e2e` ein HTTP-Abruf der URL mit Redirect-Folgen in einem eigenen Task.
-  - `pub struct Operations` mit `fn start(&self, kind: OpKind, handle: AbortHandle, reopen: Option<String>) -> OperationId` (ein laufender Vorgang derselben Art wird abgebrochen und meldet `Cancelled`), `fn cancel(&self, id: OperationId) -> bool`, `fn reopen_url(&self, id: OperationId) -> Option<String>` (nur intern; verlässt Rust nie).
-  - Commands: `accounts_list() -> Result<AccountsDto, ErrorDto>`, `account_select(id: String)`, `account_remove(id: String)`, `login_start(method: LoginMethod, pages: LoginPagesDto, channel: Channel<LoginEvent>) -> Result<OperationId, ErrorDto>` (kehrt sofort zurück, Arbeit im Task), `login_cancel(op: OperationId) -> Result<bool, ErrorDto>`, `login_reopen_browser(op: OperationId) -> Result<(), ErrorDto>`. Erfolgreiche Mutation sendet `DataChanged(Accounts)`.
-  - Neues Konto wird gewählt (`set_default`), `dev_account` wird dabei `false`.
-  - Mit `e2e`: `MemorySecretStore`, Client-ID `"e2e-client"`, `auth_endpoints(HENGST_E2E_BASE_URL)`. Ohne: `KeyringSecretStore::new()`; schlägt das fehl, bleibt die Liste nutzbar und `login_start` meldet `credentialStore`.
+  - `pub enum OpKind { Login }` (Browser- **und** Device-Code-Anmeldung teilen sich diese eine Art, damit "Code stattdessen verwenden" den wartenden Browser-Vorgang beendet und dessen Port freigibt; 4b ergänzt `Play`). `pub struct Operations` mit `fn start(&self, kind: OpKind, on_cancel: Box<dyn Fn() + Send + Sync>, spawn: impl FnOnce(OperationId) -> AbortHandle) -> OperationId` (vergibt die Id, bricht einen laufenden Vorgang derselben Art ab, ruft `spawn(id)` und merkt sich Handle und `on_cancel`), `fn cancel(&self, id: OperationId) -> bool` (bricht den Task ab, der Drop gibt den Port frei, und ruft `on_cancel`, das `Cancelled` an den Kanal des Vorgangs sendet), `fn set_reopen(&self, id: OperationId, url: String)`, `fn reopen_url(&self, id: OperationId) -> Option<String>` (nur intern; verlässt Rust nie).
+  - Commands: `accounts_list() -> Result<AccountsDto, ErrorDto>`, `account_select(id: String)` (ruft `Accounts::select` mit `AppState.settings`, sendet `DataChanged(Accounts)` und `DataChanged(Settings)`), `account_remove(id: String)`, `login_start(method: LoginMethod, pages: LoginPagesDto, channel: Channel<LoginEvent>) -> Result<OperationId, ErrorDto>` (kehrt sofort zurück, Arbeit im Task; die Oberfläche nimmt die `op` aus dem `Started`-Ereignis, weil Ereignisse vor der Rückgabe eintreffen können), `login_cancel(op: OperationId) -> Result<bool, ErrorDto>`, `login_reopen_browser(op: OperationId) -> Result<(), ErrorDto>`. Erfolgreiche Mutation sendet `DataChanged(Accounts)`. Einträge in `command_list.rs`: `accounts::accounts_list`, `accounts::account_select`, `accounts::account_remove`, `accounts::login_start`, `accounts::login_cancel`, `accounts::login_reopen_browser`.
+  - Neues Konto wird gewählt (`set_default`), `dev_account` wird dabei `false` (gespeichert, siehe oben).
+  - Frontend (`client.ts`, hier statt in Task 8, damit `ts_client_covers_every_command` grün bleibt): `api.accountsList()`, `api.accountSelect(id)`, `api.accountRemove(id)`, `api.loginStart(method, pages, onEvent): Promise<number>` (legt den `Channel<LoginEvent>` an), `api.loginCancel(op)`, `api.loginReopenBrowser(op)`.
+  - Mit `e2e`: `MemorySecretStore`, Client-ID `"e2e-client"`, `auth_endpoints(<Basis>)` und `endpoints(<Basis>)` aus `hengst-testkit` mit der Basis aus `--e2e-base-url` bzw. `HENGST_E2E_BASE_URL` (`startup.rs` verdrahtet beides hier). Ohne `e2e`: `KeyringSecretStore::new()`; schlägt das fehl, bleibt die Liste nutzbar und `login_start` meldet `credentialStore`.
 
 - [ ] **Step 1: Failing Tests schreiben** (`accounts.rs`, mit Testkit-Mock und `MemorySecretStore`)
 
 ```rust
 #[tokio::test] async fn browser_login_saves_and_selects_the_account() {
-    // Events in Reihenfolge: BrowserOpened, Completing, SignedIn { account.name == "E2EPlayer", selected == true }
+    // Events in Reihenfolge: Started { op }, BrowserOpened, Completing, SignedIn { account.name == "E2EPlayer", selected == true }
     // list(): 1 Konto, selected
 }
-#[tokio::test] async fn device_login_reports_the_code_then_signs_in() { /* erstes Event DeviceCode mit user_code nicht leer */ }
+#[tokio::test] async fn device_login_reports_the_code_then_signs_in() { /* Events: Started { op }, dann DeviceCode mit user_code nicht leer, Completing, SignedIn */ }
+#[tokio::test] async fn started_is_always_the_first_event_and_carries_the_op_returned_by_login_start() { /* Browser- und Device-Login: events[0] == Started { op } und op == Rückgabe von login_start */ }
 #[tokio::test] async fn second_account_becomes_selected_and_switch_works() {
     // zwei Logins (A, B) -> B selected; select(A.id) -> A selected; accounts.json default == A.uuid
 }
@@ -650,12 +1001,60 @@ git commit -m "test: add hengst-testkit with mock Microsoft, Xbox, Mojang and Fa
 }
 #[tokio::test] async fn not_approved_login_maps_to_app_not_approved() { /* Szenario NotApproved -> Failed { error.code == AppNotApproved } und Ergebnis Err */ }
 #[tokio::test] async fn second_login_cancels_the_first() {
-    // Login 1 per Browser starten ohne Redirect (Opener tut nichts), Login 2 starten -> Login 1 meldet Cancelled, Login 2 läuft
+    // Login 1 per Browser starten ohne Redirect (Opener tut nichts), Login 2 per Device Code starten (gleiche OpKind::Login)
+    // -> Login 1 meldet Cancelled, Login 2 läuft; der Port aus Login 1 ist danach frei (TcpListener::bind auf 127.0.0.1:<port> gelingt binnen 2 s)
 }
-#[tokio::test] async fn cancel_ends_a_waiting_login() { /* cancel(op) == true; Event Cancelled; kein Konto gespeichert */ }
+#[tokio::test] async fn cancel_ends_a_waiting_login() { /* cancel(op) == true; Event Cancelled; kein Konto gespeichert; Port frei */ }
+#[tokio::test]
+async fn concurrent_account_writes_leave_a_consistent_file() {
+    // zwei Konten A und B vorhanden; je 20 Mal parallel select(A) und select(B) (tokio::spawn) und remove/save_session eines dritten Kontos C
+    let accounts = Arc::new(test_accounts_with(&[PLAYER_A, PLAYER_B]));
+    let tasks: Vec<_> = (0..40).map(|i| { let a = accounts.clone(); let s = settings.clone(); tokio::spawn(async move { a.select(if i % 2 == 0 { A_ID } else { B_ID }, &s) }) }).collect();
+    for t in tasks { t.await.unwrap().unwrap(); }
+    let file = load_accounts_file(&paths).unwrap();     // parst: nie eine halb geschriebene Datei
+    assert!(file.default == Some(A_ID.into()) || file.default == Some(B_ID.into()));
+    assert_eq!(file.accounts.len(), 2);
+}
+#[cfg(feature = "dev-offline")] #[test]
+fn selecting_the_dev_account_saves_the_setting_in_the_same_call() {
+    // select("offline-dev", &settings) -> settings.json enthält "devAccount": true, ohne dass ein weiterer Aufruf nötig ist;
+    // select(<Microsoft-Konto>) -> "devAccount": false in der Datei
+}
+#[tokio::test] async fn a_new_login_clears_the_dev_account_flag_in_the_file() { /* settings.json mit devAccount true (nur dev-offline) -> nach SignedIn steht devAccount false in der Datei */ }
 #[test] fn accounts_list_works_without_secret_store() { /* Secret-Store, dessen get/set immer Err(CredentialStore) liefert; accounts.json mit A -> list() Ok */ }
 #[cfg(feature = "dev-offline")] #[test] fn dev_build_lists_and_selects_the_offline_account() { /* id "offline-dev" in der Liste; select -> dev_account true, selected */ }
 #[cfg(not(feature = "dev-offline"))] #[test] fn release_build_never_lists_dev_account() { /* dev_account = true in Settings -> kein "offline-dev"; select("offline-dev") -> AccountNotFound */ }
+```
+
+`src-tauri/tests/no_tokens.rs` (Invariante aus den Global Constraints; Task 10 ergänzt die Instanz-DTOs):
+```rust
+use static_assertions::assert_not_impl_any;
+use hengst_core::secret::Secret;
+use hengst_core::auth::msa::MsaTokens;
+use hengst_core::auth::flow::LoginSession;
+
+const FAKE: &str = "FAKE-ACCESS-TOKEN-7f3a";
+
+#[test]
+fn token_types_do_not_implement_serialize() {
+    assert_not_impl_any!(Secret: serde::Serialize);
+    assert_not_impl_any!(MsaTokens: serde::Serialize);
+    assert_not_impl_any!(LoginSession: serde::Serialize);
+}
+
+#[tokio::test]
+async fn no_dto_or_event_contains_a_token() {
+    // MemorySecretStore und accounts.json mit einem Konto, dessen access_token, refresh_token und minecraft_token den Wert FAKE enthalten
+    let mut seen: Vec<String> = Vec::new();
+    seen.push(serde_json::to_string(&accounts.list(&settings.get()).unwrap()).unwrap());   // AccountsDto
+    seen.push(serde_json::to_string(&app_info_dto()).unwrap());                            // AppInfo
+    seen.push(serde_json::to_string(&settings_dto(&settings.get(), None)).unwrap());       // SettingsDto
+    for e in run_mock_login_with_token(FAKE, LoginMethod::Browser).await { seen.push(serde_json::to_string(&e).unwrap()); }      // jedes LoginEvent
+    for e in run_mock_login_with_token(FAKE, LoginMethod::DeviceCode).await { seen.push(serde_json::to_string(&e).unwrap()); }
+    for err in every_auth_error_with_message_containing(FAKE) { seen.push(serde_json::to_string(&error_dto(&err)).unwrap()); }   // ErrorDto
+    for s in &seen { assert!(!s.contains(FAKE), "token leaked into: {s}"); }
+    assert!(!seen.is_empty());
+}
 ```
 
 In `store.rs`:
@@ -665,20 +1064,33 @@ In `store.rs`:
 
 - [ ] **Step 2: Tests laufen lassen, sie scheitern**
 
-Run: `cargo test -p hengst-desktop accounts` und `cargo test -p hengst-core boxed_secret_store`
+Frontend (`client.test.ts`, `mockIPC`):
+```ts
+it("loginStart passes the channel and the pages and returns the op", async () => {
+  // mockIPC((cmd, args) => { seen = [cmd, Object.keys(args)]; args.channel.onmessage?.({ event: "started", data: { op: 7 } }); return 7; })
+  const events: LoginEvent[] = [];
+  const op = await api.loginStart("browser", pages, (e) => events.push(e));
+  expect(seen).toEqual(["login_start", ["method", "pages", "channel"]]);
+  expect(op).toBe(7);
+  expect(events[0]).toEqual({ event: "started", data: { op: 7 } });
+});
+it("accounts commands use camelCase args", async () => { /* account_select -> { id }, login_cancel -> { op } */ });
+```
+
+Run: `cargo test -p hengst-desktop accounts`, `cargo test -p hengst-desktop --test no_tokens`, `cargo test -p hengst-core boxed_secret_store` und `pnpm -C apps/desktop test client`
 Expected: FAIL
 
-- [ ] **Step 3: Implementieren** wie in Interfaces. Login-Task: `start_browser_login` → Opener → `BrowserOpened` → `finish_browser_login(..., BROWSER_LOGIN_TIMEOUT)` → `Completing` → `complete_login` → `save_session` → `set_default` → `SignedIn`; Fehler → `Failed { error_dto }`. Die Seite im Browser bekommt die Texte aus `LoginPagesDto`.
+- [ ] **Step 3: Implementieren** wie in Interfaces. Login-Task: `Started { op }` → `start_browser_login` → `set_reopen` → Opener → `BrowserOpened` → `finish_browser_login(..., BROWSER_LOGIN_TIMEOUT)` → `Completing` → `complete_login` → `save_session` → `set_default` → `dev_account = false` (gespeichert) → `SignedIn`; Fehler → `Failed { error_dto }`. Die Seite im Browser bekommt die Texte aus `LoginPagesDto`.
 
 - [ ] **Step 4: Tests grün**
 
-Run: `cargo test --workspace --all-features` und `cargo test -p hengst-desktop` (ohne Features, prüft den Release-Zweig)
+Run: `cargo test --workspace --all-features`, `cargo test -p hengst-desktop` (ohne Features: prüft den Zweig ohne `dev-offline`; `debug_assertions` ist im Testprofil an, der Lauf sagt also nichts über `dev_build`), `cargo check -p hengst-desktop --release` (Release-Zweig übersetzt) und `cargo tree -p hengst-desktop -e normal` (die Ausgabe enthält weder `hengst-testkit` noch `wiremock`: beide hängen nur an `e2e` und an den Dev-Abhängigkeiten)
 Expected: PASS
 
 - [ ] **Step 5: Lint, Format, Commit**
 
 ```bash
-git add crates/hengst-core/src/auth/store.rs apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/src apps/desktop/src/ipc/bindings Cargo.lock
+git add crates/hengst-core/src/auth/store.rs apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/src apps/desktop/src-tauri/tests/no_tokens.rs apps/desktop/src-tauri/capabilities/main.json apps/desktop/src/ipc/client.ts apps/desktop/src/ipc/events.ts apps/desktop/src/ipc/client.test.ts apps/desktop/src/ipc/bindings Cargo.lock
 git commit -m "feat(desktop): accounts backend with browser and device code sign-in"
 ```
 
@@ -688,33 +1100,35 @@ git commit -m "feat(desktop): accounts backend with browser and device code sign
 
 **Files:**
 - Create: `apps/desktop/src/features/accounts/{AccountChip.tsx,AccountMenu.tsx,SignInDialog.tsx,RemoveAccountDialog.tsx,signIn.ts,signIn.test.ts,AccountChip.test.tsx,SignInDialog.test.tsx}`
-- Modify: `apps/desktop/src/ipc/{client.ts,events.ts}`, `src/stores/app.ts` (`accounts: Resource<AccountsDto>`), `src/app/Shell.tsx` (Chip in der Kopfzeile), `src/i18n/{de.json,en.json}`; shadcn-Komponenten `dialog`, `alert-dialog`, `dropdown-menu`, `badge`, `sonner` per `pnpm dlx shadcn@4.23.0 add`
+- Modify: `src/stores/app.ts` (`accounts: Resource<AccountsDto>`), `src/app/Shell.tsx` (Chip in der Kopfzeile), `src/i18n/{de.json,en.json}`, `apps/desktop/package.json`, `pnpm-lock.yaml`, `components.json`; shadcn-Komponenten `dialog`, `alert-dialog`, `dropdown-menu`, `badge` per `pnpm dlx shadcn@4.23.0 add` (Sonner kam in Task 3). Die Client-Funktionen für Konten und `api.openUrl` existieren schon (Task 7 und Task 4); dieser Task fügt keine Commands hinzu
 
 **Interfaces:**
-- Consumes: Commands aus Task 7, `ErrorPanel` (Task 4), Store (Task 3).
+- Consumes: Commands und `api.*` aus Task 7 (`accountsList`, `accountSelect`, `accountRemove`, `loginStart`, `loginCancel`, `loginReopenBrowser`), `api.openUrl` und `UrlTarget` (Task 4), `ErrorPanel` (Task 4), Store und Sonner (Task 3).
 - Produces:
-  - `api.accountsList()`, `api.accountSelect(id)`, `api.accountRemove(id)`, `api.loginStart(method, pages, onEvent): Promise<number>`, `api.loginCancel(op)`, `api.loginReopenBrowser(op)`.
-  - `signIn.ts`: Reducer `signInReducer(state: SignInState, e: LoginEvent | { event: "start"; method: LoginMethod } | { event: "switchToCode" }): SignInState` mit `SignInState = { phase: "idle" } | { phase: "waitingBrowser"; op: number } | { phase: "showingCode"; op: number; userCode: string; verificationUri: string; expiresAt: number } | { phase: "completing" } | { phase: "done"; account: AccountDto } | { phase: "failed"; error: ErrorDto } | { phase: "cancelled" }`.
+  - `signIn.ts`: Reducer `signInReducer(state: SignInState, e: LoginEvent | { event: "start"; method: LoginMethod } | { event: "switchToCode" }): SignInState` mit `SignInState = { phase: "idle" } | { phase: "starting" } | { phase: "waitingBrowser"; op: number } | { phase: "showingCode"; op: number; userCode: string; verificationUri: string; expiresAt: number } | { phase: "completing"; op: number } | { phase: "done"; account: AccountDto } | { phase: "failed"; error: ErrorDto } | { phase: "cancelled" }`. `start` setzt `starting`; die `op` kommt aus dem ersten Kanal-Ereignis `Started { op }` (nicht aus der Rückgabe von `loginStart`, weil Ereignisse vor ihr eintreffen können), `BrowserOpened` führt von `starting` zu `waitingBrowser { op }`, `DeviceCode` zu `showingCode { op, ... }`. Der Dialog hält je Anmeldeversuch einen eigenen Kanal und verwirft Ereignisse eines abgelösten Versuchs (Zähler im Dialog). `switchToCode` ruft `login_cancel(op)` und startet danach `login_start("deviceCode", ...)`: beide Wege sind dieselbe Vorgangsart, der Browser-Vorgang endet und gibt seinen Port frei.
   - `AccountChip`: Knopf mit Name des gewählten Kontos (oder "Anmelden"), öffnet `AccountMenu` (DropdownMenu): Konten mit Häkchen am gewählten, Klick wählt; "Konto hinzufügen"; je Konto "Abmelden" (öffnet `RemoveAccountDialog`); `sign_in_required` zeigt Badge "Erneut anmelden" und Klick startet Login.
-  - `SignInDialog`: Hauptaktion "Mit Microsoft anmelden" (Browser); während des Wartens Text "Melde dich im Browser an. Danach geht es hier automatisch weiter.", Nebenaktionen "Browser erneut öffnen", "Code stattdessen verwenden" (bricht Browser-Vorgang ab, startet Device Code), "Abbrechen"; Code-Ansicht: Code groß in Mono, "Code kopieren" (Clipboard per `navigator.clipboard.writeText`), "microsoft.com/link öffnen" (über `open_url` mit `UrlTarget::DeviceLogin`, siehe Task 10; bis dahin Text mit Adresse), Restzeit; Fehler über `ErrorPanel`; Erfolg schließt den Dialog, Toast "Angemeldet als {{name}}".
+  - `SignInDialog`: Hauptaktion "Mit Microsoft anmelden" (Browser); während des Wartens Text "Melde dich im Browser an. Danach geht es hier automatisch weiter.", Nebenaktionen "Browser erneut öffnen", "Code stattdessen verwenden" (bricht Browser-Vorgang ab, startet Device Code), "Abbrechen"; Code-Ansicht: Code groß in Mono, "Code kopieren" (Clipboard per `navigator.clipboard.writeText`), "microsoft.com/link öffnen" (`api.openUrl("deviceLogin")`, `UrlTarget::DeviceLogin` aus Task 4), Restzeit; Fehler über `ErrorPanel`; Erfolg schließt den Dialog, Toast "Angemeldet als {{name}}".
   - Sonderfall `appNotApproved` (eigener Block im Dialog statt generischem Fehler). Englisch: Titel "Sign-in is not available yet", Text "Mojang has not approved Hengst Client's Microsoft sign-in yet. Until then, accounts cannot be added. Your account is fine, nothing needs to change on your side.", Aktion "Learn more" (`SignInHelp`). Deutsch: "Anmeldung noch nicht verfügbar", "Mojang hat die Microsoft-Anmeldung von Hengst Client noch nicht freigegeben. Bis dahin lassen sich keine Konten hinzufügen. Mit deinem Konto ist alles in Ordnung, du musst nichts ändern.", "Mehr erfahren". In Builds mit `devOffline` zusätzlich "Development builds can use the offline development account." / "Entwicklungs-Builds können das Offline-Entwicklungskonto verwenden."
   - `RemoveAccountDialog`: Titel "{{name}} abmelden?", Text "Die gespeicherte Anmeldung wird von diesem PC entfernt. Dein Microsoft-Konto bleibt unverändert.", Knöpfe "Abmelden" (destructive) und "Behalten".
   - Leerzustand: Chip "Anmelden"; ohne Client-ID (`can_sign_in` false) ist der Knopf deaktiviert mit sichtbarer Erklärung im Menü.
 
-- [ ] **Step 1: Zustandsliste** (produkt-regelwerk) für Chip, Menü, beide Dialoge in den Bericht: Hauptaktion je Zustand, alle sechs Phasen, Doppelklick auf "Mit Microsoft anmelden", Abbruch mit Escape (bricht Vorgang ab, Fokus zurück auf Chip), längster Name 16 Zeichen (Minecraft-Namen) plus Badge.
+- [ ] **Step 1: Zustandsliste** (produkt-regelwerk) für Chip, Menü, beide Dialoge in den Bericht: Hauptaktion je Zustand, alle Phasen (`idle`, `starting`, `waitingBrowser`, `showingCode`, `completing`, `done`, `failed`, `cancelled`), Doppelklick auf "Mit Microsoft anmelden", Abbruch mit Escape (bricht Vorgang ab, Fokus zurück auf Chip), längster Name 16 Zeichen (Minecraft-Namen) plus Badge.
 
 - [ ] **Step 2: Failing Tests schreiben**
 
 ```ts
 // signIn.test.ts
-it("browserOpened -> waitingBrowser with op", ...);
+it("started then browserOpened -> waitingBrowser with the op from started", ...);
+it("started arrives before login_start resolves and the op is still known", ...);   // Reducer bekommt Started zuerst, loginStart-Promise offen
+it("switchToCode cancels the browser login with its op and ignores that channel's late events", ...);
 it("deviceCode event -> showingCode with code and expiry", ...);
 it("failed keeps the error and allows restart", ...);
 it("a late event after cancelled is ignored", ...);    // signedIn nach cancelled ändert nichts
 // SignInDialog.test.tsx (mockIPC mit Channel-Simulation: Handler ruft args.channel.onmessage o. ä. nach Tauri-Mock-Doku)
 it("double click on sign in starts one login", ...);    // login_start genau einmal
 it("appNotApproved shows the explanation, not the generic error", ...);
-it("escape cancels the running login", ...);            // login_cancel mit der op aufgerufen
+it("escape cancels the running login", ...);            // login_cancel mit der op aus Started aufgerufen
+it("learn more on appNotApproved opens the SignInHelp target", ...);   // open_url mit "signInHelp" als einzigem Argument
 // AccountChip.test.tsx
 it("shows the selected account name and switches on click", ...);   // account_select mit id von B
 it("remove asks first and names the account", ...);                  // Dialogtitel enthält Namen, account_remove erst nach Bestätigung
@@ -735,12 +1149,12 @@ Expected: PASS
 - [ ] **Step 6: Sichtprüfung gegen den Mock**
 
 Run: `cargo run -p hengst-testkit --bin hengst-mock` (URL notieren), `pnpm -C apps/desktop tauri build --debug --no-bundle --features e2e,dev-offline`, App per agentfenster `open_app` mit `--home %TEMP%\hengst-4a-t8 --e2e-base-url <url> --window-size 960x600` starten.
-Expected: Leerzustand, Anmelden (Browser-Weg läuft im e2e-Build ohne Browser durch), zweites Konto, Wechsel, Abmelden mit Dialog; Mock mit `HENGST_MOCK_SCENARIO=not-approved`: Erklärung erscheint. Dev-Konto in der Liste sichtbar. Hell/dunkel, de/en, 960 × 600 und 1920 × 1080, Tastatur-Durchlauf durch Menü und Dialog (Escape, Fokus zurück). Screenshots nach `evidence/task-8/`.
+Expected: Leerzustand, Anmelden (Browser-Weg läuft im e2e-Build ohne Browser durch), zweites Konto, Wechsel, Abmelden mit Dialog; "Code stattdessen verwenden" beendet den wartenden Browser-Vorgang (kein offener Port: ein zweiter Start desselben Ablaufs funktioniert); "microsoft.com/link öffnen" öffnet die feste Adresse (Browserfenster in `list_windows`). Mock mit `HENGST_MOCK_SCENARIO=not-approved`: Erklärung erscheint, "Mehr erfahren" öffnet das Repository. Fehlerzustand in der laufenden App: Mock beenden, dann Anmelden versuchen (Netzfehler im Dialog über `ErrorPanel`, in beiden Themes und Sprachen). Dev-Konto in der Liste sichtbar. Hell/dunkel, de/en, 960 × 600 und 1920 × 1080, Tastatur-Durchlauf durch Menü und Dialog (Escape, Fokus zurück). Screenshots nach `evidence/task-8/`. **CSP- und Prototyp-Prüfung** (neu: Dialog, AlertDialog, DropdownMenu auf Base-UI-Basis): Web-Konsole beim Durchklicken lesen, keine CSP-Meldung, `Object.isFrozen(Object.prototype)` ist `true`; braucht eine Komponente ein Inline-`<style>`, gilt die Regel aus den Global Constraints (Nonce oder Hash, nie `'unsafe-inline'` für Skripte oder Style-Elemente). Die echte Microsoft-Anmeldung bleibt ein offener manueller Schritt (Redirect-URI, siehe "Beim Menschen").
 
 - [ ] **Step 7: Lint, Format, Commit**
 
 ```bash
-git add apps/desktop/src apps/desktop/components.json apps/desktop/package.json apps/desktop/pnpm-lock.yaml
+git add apps/desktop/src apps/desktop/src-tauri/tauri.conf.json apps/desktop/components.json apps/desktop/package.json apps/desktop/pnpm-lock.yaml
 git commit -m "feat(desktop): account chip, sign-in dialog with browser and code flow, sign out"
 ```
 
@@ -750,12 +1164,12 @@ git commit -m "feat(desktop): account chip, sign-in dialog with browser and code
 
 **Files:**
 - Create: `crates/hengst-core/src/instances.rs`
-- Modify: `crates/hengst-core/src/lib.rs` (`pub mod instances;`), `crates/hengst-core/src/error.rs`, `crates/hengst-core/src/loaders/mod.rs` (`LoaderKind`: serde über Slug, `display_name`), `apps/cli/src/main.rs` (`loader_name` ruft `LoaderKind::display_name`), `apps/desktop/src-tauri/src/error.rs` (neue Codes)
+- Modify: `crates/hengst-core/src/lib.rs` (`pub mod instances;`), `crates/hengst-core/src/error.rs`, `crates/hengst-core/src/loaders/mod.rs` (`LoaderKind`: serde über Slug; `display_name` gibt es seit Task 4), `apps/desktop/src-tauri/src/error.rs`, `apps/desktop/src-tauri/src/dto/error.rs` (neue Codes), `apps/desktop/src/ipc/bindings/` (erzeugt), `apps/desktop/src/i18n/{de.json,en.json}`, `apps/desktop/src/features/errors/errorCopy.ts`
 
 **Interfaces:**
 - Consumes: `Paths::instance`, `validate_id`, `LoaderKind`, `ResolvedLoader`, `LaunchOptions`, `LoaderRequest`, `args::Account`.
 - Produces:
-  - `LoaderKind`: `Serialize`/`Deserialize` als `slug()` (`"fabric"`, `"quilt"`, `"legacy-fabric"`, `"neoforge"`, `"forge"`), `pub fn display_name(self) -> &'static str` (`"Fabric"`, `"Quilt"`, `"Legacy Fabric"`, `"NeoForge"`, `"Forge"`).
+  - `LoaderKind`: `Serialize`/`Deserialize` als `slug()` (`"fabric"`, `"quilt"`, `"legacy-fabric"`, `"neoforge"`, `"forge"`). Der Anzeigename kommt aus `LoaderKind::display_name` (Task 4); der Slug ist nie Anzeigetext.
   - `Error::{InstanceNotFound { id: String }, InstanceExists { id: String }, InstanceFormatTooNew { id: String, format: u32 }, InvalidInstanceName(String)}` mit Texten `"instance {id} does not exist"`, `"instance folder {id} already exists"`, `"instance {id} was saved by a newer Hengst Client (format {format})"`, `"invalid instance name: {0}"`.
   - `pub const INSTANCE_FILE: &str = "instance.json"; pub const INSTANCE_FORMAT: u32 = 1;`
   - `#[serde(rename_all = "camelCase")] pub struct InstanceConfig { pub format: u32, pub name: String, pub game: String, pub loader: Option<InstanceLoader>, #[serde(default)] pub memory_mb: Option<u32>, #[serde(default)] pub java: Option<PathBuf>, pub created_at: u64, #[serde(default)] pub last_played: Option<u64>, #[serde(flatten)] pub extra: serde_json::Map<String, serde_json::Value> }`
@@ -767,7 +1181,8 @@ git commit -m "feat(desktop): account chip, sign-in dialog with browser and code
   - `pub fn parse_default_id(id: &str, is_game: impl Fn(&str) -> bool) -> Option<(String, Option<LoaderKind>)>` (erst ganze Id als Spielversion; sonst längstes passendes Loader-Suffix in der Reihenfolge `-legacy-fabric`, `-neoforge`, `-fabric`, `-quilt`, `-forge`, Rest muss Spielversion sein)
   - `pub fn validate_name(name: &str) -> Result<String>` (getrimmt, 1 bis 64 Zeichen, keine Steuerzeichen)
   - `pub fn list(paths: &Paths) -> Result<Vec<Listed>>` (nur Unterordner mit `instance.json`, sortiert: `last_played` absteigend, dann `name` ohne Groß-/Kleinschreibung; fehlender `instances/`-Ordner = leer)
-  - `pub fn load(paths: &Paths, id: &str) -> Result<Instance>`
+  - `pub fn instance_dir(paths: &Paths, id: &str) -> Result<PathBuf>` (prüft `validate_id`, dann dass `instances/<id>/instance.json` eine Datei ist; sonst `InstanceNotFound`; der einzige Weg, auf dem ein Command eine Id aus JavaScript in einen Ordner verwandelt: ein CLI-Ordner ohne `instance.json` ist hier **nicht** gültig)
+  - `pub fn load(paths: &Paths, id: &str) -> Result<Instance>` (ruft `instance_dir`; fehlende Datei `InstanceNotFound`)
   - `pub fn create(paths: &Paths, new: &NewInstance, now: u64) -> Result<Instance>` (`game` darf nicht `latest`/`latest-release`/`latest-snapshot` sein → `Error::UnknownVersion(game)`; ob `game` im Manifest steht, prüft der Aufrufer; Id = `default_id`, bei belegtem Ordner `-2`, `-3`, ... bis 999; legt Ordner und Datei an; Ordner, die schon existieren, werden nie benutzt)
   - `pub fn save(paths: &Paths, inst: &Instance) -> Result<()>` (Temp + Rename; liest vorher das vorhandene `format` und verweigert mit `InstanceFormatTooNew`, wenn es größer als `INSTANCE_FORMAT` ist)
   - `pub fn adopt(paths: &Paths, is_game: impl Fn(&str) -> bool, now: u64) -> Result<Vec<String>>` (für jeden Ordner ohne `instance.json`, dessen Name `parse_default_id` erkennt: Datei mit Name `"<game> <display_name>"` bzw. `"<game>"`, `loader.version: None`, `created_at: now`; gibt die übernommenen Ids zurück; andere Ordner bleiben unberührt)
@@ -801,6 +1216,19 @@ git commit -m "feat(desktop): account chip, sign-in dialog with browser and code
     // instance.json {"format": 2, ...}; list -> TooNew { format: 2 }; save(...) -> Err(InstanceFormatTooNew); Datei byte-gleich
 }
 #[test] fn broken_instance_is_listed_not_deleted() { /* "{" -> Broken; Ordner und Datei bleiben */ }
+#[test]
+fn instance_dir_needs_a_valid_id_and_an_instance_json() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.instance("1.20.1-forge").join("saves")).unwrap();      // CLI-Ordner ohne instance.json
+    create(&paths, &NewInstance { name: "Welt".into(), game: "1.21.11".into(), loader: None }, 1).unwrap();
+    assert!(instance_dir(&paths, "1.21.11").is_ok());
+    assert!(matches!(instance_dir(&paths, "1.20.1-forge"), Err(Error::InstanceNotFound { .. })));
+    assert!(matches!(instance_dir(&paths, "fehlt"), Err(Error::InstanceNotFound { .. })));
+    for bad in ["..", "..\\x", "a/b", ""] {
+        assert!(matches!(instance_dir(&paths, bad), Err(Error::UnsafePath(_))), "{bad:?}");
+    }
+}
 #[test] fn unknown_fields_survive_a_save() { /* "notes": "x" bleibt nach load + save erhalten */ }
 #[test] fn list_sorts_by_last_played_then_name() { /* a (nie), b (100), c (200), A2 (nie) -> c, b, a, A2 in dieser Logik: nie gespielte nach Namen */ }
 #[test] fn names_are_validated() { /* "" und "   " und 65 Zeichen und "a\nb" -> InvalidInstanceName; "  Welt  " -> "Welt"; "Überleben 1.21" ok */ }
@@ -820,12 +1248,12 @@ Expected: FAIL
 - [ ] **Step 4: Tests grün**
 
 Run: `cargo test --workspace --all-features`
-Expected: PASS, CLI-Ausgaben unverändert (`loader_name` liefert dieselben Texte).
+Expected: PASS, CLI-Ausgaben unverändert.
 
 - [ ] **Step 5: Lint, Format, Commit**
 
 ```bash
-git add crates/hengst-core/src/instances.rs crates/hengst-core/src/lib.rs crates/hengst-core/src/error.rs crates/hengst-core/src/loaders/mod.rs apps/cli/src/main.rs apps/desktop/src-tauri/src/error.rs apps/desktop/src-tauri/src/dto/error.rs apps/desktop/src/ipc/bindings apps/desktop/src/i18n apps/desktop/src/features/errors/errorCopy.ts
+git add crates/hengst-core/src/instances.rs crates/hengst-core/src/lib.rs crates/hengst-core/src/error.rs crates/hengst-core/src/loaders/mod.rs apps/desktop/src-tauri/src/error.rs apps/desktop/src-tauri/src/dto/error.rs apps/desktop/src/ipc/bindings apps/desktop/src/i18n apps/desktop/src/features/errors/errorCopy.ts
 git commit -m "feat(core): instances module with instance.json format 1 and CLI folder adoption"
 ```
 
@@ -834,16 +1262,17 @@ git commit -m "feat(core): instances module with instance.json format 1 and CLI 
 ### Task 10: Instanzen im Backend, Ordner und Links öffnen
 
 **Files:**
-- Create: `apps/desktop/src-tauri/src/{dto/instances.rs,commands/instances.rs,commands/open.rs,open.rs}`
-- Modify: `apps/desktop/src-tauri/src/{state.rs,command_list.rs,dto/mod.rs,dto/versions.rs,commands/versions.rs,error.rs}`, `apps/desktop/src-tauri/Cargo.toml` (`trash` per `cargo add`)
+- Create: `apps/desktop/src-tauri/src/{dto/instances.rs,commands/instances.rs}`
+- Modify: `apps/desktop/src-tauri/src/{state.rs,command_list.rs,commands/mod.rs,dto/mod.rs,dto/error.rs,error.rs,open.rs,commands/open.rs}` (`open.rs` und `commands/open.rs` gibt es seit Task 4: hier kommen `OpenTarget`, `resolve_location` und `open_location` dazu), `src-tauri/capabilities/main.json` (`allow-loader-kinds`, `allow-loader-versions`, `allow-instances-list`, `allow-instance-create`, `allow-instance-select`, `allow-instance-delete`, `allow-open-location`), `src-tauri/tests/no_tokens.rs` (Instanz-DTOs aufnehmen), `apps/desktop/src-tauri/Cargo.toml` (`trash` per `cargo add`), `apps/desktop/src/ipc/client.ts`, `apps/desktop/src/ipc/bindings/` (erzeugt), `apps/desktop/src/i18n/{de.json,en.json}`, `apps/desktop/src/features/errors/errorCopy.ts`, `Cargo.lock`
+- Test: `apps/desktop/src-tauri/src/commands/instances.rs` und `src/open.rs` (`#[cfg(test)]`), `apps/desktop/src/ipc/client.test.ts`
 
 **Interfaces:**
-- Consumes: `instances::*` (Task 9), `loaders::{list_versions, pick_version, LoaderKind}`, `download::http_client`, `VersionsCache` (Task 2), `Settings.selected_instance`, `UrlTarget` (Task 4).
+- Consumes: `instances::*` (Task 9), `loaders::{list_versions, pick_version, LoaderKind}`, `download::http_client`, `VersionsCache` (Task 2), `SettingsHandle` (Task 3), `LoaderKind::display_name` (Task 4), `open.rs` und `UrlTarget` (Task 4).
 - Produces:
-  - DTOs: `LoaderKindDto` (`fabric`, `quilt`, `legacyFabric`, `neoForge`, `forge`; Abbildung auf `LoaderKind` in beide Richtungen), `LoaderVersionDto { id: String, stable: bool }`, `LoaderVersionsDto { versions: Vec<LoaderVersionDto>, recommended: String }`, `InstanceLoaderDto { kind: LoaderKindDto, version: Option<String> }`, `InstanceStatus` (`ready`, `tooNew`, `broken`), `InstanceDto { id: String, name: String, game: String, loader: Option<InstanceLoaderDto>, memory_mb: Option<u32>, last_played: Option<u64>, status: InstanceStatus, selected: bool }` (bei `tooNew`/`broken` sind `name` = Id und `game` leer), `CreateInstanceRequest { name: String, game: String, loader: Option<InstanceLoaderDto> }`, `OpenTarget` (`#[serde(tag = "kind")]`: `DataDir`, `Instance { id: String }`), `UrlTarget` ergänzt um `DeviceLogin`.
-  - Commands: `loader_versions(kind: LoaderKindDto, game: String) -> Result<LoaderVersionsDto, ErrorDto>` (`recommended` = `pick_version(&list, None, kind, &game)`); `instances_list() -> Result<Vec<InstanceDto>, ErrorDto>` (ruft zuerst `adopt` mit den Ids aus dem gecachten Manifest; ohne Manifest-Cache keine Übernahme); `instance_create(req: CreateInstanceRequest) -> Result<InstanceDto, ErrorDto>` (prüft `game` gegen die Versionsliste und, mit Loader, die Version gegen `list_versions`; wählt die neue Instanz in den Einstellungen; `DataChanged(Instances)`); `instance_select(id: String) -> Result<(), ErrorDto>`; `instance_delete(id: String) -> Result<(), ErrorDto>` (Ordner per `trash::delete` in den Papierkorb; war sie gewählt, wird `selected_instance` `None`; `DataChanged(Instances)`); `open_location(target: OpenTarget) -> Result<(), ErrorDto>`; `open_url(target: UrlTarget) -> Result<(), ErrorDto>`.
-  - Serialisierung: `AppState.instance_lock: tokio::sync::Mutex<()>` umschließt `instance_create` und `instance_delete`; ein zweiter Aufruf, während einer läuft, wartet nicht, sondern bekommt `ErrorCode::Busy` (neu).
-  - `open.rs`: `fn resolve_location(paths: &Paths, t: &OpenTarget) -> Result<PathBuf>` (`Instance`: `validate_id`, Ordner muss existieren, sonst `InstanceNotFound`), `fn resolve_url(t: &UrlTarget) -> &'static str` mit `Repository` = `https://github.com/clemensjl/hengst-client`, `SignInHelp` = `https://github.com/clemensjl/hengst-client#readme`, `XboxSignup` = `https://www.xbox.com/`, `MinecraftProfile` = `https://www.minecraft.net/msaprofile/mygames/editprofile`, `DeviceLogin` = `https://www.microsoft.com/link`. Öffnen über `tauri_plugin_opener::OpenerExt` (`open_path`, `open_url`).
+  - DTOs: `LoaderKindDto` (serialisiert als der Kern-Slug: `"fabric"`, `"quilt"`, `"legacy-fabric"`, `"forge"`, `"neoforge"`; Abbildung auf `LoaderKind` in beide Richtungen, ts-rs-Union genau dieser Strings, kein eigenes camelCase), `LoaderInfoDto { kind: LoaderKindDto, display_name: String }` (Anzeigename aus `LoaderKind::display_name`, die einzige Quelle für Loader-Namen in der Oberfläche), `LoaderVersionDto { id: String, stable: bool }`, `LoaderVersionsDto { versions: Vec<LoaderVersionDto>, recommended: String }`, `InstanceLoaderDto { kind: LoaderKindDto, display_name: String, version: Option<String> }` (Slug und Anzeigename), `InstanceStatus` (`ready`, `tooNew`, `broken`), `InstanceDto { id: String, name: String, game: String, loader: Option<InstanceLoaderDto>, memory_mb: Option<u32>, last_played: Option<u64>, status: InstanceStatus, selected: bool }` (bei `tooNew`/`broken` sind `name` = Id und `game` leer), `CreateInstanceRequest { name: String, game: String, loader: Option<LoaderRequestDto> }` mit `LoaderRequestDto { kind: LoaderKindDto, version: Option<String> }` (die Oberfläche schickt nur Slug und Version, nie einen Anzeigenamen), `OpenTarget` (`#[serde(tag = "kind", rename_all = "camelCase")]`: `DataDir`, `Instance { id: String }`). `UrlTarget` gibt es seit Task 4 (mit `DeviceLogin`).
+  - Commands (Einträge in `command_list.rs`: `instances::loader_kinds`, `instances::loader_versions`, `instances::instances_list`, `instances::instance_create`, `instances::instance_select`, `instances::instance_delete`, `open::open_location`): `loader_kinds() -> Result<Vec<LoaderInfoDto>, ErrorDto>` (Reihenfolge Fabric, Quilt, Legacy Fabric, Forge, NeoForge); `loader_versions(kind: LoaderKindDto, game: String) -> Result<LoaderVersionsDto, ErrorDto>` (`recommended` = `pick_version(&list, None, kind, &game)`); `instances_list() -> Result<Vec<InstanceDto>, ErrorDto>` (nimmt `instance_lock`, ruft zuerst `adopt` mit den Ids aus dem gecachten Manifest, ohne Manifest-Cache keine Übernahme, dann `list`); `instance_create(req: CreateInstanceRequest) -> Result<InstanceDto, ErrorDto>` (prüft `game` gegen die Versionsliste und, mit Loader, die Version gegen `list_versions`; wählt die neue Instanz in den Einstellungen über `SettingsHandle::update`; `DataChanged(Instances)` und `DataChanged(Settings)`); `instance_select(id: String) -> Result<(), ErrorDto>` (`instances::load(id)` muss `Ready` liefern, sonst `InstanceNotFound`; speichert `selected_instance` über `SettingsHandle::update`); `instance_delete(id: String) -> Result<(), ErrorDto>` (`instances::instance_dir(id)` muss gelingen: unbekannte Ids, unsichere Ids und CLI-Ordner ohne `instance.json` werden **abgelehnt, der Ordner bleibt unberührt**; dann `trash::delete` in den Papierkorb; war sie gewählt, wird `selected_instance` `None`; `DataChanged(Instances)`); `open_location(target: OpenTarget) -> Result<(), ErrorDto>` (`Instance { id }`: `instance_dir`, `DataDir`: der Datenordner). Frontend `client.ts`: `api.loaderKinds()`, `api.loaderVersions(kind, game)`, `api.instancesList()`, `api.instanceCreate(req)`, `api.instanceSelect(id)`, `api.instanceDelete(id)`, `api.openLocation(target)` (`api.openUrl` gibt es seit Task 4).
+  - Serialisierung: `AppState.instance_lock: tokio::sync::Mutex<()>` ist die **eine** Sperre für `instances_list` (einschließlich `adopt`), `instance_create` und `instance_delete`, damit `list`/`adopt` nie einen Ordner übernehmen, den `create` angelegt, aber noch nicht gefüllt hat. `instance_create` und `instance_delete` warten nicht: läuft schon einer von beiden, bekommt der zweite `ErrorCode::Busy` (neu; `try_lock`). `instances_list` wartet kurz auf die Sperre (`lock().await`), damit eine Aktualisierung der Liste nie als Fehler erscheint.
+  - `open.rs` (kommt zu `resolve_url` aus Task 4 hinzu): `fn resolve_location(paths: &Paths, t: &OpenTarget) -> Result<PathBuf>` (`Instance`: `instances::instance_dir`, also `validate_id` und vorhandene `instance.json`, sonst `UnsafePath` bzw. `InstanceNotFound`; angezeigte `tooNew`- und `broken`-Instanzen haben eine `instance.json` und lassen sich öffnen). Öffnen über `tauri_plugin_opener::OpenerExt` (`open_path`).
 
 - [ ] **Step 1: Failing Tests schreiben** (Logik in `*_impl`-Funktionen; Testkit-Mojang-Mock)
 
@@ -855,8 +1284,27 @@ git commit -m "feat(core): instances module with instance.json format 1 and CLI 
 #[tokio::test] async fn list_adopts_cli_folders_when_the_manifest_is_cached() { /* Ordner "9.9-fabric" ohne Datei, Manifest im Cache -> Liste enthält id "9.9-fabric", name "9.9 Fabric" */ }
 #[tokio::test] async fn delete_moves_the_folder_away_and_clears_selection() { /* nach delete existiert der Ordner nicht mehr; selected_instance None; DataChanged(Instances) */ }
 #[tokio::test] async fn create_and_delete_are_serialized() { /* zwei create gleichzeitig (join) -> eins Ok, eins Busy; danach genau ein Ordner */ }
-#[test] fn open_location_refuses_unknown_and_unsafe_ids() { /* Instance { id: "..\\x" } -> UnsafeData; Instance { id: "fehlt" } -> InstanceNotFound */ }
-#[test] fn url_targets_are_fixed_https_urls() { /* alle Varianten beginnen mit "https://" */ }
+#[test] fn open_location_refuses_unknown_and_unsafe_ids() { /* Instance { id: "..\\x" } -> UnsafePath; Instance { id: "fehlt" } -> InstanceNotFound; CLI-Ordner ohne instance.json -> InstanceNotFound; DataDir -> Ok(root) */ }
+#[tokio::test]
+async fn delete_refuses_unknown_and_unlisted_ids() {
+    // Temp-Home: Instanz "9.9" (mit instance.json) und CLI-Ordner "9.9-fabric" mit saves/world/level.dat (ohne instance.json)
+    let r = instance_delete_impl(&state, "..\\x").await;            assert_eq!(r.unwrap_err().code, ErrorCode::UnsafeData);
+    let r = instance_delete_impl(&state, "fehlt").await;            assert_eq!(r.unwrap_err().code, ErrorCode::InstanceNotFound);
+    let r = instance_delete_impl(&state, "9.9-fabric").await;       assert_eq!(r.unwrap_err().code, ErrorCode::InstanceNotFound);
+    assert!(paths.instance("9.9-fabric").join("saves/world/level.dat").is_file(), "an unlisted folder must stay untouched");
+    assert!(instance_delete_impl(&state, "9.9").await.is_ok());
+}
+#[tokio::test]
+async fn select_refuses_unknown_unreadable_and_unlisted_ids() {
+    // "fehlt", "..\\x", CLI-Ordner ohne instance.json, Instanz mit "{" und Instanz mit format 2 -> Err; settings.selected_instance bleibt unverändert
+}
+#[tokio::test]
+async fn list_waits_for_create_and_never_adopts_a_half_made_folder() {
+    // instance_lock halten, instances_list starten -> nach 200 ms noch nicht fertig (is_finished() == false); Lock freigeben -> list endet Ok
+}
+#[tokio::test] async fn loader_kinds_carry_display_names() { /* Legacy Fabric -> kind "legacy-fabric", displayName "Legacy Fabric"; NeoForge -> "neoforge"/"NeoForge" */ }
+#[tokio::test] async fn created_instance_dto_has_slug_and_display_name() { /* create 9.9 + fabric -> loader.kind "fabric", loader.displayName "Fabric" */ }
+#[test] fn instance_dtos_never_contain_a_token() { /* InstanceDto, LoaderVersionsDto, CreateInstanceRequest in tests/no_tokens.rs aufnehmen; "notes" mit FAKE-ACCESS-TOKEN-7f3a in instance.json taucht in keinem DTO auf, weil `extra` nie serialisiert wird */ }
 ```
 Hinweis zum Löschtest: `trash::delete` auf einem Temp-Ordner landet im echten Papierkorb; der Test benutzt einen kleinen Ordner unter `%TEMP%` und ist damit vertretbar. Wer den Papierkorb sauber halten will, setzt `HENGST_TEST_NO_TRASH=1`, dann löscht die Testvariante direkt (nur `cfg(test)`).
 
@@ -875,7 +1323,7 @@ Expected: PASS
 - [ ] **Step 5: Lint, Format, Commit**
 
 ```bash
-git add apps/desktop/src-tauri apps/desktop/src/ipc/bindings apps/desktop/src/i18n apps/desktop/src/features/errors/errorCopy.ts Cargo.lock
+git add apps/desktop/src-tauri/src apps/desktop/src-tauri/tests/no_tokens.rs apps/desktop/src-tauri/capabilities/main.json apps/desktop/src-tauri/Cargo.toml apps/desktop/src/ipc/client.ts apps/desktop/src/ipc/client.test.ts apps/desktop/src/ipc/bindings apps/desktop/src/i18n apps/desktop/src/features/errors/errorCopy.ts Cargo.lock
 git commit -m "feat(desktop): instance commands, loader versions and validated open actions"
 ```
 
@@ -885,16 +1333,15 @@ git commit -m "feat(desktop): instance commands, loader versions and validated o
 
 **Files:**
 - Create: `apps/desktop/src/features/instances/{InstancesView.tsx,InstanceRow.tsx,CreateInstanceDialog.tsx,DeleteInstanceDialog.tsx,naming.ts,versionFilter.ts,naming.test.ts,versionFilter.test.ts,CreateInstanceDialog.test.tsx,InstancesView.test.tsx}`
-- Modify: `apps/desktop/src/ipc/client.ts`, `src/stores/app.ts` (`instances: Resource<InstanceDto[]>`), `src/app/{Shell.tsx,views.ts}`, `src/features/settings/SettingsView.tsx` ("Ordner öffnen" für den Datenordner), `src/features/accounts/SignInDialog.tsx` ("microsoft.com/link öffnen" über `open_url`), `src/i18n/{de.json,en.json}`; shadcn `popover`, `command`, `select`, `radio-group`, `checkbox`, `input`, `label`, `skeleton`, `tooltip`
+- Modify: `apps/desktop/src/stores/app.ts` (`instances: Resource<InstanceDto[]>`), `src/app/{Shell.tsx,views.ts}`, `src/features/settings/SettingsView.tsx` ("Ordner öffnen" für den Datenordner über `api.openLocation({ kind: "dataDir" })`), `src/i18n/{de.json,en.json}`, `apps/desktop/package.json`, `pnpm-lock.yaml`, `components.json`; shadcn `popover`, `command`, `select`, `checkbox`, `input`, `label` per `pnpm dlx shadcn@4.23.0 add` (`radio-group`, `skeleton`, `tooltip`, `sonner` kamen in Task 3, `dialog`, `alert-dialog`, `dropdown-menu`, `badge` in Task 8). Die Client-Funktionen (`api.loaderKinds` bis `api.openLocation`) gibt es seit Task 10, `api.openUrl` seit Task 4: dieser Task fügt keine Commands hinzu
 
 **Interfaces:**
-- Consumes: Commands aus Task 10, `game_versions` (Task 2), `ErrorPanel`, Store.
+- Consumes: Commands und `api.*` aus Task 10, `game_versions` (Task 2), `ErrorPanel`, Store.
 - Produces:
-  - `api.loaderVersions(kind, game)`, `api.instancesList()`, `api.instanceCreate(req)`, `api.instanceSelect(id)`, `api.instanceDelete(id)`, `api.openLocation(target)`, `api.openUrl(target)`.
   - `versionFilter.ts`: `filterVersions(list: GameVersionDto[], f: VersionFilter, query: string): GameVersionDto[]` (Suche als Teilstring ohne Groß-/Kleinschreibung auf `id`), `DEFAULT_FILTER: VersionFilter = { release: true, snapshot: false, beta: false, alpha: false }`.
-  - `naming.ts`: `suggestName(game: string, loader: LoaderKindDto | null): string` (`"1.20.1 Forge"`, `"1.21.11"`), `LOADER_LABEL: Record<LoaderKindDto, string>` (Eigennamen, nicht übersetzt); der Name folgt der Auswahl, bis der Nutzer das Feld selbst ändert.
+  - `naming.ts`: `suggestName(game: string, loader: LoaderInfoDto | null): string` (`"1.20.1 Forge"`, `"1.21.11"`); es gibt keine eigene Tabelle mit Loader-Namen im Frontend: Anzeigenamen kommen ausschließlich aus `LoaderInfoDto.displayName` (`loader_kinds`, Quelle `LoaderKind::display_name` im Kern), geschickt wird nur der Slug `kind`. Der Name folgt der Auswahl, bis der Nutzer das Feld selbst ändert.
   - `InstancesView`: Kopf mit h1 "Instanzen" und Hauptaktion "Instanz anlegen"; Liste (`<ul>` mit Zeilen 48 px): Name, daneben zwei Spalten "Version" und "Loader" (z. B. "Forge 47.4.28") in sekundärer Schrift, keine mit Mittelpunkten verketteten Meta-Strings, rechts "Zuletzt gespielt" (`Intl.RelativeTimeFormat`, "Noch nie gespielt"); Klick auf Zeile wählt (`aria-pressed`/Häkchen), Zeilenmenü (DropdownMenu, Icon-Knopf mit Namen "Aktionen für {{name}}"): "Ordner öffnen", "Löschen"; `tooNew`/`broken` als Zeile mit Warn-Badge und nur "Ordner öffnen". Leer-, Lade- (drei Skeleton-Zeilen) und Fehlerzustand nach DESIGN.md.
-  - `CreateInstanceDialog`: Felder in dieser Reihenfolge: Spielversion (Combobox aus Popover + Command, Suche, darunter Filter-Checkboxen Releases/Snapshots/Beta/Alpha), Loader (RadioGroup: Kein Loader, Fabric, Quilt, Legacy Fabric, Forge, NeoForge), Loader-Version (Select; Einträge mit Badge "Empfohlen" bzw. "Instabil"; Vorauswahl `recommended`; ist der Loader für die Version nicht verfügbar, steht dort der übersetzte Hinweis aus `errors.noLoaderVersions` mit `hint` und der Knopf bleibt aus mit dieser Erklärung), Name (Input, Label darüber, Hilfezeile mit fester Höhe). Hauptaktion "Instanz anlegen" (während des Aufrufs "Wird angelegt…", gesperrt), Nebenaktion "Abbrechen". Erfolg: Dialog zu, Toast "{{name}} angelegt", neue Zeile gewählt.
+  - `CreateInstanceDialog`: Felder in dieser Reihenfolge: Spielversion (Combobox aus Popover + Command, Suche, darunter Filter-Checkboxen Releases/Snapshots/Beta/Alpha), Loader (RadioGroup: "Kein Loader" plus die Einträge aus `loader_kinds` in deren Reihenfolge: Fabric, Quilt, Legacy Fabric, Forge, NeoForge, beschriftet mit `displayName`), Loader-Version (Select; Einträge mit Badge "Empfohlen" bzw. "Instabil"; Vorauswahl `recommended`; ist der Loader für die Version nicht verfügbar, steht dort der übersetzte Hinweis aus `errors.noLoaderVersions` mit `hint` und der Knopf bleibt aus mit dieser Erklärung), Name (Input, Label darüber, Hilfezeile mit fester Höhe). Hauptaktion "Instanz anlegen" (während des Aufrufs "Wird angelegt…", gesperrt), Nebenaktion "Abbrechen". Erfolg: Dialog zu, Toast "{{name}} angelegt", neue Zeile gewählt.
   - `DeleteInstanceDialog`: Titel "{{name}} löschen?", Text "Der Ordner mit Welten, Einstellungen und Screenshots wird in den Papierkorb verschoben.", Knöpfe "In den Papierkorb" (destructive) und "Behalten".
 
 - [ ] **Step 1: Zustandsliste** (produkt-regelwerk) für Liste, Anlegen, Löschen in den Bericht; Extremwerte: 0, 1, 40 Instanzen; Name mit 64 Zeichen ("Aleksandra Wiśniewska-Kowalczyks Überlebenswelt mit Freunden 26.3"); Versions-Id `1.14 Pre-Release 1`; Loader-Liste leer; Versionsliste aus Cache ohne Netz.
@@ -906,10 +1353,11 @@ git commit -m "feat(desktop): instance commands, loader versions and validated o
 it("default filter keeps releases only", ...);
 it("query matches case-insensitively and keeps manifest order", ...);   // "PRE" findet "1.14 Pre-Release 1"
 // naming.test.ts
-it("suggests '<game> <Loader>'", () => { expect(suggestName("1.20.1", "forge")).toBe("1.20.1 Forge"); expect(suggestName("1.21.11", null)).toBe("1.21.11"); });
+it("suggests '<game> <Loader>' from the display name", () => { expect(suggestName("1.20.1", { kind: "forge", displayName: "Forge" })).toBe("1.20.1 Forge"); expect(suggestName("1.21.11", null)).toBe("1.21.11"); expect(suggestName("1.8.9", { kind: "legacy-fabric", displayName: "Legacy Fabric" })).toBe("1.8.9 Legacy Fabric"); });
 // CreateInstanceDialog.test.tsx (mockIPC)
 it("double_submit_creates_one_instance", ...);                // zwei Klicks -> instance_create genau einmal, Knopf zeigt Ladezustand
 it("preselects the recommended loader version", ...);
+it("sends only the slug and the version to instance_create", ...);   // loader: { kind: "legacy-fabric", version: "..." }, kein displayName
 it("explains why create is disabled when the loader has no builds", ...);  // Text mit Hinweis sichtbar, Knopf aria-disabled mit aria-describedby
 it("keeps a typed name when the version changes", ...);
 it("keeps inputs after a failed create and shows the error at the form", ...);
@@ -933,12 +1381,12 @@ Expected: PASS
 
 - [ ] **Step 6: Sichtprüfung gegen den Mock und echt**
 
-Gegen `hengst-mock` (wie Task 8): leer, anlegen (Filter umschalten, Suche, Fabric mit Empfohlen, Beta-Version ohne Fabric zeigt Hinweis), Liste, Ordner öffnen (Explorer-Fenster erscheint, `list_windows`), löschen mit Dialog. Zusätzlich ein Debug-Build ohne `e2e` mit echtem Netz: Versionsliste von Mojang, Fabric- und Forge-Versionen für 1.21.11 laden (keine Spielstarts). Vorab per CLI `hengst --home %TEMP%\hengst-4a-t11 launch 1.21.11 --offline Dev --dry-run` einen CLI-Ordner erzeugen: erscheint als "1.21.11" in der Liste. Hell/dunkel, de/en, 960 × 600 und 1920 × 1080 mit 40 Instanzen (per Skript angelegte `instance.json`-Dateien), Tastatur-Durchlauf durch Liste, Menü, Dialog, Combobox. Screenshots nach `evidence/task-11/`.
+Gegen `hengst-mock` (wie Task 8): leer, anlegen (Filter umschalten, Suche, Fabric mit Empfohlen, Beta-Version ohne Fabric zeigt Hinweis), Liste, Ordner öffnen (Explorer-Fenster erscheint, `list_windows`), löschen mit Dialog. Zusätzlich ein Debug-Build ohne `e2e` mit echtem Netz: Versionsliste von Mojang, Fabric- und Forge-Versionen für 1.21.11 laden (keine Spielstarts). Vorab per CLI `hengst --home %TEMP%\hengst-4a-t11 launch 1.21.11 --offline Dev --dry-run` einen CLI-Ordner erzeugen: erscheint als "1.21.11" in der Liste. Hell/dunkel, de/en, 960 × 600 und 1920 × 1080 mit 40 Instanzen (per Skript angelegte `instance.json`-Dateien), Tastatur-Durchlauf durch Liste, Menü, Dialog, Combobox. Screenshots nach `evidence/task-11/`. **CSP- und Prototyp-Prüfung** (neu: Popover, Command/cmdk, Select, Checkbox, Input): Web-Konsole beim Durchklicken lesen, keine CSP-Meldung, `Object.isFrozen(Object.prototype)` ist `true`; cmdk und Popover-Positionierung setzen Styles per Attribut (erlaubt über `style-src-attr`), ein Inline-`<style>`-Element dagegen nur mit Nonce oder Hash, nie mit `'unsafe-inline'` (Regel in Global Constraints).
 
 - [ ] **Step 7: Lint, Format, Commit**
 
 ```bash
-git add apps/desktop/src apps/desktop/package.json apps/desktop/pnpm-lock.yaml
+git add apps/desktop/src apps/desktop/src-tauri/tauri.conf.json apps/desktop/components.json apps/desktop/package.json apps/desktop/pnpm-lock.yaml
 git commit -m "feat(desktop): instances view with create and delete dialogs"
 ```
 
@@ -948,7 +1396,7 @@ git commit -m "feat(desktop): instances view with create and delete dialogs"
 
 **Files:**
 - Create: `apps/desktop/e2e/{wdio.conf.ts,setup-driver.ps1,specs/accounts.e2e.ts,specs/instances.e2e.ts,support/app.ts}`
-- Modify: `apps/desktop/package.json` (devDependencies `@wdio/cli`, `@wdio/local-runner`, `@wdio/mocha-framework`, `@wdio/spec-reporter`, `tsx`; Skript `e2e`), `apps/desktop/src-tauri/src/startup.rs` (nur falls nötig: `e2e`-Build überspringt `window-state`, damit jede Sitzung mit derselben Größe startet)
+- Modify: `apps/desktop/package.json` (devDependencies `@wdio/cli`, `@wdio/local-runner`, `@wdio/mocha-framework`, `@wdio/spec-reporter`, `tsx`; Skript `e2e`; `window.json` wird im `e2e`-Build seit Task 2 weder gelesen noch geschrieben, damit jede Sitzung mit derselben Größe startet)
 - Modify: `CONTRIBUTING.md` (Abschnitt "Desktop app tests", Englisch)
 
 Warum WebDriver und nicht nur agentfenster: Die E2E-Läufe sollen bei jedem größeren Schritt in 4b ohne Menschen und ohne einen zweiten Desktop wiederholbar sein und später im Windows-CI laufen können; `tauri-driver` ist der offiziell unterstützte Weg unter Windows und auf diesem Rechner machbar (WebView2 157.0.4341.60 vorhanden, Treiber lassen sich installieren). agentfenster bleibt das Werkzeug für die Sichtprüfung (Aussehen, Themes, Größen), weil es echte Fenster und Screenshots liefert, aber keine Assertions in einer Testsuite.
@@ -979,6 +1427,10 @@ it("signs in two accounts, switches and signs out", async () => {
 it("uses the code flow on request", async () => { /* "Use a code instead" -> Code sichtbar -> nach Mock-Erfolg Chip mit Namen */ });
 it("shows_not_approved_explanation", async () => { /* Szenario not-approved -> Text "Sign-in is not available yet" sichtbar, kein Konto angelegt */ });
 it("offers the development account in development builds", async () => { /* Menü enthält "Development account" */ });
+it("runs with a frozen prototype and without CSP violations", async () => {
+  expect(await browser.execute(() => Object.isFrozen(Object.prototype))).toBe(true);
+  // Anmelde-Dialog, Kontomenü und Fehlerpanel durchklicken; browser.getLogs("browser") enthält keine Meldung mit "Content Security Policy"
+});
 // instances.e2e.ts
 it("creates, lists and deletes an instance", async () => {
   // "No instances yet" sichtbar -> "Create instance" -> Version "9.9" -> Loader "Fabric" -> Loader-Version zeigt "0.99.0" mit "Recommended"
@@ -997,7 +1449,7 @@ Expected: alle Specs PASS; kein Fenster bleibt offen, kein `hengst-mock`-Prozess
 
 Den Dialogtext "Sign out {{name}}?" in `en.json` vorübergehend ändern, `pnpm build` und E2E erneut: genau der Abmelden-Test scheitert. Änderung zurücknehmen.
 
-- [ ] **Step 5: CONTRIBUTING.md ergänzen** (Englisch): Werkzeuge, Befehle aus Step 1 und 3, Hinweis, dass E2E nur Debug-Builds mit `e2e` testet.
+- [ ] **Step 5: CONTRIBUTING.md ergänzen** (Englisch): Werkzeuge, Befehle aus Step 1 und 3, Hinweis, dass E2E nur Debug-Builds mit `e2e` testet; Toolchain: Kern und CLI bauen ab Rust 1.89, `cargo test --workspace` und `cargo clippy --workspace` brauchen wegen der Desktop-Crate Rust 1.90 oder neuer, brauchen aber weder pnpm noch WebView2 (Platzhalter-`dist`, Mock-Laufzeit); Node und pnpm kommen aus `.nvmrc` und `packageManager`.
 
 - [ ] **Step 6: Abschlussprüfung 4a**
 
@@ -1017,7 +1469,8 @@ git commit -m "test(desktop): WebDriver end-to-end tests for accounts and instan
 
 - Abdeckung: Konten (Browser-Login mit PKCE und Loopback, Device Code als Ausweg, mehrere Konten, Wechsel, Abmelden, Token nur im Kern, "nicht freigegeben" erklärt, Dev-Konto nur mit `dev-offline`): Tasks 5 bis 8. Instanzen (anlegen mit Version, Filter, Loader, Loader-Version; listen; löschen; Ordner öffnen; `instance.json` mit Format und Migrationsregel; CLI-Namen): Tasks 9 bis 11; Starten und Stoppen in 4b. Fehler typisiert mit Aktion: Task 4, ergänzt in 5, 9, 10. Sprache, Theme, Datenordner: Task 3 (Rest der Einstellungen 4b). Architekturvorgaben (dünne Schicht, eigene DTOs, Capability, CSP, Single Instance, kleine Zustandshaltung, Typen mit Drift-Test, Barrierefreiheit): Tasks 2, 3, 8, 11. Tests (Rust-Unit, Command-Ebene gegen Mock, Vitest, E2E, Sichtprüfung): je Task, E2E in 12. DESIGN.md vor jedem Screen: Task 1.
 - Folgepunkte aus den Reviews: Auth Code + PKCE (Task 5), typisierte Lock-Fehler (Task 4; `NativesInUse` gibt es schon), Install-Log in der UI (4b Task 16), Job-Objekt (4b Task 13), engere API (4b Task 21), `--resolve-only` (4b Task 21), Wiederverwendung von Prüfergebnissen (ausgeschlossen).
-- Typen: `ErrorDto`, `ErrorCode`, `ErrorAction`, `UrlTarget`, `OpenTarget`, `EventSink`, `AppEvent`/`DataScope`, `OperationId`, `LoaderKindDto` werden in den genannten Tasks eingeführt und später gleich benannt benutzt.
+- Typen: `ErrorDto`, `ErrorCode`, `ErrorAction`, `UrlTarget` (Task 4), `OpenTarget` (Task 10), `EventSink`, `AppEvent`/`DataScope`/`NoticeKind`, `OperationId`/`OpKind`, `Patch`/`SettingsPatch`/`SettingsHandle` (Task 3), `LoaderKindDto`/`LoaderInfoDto` werden in den genannten Tasks eingeführt und später gleich benannt benutzt.
+- Offene Befunde der Vorabprüfung, die der Plan bewusst nicht in 4a erledigt: keine (alle Findings F1 bis F21 sind in den Tasks verankert; `OpenLog { path }` ist nach 4b Task 16 verschoben).
 
 ---
 
@@ -1040,7 +1493,7 @@ git commit -m "test(desktop): WebDriver end-to-end tests for accounts and instan
 
 ### Task 16: Startseite
 - Files: `apps/desktop/src/features/play/{PlayView.tsx,PlayButton.tsx,ProgressPanel.tsx,progress.ts}`.
-- Inhalt: gewählte Instanz mit Name groß (32/40), Version/Loader, "Zuletzt gespielt", Konto-Chip in der Kopfzeile, ein Spielen-Knopf (56 px) mit Zuständen Bereit / Wird vorbereitet (Abbrechen) / Läuft (Beenden, nach 10 s zusätzlich "Sofort beenden") / Kein Konto (Anmelden) / Keine Instanz (Instanz anlegen); Fortschrittsbereich mit Phase, Zählern ("3.402 Dateien"), Installer-Schritt "Schritt 3 von 6: jarsplitter", Link "Installationsprotokoll öffnen" (`OpenTarget::InstallLog { path }`, Pfad muss unter `<root>/logs` liegen und auf `.log` enden). Animation nur am Fortschrittsbalken und Gedrückt-Zustand, Prüfung mit `review-animations`.
+- Inhalt: gewählte Instanz mit Name groß (32/40), Version/Loader, "Zuletzt gespielt", Konto-Chip in der Kopfzeile, ein Spielen-Knopf (56 px) mit Zuständen Bereit / Wird vorbereitet (Abbrechen) / Läuft (Beenden, nach 10 s zusätzlich "Sofort beenden") / Kein Konto (Anmelden) / Keine Instanz (Instanz anlegen); Fortschrittsbereich mit Phase, Zählern ("3.402 Dateien"), Installer-Schritt "Schritt 3 von 6: jarsplitter", Link "Installationsprotokoll öffnen". Dafür kommt hier `ErrorAction::OpenLog { path: String }` zu `ErrorAction` (Task 4) und `OpenTarget::LogFile { path }` zu `OpenTarget` (Task 10); beide laufen durch dieselbe Prüfung `resolve_log_path(paths, path) -> Result<PathBuf>`: der Pfad wird mit `std::fs::canonicalize` aufgelöst (folgt Links und Junctions), das Ergebnis muss unter dem kanonischen `<root>/logs` oder unter `<root>/instances/<id>/logs` (mit gültiger `<id>` laut `instances::instance_dir`) liegen, die Endung muss `.log` sein (ohne Rücksicht auf Groß-/Kleinschreibung), und es muss eine Datei sein; ein Link, der aus diesen Ordnern hinausführt, wird abgelehnt, weil der aufgelöste Pfad draußen liegt. Die Web-Ansicht übergibt nie einen frei gewählten Pfad, sondern nur den, den der Kern in `InstallLog { path }` gemeldet hat. Tests `log_path_outside_the_logs_directories_is_refused`, `log_path_needs_the_log_extension`, `log_path_through_a_junction_out_of_logs_is_refused`, `log_path_traversal_is_refused`. Animation nur am Fortschrittsbalken und Gedrückt-Zustand, Prüfung mit `review-animations`.
 - Tests: `progress.ts`-Reducer (Events → Anzeige), Knopf-Zustände, Doppelklick startet einmal.
 
 ### Task 17: Tray und Fensterverhalten
@@ -1054,18 +1507,18 @@ git commit -m "test(desktop): WebDriver end-to-end tests for accounts and instan
 - Tests: Puffergrenze, Reihenfolge, Rückfüllung nach Neuladen, kein Token in Batches.
 
 ### Task 19: Live-Log in der Oberfläche
-- Files: `apps/desktop/src/features/log/{LogView.tsx,LogToolbar.tsx,logStore.ts}`, Bibliothek Virtuoso (`pick-ui-library`).
+- Files: `apps/desktop/src/features/log/{LogView.tsx,LogToolbar.tsx,logStore.ts}`, Bibliothek Virtuoso (`pick-ui-library`); CSP- und Prototyp-Prüfung aus den Global Constraints (Virtuoso setzt Positionen per `style`-Attribut, kein `'unsafe-inline'` für Style-Elemente).
 - Inhalt: virtualisierte Liste (höchstens 10.000 Zeilen im Speicher), Stufenfilter (Fehler, Warnung, Info, Debug, Sonstige), Suche mit Trefferzahl, "Ans Ende folgen", Kopieren (gefiltert), "Logdatei öffnen", Mono 13/20, Farben `--log-*`.
 - Tests: Filter und Suche im Store, Grenze, Folgen-Logik; Sichtprüfung mit 10.000 Zeilen.
 
 ### Task 20: Einstellungen vollständig und Über
 - Files: `apps/desktop/src/features/settings/*`, `apps/desktop/src-tauri/src/commands/settings.rs`, Dialog-Plugin nur aus Rust (`tauri-plugin-dialog`, ohne JS-Permission) für die Java-Auswahl.
-- Inhalt: Arbeitsspeicher (Zahlfeld mit `inputmode="numeric"`, Schritte 512 MB, Bereich 512 bis 65.536, Hinweis auf installierten RAM), Java-Überschreibung (Rust-Dialog, Prüfung `java.exe -version` mit Zeitlimit), Datenordner (Anzeige, Öffnen), Sprache, Design, "Beim Spielstart in den Infobereich", Über: Version, "Development build"-Badge, "Not an official Minecraft product.", Lizenz GPL-3.0, Drittlizenzen (generiert mit `cargo about` und `pnpm licenses list --json`, als statische Datei ins Bundle), Link zum Repository.
+- Inhalt: Arbeitsspeicher (Zahlfeld mit `inputmode="numeric"`, Schritte 512 MB, Bereich 512 bis 65.536, Hinweis auf installierten RAM), Java-Überschreibung (Rust-Dialog, Prüfung `java.exe -version` mit Zeitlimit; zusätzlich gilt die Prüfung aus `settings_update` (Task 3): der Pfad muss existieren, eine Datei sein und `java.exe` oder `javaw.exe` heißen, auch wenn er nicht aus dem Dialog stammt), Datenordner (Anzeige, Öffnen), Sprache, Design, "Beim Spielstart in den Infobereich", Über: Version, "Development build"-Badge, "Not an official Minecraft product.", Lizenz GPL-3.0, Drittlizenzen (generiert mit `cargo about` und `pnpm licenses list --json`, als statische Datei ins Bundle), Link zum Repository.
 - Tests: Validierung, Java-Prüfung gegen fake-java, Lizenzliste nicht leer.
 
 ### Task 21: Kern-API verengen, `--resolve-only`, CI
 - Files: `crates/hengst-core/src/{lib.rs,auth/mod.rs,loaders/mod.rs}`, `apps/cli/src/main.rs`, `.github/workflows/ci.yml`.
-- Inhalt: öffentliche Oberfläche = was CLI, Desktop und Integrationstests nutzen; `auth::{msa, xbox, minecraft}` und `loaders::{fabric, merge}` werden privat mit Re-Exports (`DeviceCode`, `MsaTokens`, `Profile`, `ProcessRunner`, `SystemRunner`, `JobRunner`); `hengst launch --resolve-only` löst Version und Loader auf und gibt sie aus, ohne Bibliotheken zu laden (für CI-Matrix auf Pull Requests); CI-Job für die Desktop-App (pnpm install, typecheck, Vitest, `bindings_are_current`, `tauri build --debug --no-bundle`); E2E vorerst nur lokal (Treiberversion an den Runner gebunden, Entscheidung in 4b nach einem Versuchslauf).
+- Inhalt: öffentliche Oberfläche = was CLI, Desktop und Integrationstests nutzen; `auth::{msa, xbox, minecraft}` und `loaders::{fabric, merge}` werden privat mit Re-Exports (`DeviceCode`, `MsaTokens`, `Profile`, `ProcessRunner`, `SystemRunner`, `JobRunner`); `hengst launch --resolve-only` löst Version und Loader auf und gibt sie aus, ohne Bibliotheken zu laden (für CI-Matrix auf Pull Requests); CI-Job für die Desktop-App: `desktop-frontend` (pnpm install, typecheck, Vitest, format) und `bindings_are_current` laufen seit 4a Task 2, hier kommt nur `tauri build --debug --no-bundle` dazu; E2E vorerst nur lokal (Treiberversion an den Runner gebunden, Entscheidung in 4b nach einem Versuchslauf).
 
 ### Task 22: E2E für Spielen, Log, Einstellungen und Abschluss
 - Specs: Spielen mit fake-java (Fortschritt, Läuft, Log-Zeilen sichtbar ohne Token, Beenden), Einstellungen (Sprache und Design wechseln, Neustart behält), Tray-Verhalten soweit über WebDriver prüfbar.
