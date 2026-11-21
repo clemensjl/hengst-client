@@ -19,7 +19,10 @@ public interface Platform {
 
     void logWarning(String message);
 
-    /** Replaces the current screen. */
+    /**
+     * Replaces the current screen. Takes effect synchronously: when this returns, the screen is current (the core's
+     * tick fallback relies on that).
+     */
     void openScreen(UiScreen screen);
 
     /**

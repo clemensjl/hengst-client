@@ -89,12 +89,13 @@ public final class HudRenderer {
     }
 
     /**
-     * Draws nothing when suppressed, when the HUD is hidden (F1) or outside a world. Vanilla screens do not hide it.
+     * Draws nothing when suppressed, when the HUD is hidden (F1), outside a world or while the debug overlay (F3) is
+     * open. Vanilla screens do not hide it.
      * A module with zero width or height is skipped; one that throws is disabled until the next rebuild.
      */
     public void render(Canvas canvas, HudContext ctx) {
         GameView game = ctx.platform().game();
-        if (suppressed || game.hudHidden() || !game.inWorld()) {
+        if (suppressed || game.hudHidden() || !game.inWorld() || game.debugOverlayOpen()) {
             return;
         }
         HudModule[] m = modules;

@@ -15,11 +15,12 @@ import io.github.clemensjl.hengst.mod.common.ui.TextWrap;
  * {@code onClose} (see {@link HudEditorClose}) saves, rebuilds the renderer and closes the game screen.
  */
 public final class HudEditorScreen implements UiScreen {
-    private static final int DIM = 0x50000000;
+    private static final int DIM = 0x80000000;
     private static final int FRAME = 0x80FFFFFF;
     private static final int SELECTED = 0xFFFFAA00;
     private static final int LABEL = 0xFFFFFFFF;
-    private static final int HINT_MARGIN = 4;
+    private static final int HINT_BACKING = 0xC0000000;
+    private static final int HINT_PAD = 4;
 
     private final HudEditorModel model;
     private final HudContext ctx;
@@ -28,6 +29,7 @@ public final class HudEditorScreen implements UiScreen {
     // The hint split by word to the canvas width; rebuilt only when the width changes.
     private String[] hintLines = new String[0];
     private int hintForWidth = -1;
+    private int hintBoxW;
     // Labels are built once when the editor opens, never per frame.
     private final String[] labels;
     // A module that threw while drawing is skipped for the rest of the session of this editor.
@@ -55,25 +57,49 @@ public final class HudEditorScreen implements UiScreen {
         int sh = canvas.height();
         canvas.fill(0, 0, sw, sh, DIM);
         int selected = model.selected();
+        // The dragged module is drawn after the hint so the hint never hides it.
+        int dragged = model.dragging() ? selected : -1;
         for (int i = 0; i < model.count(); i++) {
-            if (!model.visible(i)) {
-                continue;
+            if (i != dragged) {
+                drawEntry(canvas, i, i == selected);
             }
-            MutableRect r = model.rect(i);
-            if (model.placeholder(i)) {
-                canvas.text(labels[i], r.x + 1, r.y + 1, LABEL, true);
-            } else if (!failed[i]) {
-                drawModule(canvas, i, r);
-            }
-            frame(canvas, r, i == selected ? SELECTED : FRAME);
         }
+        drawHint(canvas, sw, sh);
+        if (dragged >= 0) {
+            drawEntry(canvas, dragged, true);
+        }
+    }
+
+    private void drawEntry(Canvas canvas, int i, boolean isSelected) {
+        if (!model.visible(i)) {
+            return;
+        }
+        MutableRect r = model.rect(i);
+        if (model.placeholder(i)) {
+            canvas.text(labels[i], r.x + 1, r.y + 1, LABEL, true);
+        } else if (!failed[i]) {
+            drawModule(canvas, i, r);
+        }
+        frame(canvas, r, isSelected ? SELECTED : FRAME);
+    }
+
+    /** The hint block centred on the screen over a padded dark box. Purely visual: it takes no part in hit testing. */
+    private void drawHint(Canvas canvas, int sw, int sh) {
         if (hintForWidth != sw) {
-            hintLines = TextWrap.wrap(canvas, hint, sw);
+            hintLines = TextWrap.wrap(canvas, hint, sw - 2 * HINT_PAD);
             hintForWidth = sw;
+            int widest = 0;
+            for (int k = 0; k < hintLines.length; k++) {
+                widest = Math.max(widest, canvas.textWidth(hintLines[k]));
+            }
+            hintBoxW = widest + 2 * HINT_PAD;
         }
         int lineH = canvas.fontHeight() + 1;
-        // The last line sits just above the bottom edge, earlier lines above it.
-        int y = sh - HINT_MARGIN - canvas.fontHeight() - (hintLines.length - 1) * lineH;
+        int boxH = (hintLines.length - 1) * lineH + canvas.fontHeight() + 2 * HINT_PAD;
+        int bx = (sw - hintBoxW) / 2;
+        int by = (sh - boxH) / 2;
+        canvas.fill(bx, by, bx + hintBoxW, by + boxH, HINT_BACKING);
+        int y = by + HINT_PAD;
         for (int k = 0; k < hintLines.length; k++) {
             canvas.text(hintLines[k], Math.max(0, (sw - canvas.textWidth(hintLines[k])) / 2), y, LABEL, true);
             y += lineH;

@@ -167,8 +167,8 @@ public final class HengstCore {
 
     /**
      * From the version's HUD hook, with a valid canvas of the current GUI scale. Draws the active modules unless the
-     * HUD is hidden (F1), the player is not in a world or one of the mod's own screens is open; vanilla screens
-     * such as chat and inventory do not hide it. {@code partialTick} is currently unused. Allocation free.
+     * HUD is hidden (F1), the player is not in a world, the debug overlay (F3) is open or one of the mod's own
+     * screens is open; vanilla screens such as chat and inventory do not hide it. {@code partialTick} is currently unused. Allocation free.
      */
     public void onHudRender(Canvas canvas, float partialTick) {
         try {
@@ -249,8 +249,8 @@ public final class HengstCore {
     }
 
     /**
-     * Once per key-binding press of the settings key, only in a world. Does nothing if one of the mod's screens is
-     * already open.
+     * Once per key-binding press of the settings key. Opening only in a world is the adapter's duty: it checks that
+     * before calling, the core does not. Does nothing if one of the mod's screens is already open.
      *
      * <p>Screen removal rule: when the game removes a mod screen (any reason), the adapter first marks its host
      * screen as removed and then forwards {@code closed()} to the {@link UiScreen}. The core answers with

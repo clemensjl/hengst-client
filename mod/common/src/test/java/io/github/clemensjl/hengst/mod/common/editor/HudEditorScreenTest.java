@@ -201,7 +201,7 @@ class HudEditorScreenTest {
         screen.mouseReleased(5, 5, 0);
         canvas.calls.clear();
         screen.render(canvas, 0, 0, 0f);
-        assertEquals("fill 0 0 320 240 50000000", canvas.calls.get(0));
+        assertEquals("fill 0 0 320 240 80000000", canvas.calls.get(0));
         assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("fill") && s.endsWith("ffffaa00")));
         assertTrue(canvas.calls.stream().anyMatch(s -> s.startsWith("fill") && s.endsWith("80ffffff")));
         assertEquals(I18n.load("en_us").get("hengst.editor.hint"), String.join(" ", textLines(canvas)));
@@ -260,7 +260,7 @@ class HudEditorScreenTest {
     }
 
     @Test
-    void render_draws_exact_frames_and_bottom_up_hint() {
+    void render_draws_exact_frames_and_centred_hint_on_a_backing_box() {
         HudEditorScreen screen = screen(() -> {});
         screen.render(canvas, 0, 0, 0f);
         screen.mouseClicked(5, 5, 0);
@@ -268,7 +268,7 @@ class HudEditorScreenTest {
         canvas.calls.clear();
         screen.render(canvas, 0, 0, 0f);
         java.util.List<String> c = canvas.calls;
-        assertEquals("fill 0 0 320 240 50000000", c.get(0));
+        assertEquals("fill 0 0 320 240 80000000", c.get(0));
         // module a (selected, 0,0 40x10)
         assertEquals("push 0.0 0.0 1.0", c.get(1));
         assertEquals("fill 0 0 40 10 ffffffff", c.get(2));
@@ -285,12 +285,111 @@ class HudEditorScreenTest {
         assertEquals("fill 289 101 290 109 80ffffff", c.get(14));
         java.util.List<String> lines = textLines(canvas);
         int n = lines.size();
+        int maxW = 0;
+        for (String line : lines) {
+            maxW = Math.max(maxW, 6 * line.length());
+        }
+        int boxW = maxW + 8;
+        int boxH = (n - 1) * 10 + 9 + 8;
+        int bx = (320 - boxW) / 2;
+        int by = (240 - boxH) / 2;
+        assertEquals("fill " + bx + " " + by + " " + (bx + boxW) + " " + (by + boxH) + " c0000000", c.get(15));
         for (int k = 0; k < n; k++) {
             String line = lines.get(k);
-            int y = 240 - 4 - 9 - (n - 1 - k) * 10;
+            int y = by + 4 + k * 10;
             int x = (320 - 6 * line.length()) / 2;
-            assertEquals("text " + line + " " + x + " " + y + " ffffffff true", c.get(15 + k));
+            assertEquals("text " + line + " " + x + " " + y + " ffffffff true", c.get(16 + k));
         }
+        assertEquals(16 + n, c.size());
+    }
+
+    private static FakeCanvas canvasOfSize(int w, int h) {
+        return new FakeCanvas() {
+            @Override
+            public int width() {
+                return w;
+            }
+
+            @Override
+            public int height() {
+                return h;
+            }
+        };
+    }
+
+    @Test
+    void dim_is_the_first_call_and_covers_the_whole_canvas() {
+        for (int[] size : new int[][] {{320, 240}, {854, 480}}) {
+            FakeCanvas c = canvasOfSize(size[0], size[1]);
+            screen(() -> {}).render(c, 0, 0, 0f);
+            assertEquals("fill 0 0 " + size[0] + " " + size[1] + " 80000000", c.calls.get(0));
+        }
+    }
+
+    /** The backing box of the hint: the fill drawn right after the module frames, parsed as x1 y1 x2 y2. */
+    private static int[] hintBox(FakeCanvas c) {
+        for (String call : c.calls) {
+            if (call.endsWith(" c0000000")) {
+                String[] t = call.split(" ");
+                return new int[] {
+                    Integer.parseInt(t[1]), Integer.parseInt(t[2]), Integer.parseInt(t[3]), Integer.parseInt(t[4])
+                };
+            }
+        }
+        throw new AssertionError("no hint box drawn");
+    }
+
+    @Test
+    void a_module_under_the_hint_box_can_still_be_grabbed_and_empty_space_under_it_is_not() {
+        configs[0].setOffsetX(150);
+        configs[0].setOffsetY(110);
+        HudEditorScreen screen = screen(() -> {});
+        screen.render(canvas, 0, 0, 0f);
+        int[] box = hintBox(canvas);
+        // module a (150,110, 40x10) lies inside the box
+        assertTrue(box[0] < 150 && box[2] > 190 && box[1] < 110 && box[3] > 120);
+        screen.mouseClicked(160, 115, 0);
+        assertEquals(0, model.selected());
+        assertTrue(model.dragging());
+        screen.mouseReleased(160, 115, 0);
+        // empty space inside the box, away from the module: nothing is grabbed and the selection is cleared
+        screen.mouseClicked(box[0] + 2, box[1] + 2, 0);
+        assertEquals(-1, model.selected());
+        assertFalse(model.dragging());
+    }
+
+    @Test
+    void the_dragged_module_is_drawn_after_the_hint() {
+        configs[0].setOffsetX(150);
+        configs[0].setOffsetY(110);
+        HudEditorScreen screen = screen(() -> {});
+        screen.render(canvas, 0, 0, 0f);
+        screen.mouseClicked(160, 115, 0);
+        assertTrue(model.dragging());
+        canvas.calls.clear();
+        screen.render(canvas, 160, 115, 0f);
+        java.util.List<String> c = canvas.calls;
+        int boxIndex = -1;
+        int lastText = -1;
+        int pushA = -1;
+        for (int i = 0; i < c.size(); i++) {
+            if (c.get(i).endsWith(" c0000000")) {
+                boxIndex = i;
+            }
+            if (c.get(i).startsWith("text ")) {
+                lastText = i;
+            }
+            if (c.get(i).startsWith("push 150.0 110.0")) {
+                pushA = i;
+            }
+        }
+        assertTrue(boxIndex > 0 && lastText > boxIndex);
+        assertTrue(pushA > lastText, "dragged module must follow the hint");
+        // and its frame follows too: the last four calls are the selected frame
+        assertEquals("fill 189 111 190 119 ffffaa00", c.get(c.size() - 1));
+        // module b is still drawn once, before the hint
+        assertEquals(1, c.stream().filter(s -> s.startsWith("push 250.0 100.0")).count());
+        assertTrue(c.indexOf("push 250.0 100.0 1.0") < boxIndex);
     }
 
     @Test

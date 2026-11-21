@@ -382,6 +382,18 @@ class HudRendererTest {
     }
 
     @Test
+    void renders_nothing_while_the_debug_overlay_is_open() {
+        HudRenderer r = rendererWith("a", new ModuleConfig[1]);
+        platform.debugOverlayOpen = true;
+        FakeCanvas c = new FakeCanvas();
+        r.render(c, ctx);
+        assertTrue(c.calls.isEmpty());
+        platform.debugOverlayOpen = false;
+        r.render(c, ctx);
+        assertTrue(!c.calls.isEmpty());
+    }
+
+    @Test
     void renders_nothing_outside_a_world() {
         HudRenderer r = rendererWith("a", new ModuleConfig[1]);
         platform.inWorld = false;
