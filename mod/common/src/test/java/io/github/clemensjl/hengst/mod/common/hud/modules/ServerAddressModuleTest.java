@@ -129,6 +129,15 @@ class ServerAddressModuleTest {
     }
 
     @Test
+    void a_section_sign_before_an_ipv6_bracket_does_not_keep_the_port_visible() {
+        assertEquals("[::1]", shown("§[::1]:25565", false));
+        assertEquals("[::1]", shown("§§[::1]:25565", false));
+        assertEquals("[::1]:25565", shown("§[::1]:25565", true));
+        assertEquals("host", shown("§host:25565", false));
+        assertEquals("::1", shown("§::1", false)); // a plain IPv6 literal has no port
+    }
+
+    @Test
     void the_section_sign_is_never_shown() {
         assertEquals("cRed.example", shown("§cRed.example:25565", false));
         assertEquals("cRed.example:25565", shown("§cRed.example:25565", true));

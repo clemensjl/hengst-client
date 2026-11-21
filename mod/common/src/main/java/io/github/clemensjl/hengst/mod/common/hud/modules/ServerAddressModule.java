@@ -94,14 +94,16 @@ public final class ServerAddressModule extends TextHudModule {
 
     /** The text to show, built in the reused builder so that exactly one String is made per change. */
     private String shown(String raw, boolean showPort) {
-        int end = showPort ? raw.length() : portFreeEnd(raw);
         StringBuilder b = sb;
         b.setLength(0);
-        for (int i = 0; i < end; i++) {
+        for (int i = 0; i < raw.length(); i++) {
             char c = raw.charAt(i);
             if (c != SECTION_SIGN) {
                 b.append(c);
             }
+        }
+        if (!showPort) {
+            b.setLength(portFreeEnd(b)); // after stripping: a format sign before "[" must not hide the bracket
         }
         int len = b.length();
         if (len > MAX_CHARS) {
@@ -119,12 +121,21 @@ public final class ServerAddressModule extends TextHudModule {
     }
 
     /** The end of the address without its port (the whole length when there is none). */
-    private static int portFreeEnd(String s) {
+    private static int portFreeEnd(CharSequence s) {
         if (s.length() > 0 && s.charAt(0) == '[') {
-            int close = s.indexOf(']');
+            int close = indexOf(s, ']', 0);
             return close < 0 ? s.length() : close + 1;
         }
-        int colon = s.indexOf(':');
-        return colon >= 0 && s.indexOf(':', colon + 1) < 0 ? colon : s.length();
+        int colon = indexOf(s, ':', 0);
+        return colon >= 0 && indexOf(s, ':', colon + 1) < 0 ? colon : s.length();
+    }
+
+    private static int indexOf(CharSequence s, char c, int from) {
+        for (int i = from; i < s.length(); i++) {
+            if (s.charAt(i) == c) {
+                return i;
+            }
+        }
+        return -1;
     }
 }

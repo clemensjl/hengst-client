@@ -59,14 +59,20 @@ class TextHudModuleFitTest {
     }
 
     private WideGlyphCanvas draw(HudModule module, String id, int width, float scale, Anchor anchor) {
+        return draw(module, id, width, scale, anchor,
+                anchor == Anchor.TOP_RIGHT || anchor == Anchor.BOTTOM_RIGHT ? -2 : 2, anchor == Anchor.BOTTOM_RIGHT ? -2 : 2);
+    }
+
+    private WideGlyphCanvas draw(HudModule module, String id, int width, float scale, Anchor anchor, int offsetX,
+            int offsetY) {
         FeatureRegistry reg = new FeatureRegistry();
         reg.register(module);
         Profile p = new Profile();
         ModuleConfig c = p.module(id);
         c.setEnabled(true);
         c.setAnchor(anchor);
-        c.setOffsetX(anchor == Anchor.TOP_RIGHT || anchor == Anchor.BOTTOM_RIGHT ? -2 : 2);
-        c.setOffsetY(anchor == Anchor.BOTTOM_RIGHT ? -2 : 2);
+        c.setOffsetX(offsetX);
+        c.setOffsetY(offsetY);
         c.setScale(scale);
         c.setBackground(true);
         HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
@@ -91,6 +97,20 @@ class TextHudModuleFitTest {
                     assertTrue(canvas.maxFillRight <= width + 0.5, where + " background " + canvas.maxFillRight);
                 }
             }
+        }
+    }
+
+    @Test
+    void a_too_wide_text_dragged_far_to_the_right_stays_inside_the_screen() {
+        for (float scale : new float[] {1f, 3f}) {
+            Plain m = new Plain();
+            m.show(repeat('M', 120));
+            WideGlyphCanvas canvas = draw(m, "plain", 320, scale, Anchor.TOP_LEFT, 200, 100);
+            String where = "scale " + scale;
+            assertEquals(1, canvas.texts, where);
+            assertTrue(canvas.minLeft >= 0, where + " left " + canvas.minLeft);
+            assertTrue(canvas.maxRight <= 320, where + " right " + canvas.maxRight);
+            assertTrue(canvas.maxFillRight <= 320.5, where + " background " + canvas.maxFillRight);
         }
     }
 
