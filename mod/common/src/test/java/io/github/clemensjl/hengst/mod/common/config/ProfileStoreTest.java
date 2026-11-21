@@ -276,7 +276,7 @@ class ProfileStoreTest {
         assertTrue(json.contains("\"extra\": true"));
         assertTrue(json.contains("\"zIndex\": 7"));
     }
-    private static final String NESTED = "{\"m\":{\"k\":1},\"l\":[1,[2]]}";
+    private static final String NESTED = "{\"m\":{\"k\":1},\"l\":[1,[2]],\"lm\":[{\"k\":1}]}";
 
     @SuppressWarnings("unchecked")
     private static void mutateNested(Object unknown) {
@@ -284,6 +284,7 @@ class ProfileStoreTest {
         ((Map<String, Object>) m.get("m")).put("k", 2L);
         ((List<Object>) m.get("l")).add("added");
         ((List<Object>) ((List<Object>) m.get("l")).get(1)).add(3L);
+        ((Map<String, Object>) ((List<Object>) m.get("lm")).get(0)).put("k", 2L);
     }
 
     private Profile loadedWithNestedUnknowns() throws Exception {
@@ -310,6 +311,64 @@ class ProfileStoreTest {
         mutateNested(d.module("fps").extras.get("zIndex"));
         assertNotEquals(before, Json.write(d.toJson()));
         assertEquals(before, Json.write(c.toJson()));
+    }
+
+    private static Object field(Object target, String name) throws Exception {
+        java.lang.reflect.Field f = target.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(target);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> rawEntry(Profile p, String id) throws Exception {
+        return (Map<String, Object>) ((Map<String, Object>) field(p, "entries")).get(id);
+    }
+
+    private Profile loadedWithRawEntries() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"modules\":{\"fps\":{\"zIndex\":" + NESTED + ",\"options\":{\"o\":" + NESTED + "}},"
+                + "\"waypoints\":{\"zIndex\":" + NESTED + ",\"options\":{\"o\":" + NESTED + "}}}}").getBytes(UTF_8));
+        return store().load("default");   // nothing accessed: the entries are raw
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void mutateRaw(Map<String, Object> entry) {
+        mutateNested(entry.get("zIndex"));
+        mutateNested(((Map<String, Object>) entry.get("options")).get("o"));
+    }
+
+    @Test void copying_entries_that_were_not_accessed_is_deep_including_unknown_modules() throws Exception {
+        Profile a = loadedWithRawEntries();
+        Profile b = a.copy();
+        String before = Json.write(a.toJson());
+        for (String id : new String[] {"fps", "waypoints"}) {
+            mutateRaw(rawEntry(a, id));
+        }
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        Profile c = loadedWithRawEntries();
+        Profile d = c.copy();
+        for (String id : new String[] {"fps", "waypoints"}) {
+            mutateRaw(rawEntry(d, id));
+        }
+        assertNotEquals(before, Json.write(d.toJson()));
+        assertEquals(before, Json.write(c.toJson()));
+    }
+
+    @Test void copying_option_values_that_are_maps_or_lists_is_deep() throws Exception {
+        Object value = Json.parse(NESTED);
+        ModuleConfig a = new Profile().module("fps");
+        a.setOption("o", value);
+        ModuleConfig b = a.copy();
+        String before = Json.write(a.toJson());
+        mutateNested(value);                                   // the original's stored object
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        ModuleConfig c = new Profile().module("fps");
+        c.setOption("o", Json.parse(NESTED));
+        ModuleConfig d = c.copy();
+        mutateNested(JsonObjects.object(JsonObjects.object(d.toJson()).get("options")).get("o"));   // the copy's stored object
+        assertEquals(before, Json.write(c.toJson()));
+        assertNotEquals(before, Json.write(d.toJson()));
     }
 
     @Test void a_module_copy_is_deep_for_unknown_entry_keys() throws Exception {
