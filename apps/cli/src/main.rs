@@ -9,16 +9,19 @@ use hengst_core::auth::store::{load_accounts_file, AccountStore};
 use hengst_core::auth::{client_id, unix_now, AuthEndpoints, MicrosoftAuth};
 use hengst_core::download::http_client;
 use hengst_core::launch::{
-    ensure_launch_allowed, prepare, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+    ensure_launch_allowed, prepare_with_progress, run, Endpoints, LaunchOptions, DEV_OFFLINE,
 };
+use hengst_core::loaders::forge::processors::SystemRunner;
 use hengst_core::loaders::{
     list_versions, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion,
     ResolvedLoader,
 };
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
+use hengst_core::progress::{Progress, Transfer};
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(
@@ -227,7 +230,19 @@ async fn main() -> anyhow::Result<()> {
                     version: loader_version.clone(),
                 }),
             };
-            let prepared = prepare(&paths, &opts, &Endpoints::default()).await?;
+            let sink = Arc::new(|event: Progress| {
+                if let Some(line) = progress_line(&event) {
+                    eprintln!("{line}");
+                }
+            });
+            let prepared = prepare_with_progress(
+                &paths,
+                &opts,
+                &Endpoints::default(),
+                Arc::new(SystemRunner),
+                sink,
+            )
+            .await?;
             if let Some(resolved) = prepared
                 .loader
                 .as_ref()
@@ -317,10 +332,179 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn loader_name(kind: LoaderKind) -> &'static str {
+    match kind {
+        LoaderKind::Fabric => "Fabric",
+        LoaderKind::Quilt => "Quilt",
+        LoaderKind::LegacyFabric => "Legacy Fabric",
+        LoaderKind::Forge => "Forge",
+        LoaderKind::NeoForge => "NeoForge",
+    }
+}
+
+/// 3402 -> "3,402".
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The line printed to stderr for a progress event; `None` for events that stay silent.
+fn progress_line(event: &Progress) -> Option<String> {
+    Some(match event {
+        Progress::ResolvingLoader { kind, game } => {
+            format!("Resolving {} version for {game}", loader_name(*kind))
+        }
+        Progress::DownloadingInstaller { kind } => {
+            format!("Downloading the {} installer", loader_name(*kind))
+        }
+        Progress::Downloading { what, count } => {
+            let n = grouped(*count);
+            match what {
+                Transfer::GameFiles => format!("Downloading {n} game files"),
+                Transfer::Assets => format!("Downloading {n} assets"),
+                Transfer::Java => format!("Preparing the Java runtime ({n} files)"),
+            }
+        }
+        Progress::Downloaded { .. } => return None,
+        Progress::InstallStarted {
+            kind,
+            version,
+            game,
+        } => format!(
+            "Installing {} {version} for {game} (runs the official installer locally)",
+            loader_name(*kind)
+        ),
+        Progress::InstallLog { path } => format!("Install log: {}", path.display()),
+        Progress::InstallStep { index, total, name } => {
+            format!("Step {index} of {total}: {name}")
+        }
+        Progress::VerifyingInstall => "Verifying the install".to_string(),
+        Progress::InstallFinished { elapsed } => {
+            format!(
+                "Install finished in {} s",
+                (elapsed.as_millis() + 500) / 1000
+            )
+        }
+        Progress::InstallReused => "Install is up to date, reusing it".to_string(),
+        Progress::Notice { message } => message.clone(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use clap::CommandFactory;
+
+    #[test]
+    fn progress_events_become_plain_lines() {
+        use std::time::Duration;
+        let line = |e: Progress| progress_line(&e);
+        assert_eq!(
+            line(Progress::ResolvingLoader {
+                kind: LoaderKind::Forge,
+                game: "1.20.1".into()
+            })
+            .as_deref(),
+            Some("Resolving Forge version for 1.20.1")
+        );
+        assert_eq!(
+            line(Progress::DownloadingInstaller {
+                kind: LoaderKind::NeoForge
+            })
+            .as_deref(),
+            Some("Downloading the NeoForge installer")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::GameFiles,
+                count: 142
+            })
+            .as_deref(),
+            Some("Downloading 142 game files")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::Assets,
+                count: 3402
+            })
+            .as_deref(),
+            Some("Downloading 3,402 assets")
+        );
+        assert_eq!(
+            line(Progress::Downloading {
+                what: Transfer::Java,
+                count: 1234567
+            })
+            .as_deref(),
+            Some("Preparing the Java runtime (1,234,567 files)")
+        );
+        assert_eq!(
+            line(Progress::Downloaded {
+                what: Transfer::Assets
+            }),
+            None
+        );
+        assert_eq!(
+            line(Progress::InstallStarted {
+                kind: LoaderKind::Forge,
+                version: "47.4.28".into(),
+                game: "1.20.1".into()
+            })
+            .as_deref(),
+            Some("Installing Forge 47.4.28 for 1.20.1 (runs the official installer locally)")
+        );
+        assert_eq!(
+            line(Progress::InstallLog {
+                path: PathBuf::from("logs").join("install.log")
+            })
+            .as_deref(),
+            Some(
+                format!(
+                    "Install log: {}",
+                    PathBuf::from("logs").join("install.log").display()
+                )
+                .as_str()
+            )
+        );
+        assert_eq!(
+            line(Progress::InstallStep {
+                index: 3,
+                total: 6,
+                name: "jarsplitter".into()
+            })
+            .as_deref(),
+            Some("Step 3 of 6: jarsplitter")
+        );
+        assert_eq!(
+            line(Progress::VerifyingInstall).as_deref(),
+            Some("Verifying the install")
+        );
+        assert_eq!(
+            line(Progress::InstallFinished {
+                elapsed: Duration::from_millis(26_400)
+            })
+            .as_deref(),
+            Some("Install finished in 26 s")
+        );
+        assert_eq!(
+            line(Progress::InstallReused).as_deref(),
+            Some("Install is up to date, reusing it")
+        );
+        assert_eq!(
+            line(Progress::Notice {
+                message: "another install is running".into()
+            })
+            .as_deref(),
+            Some("another install is running")
+        );
+    }
 
     #[test]
     fn launch_account_and_offline_conflict() {

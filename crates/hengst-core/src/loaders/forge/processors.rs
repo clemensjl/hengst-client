@@ -18,6 +18,7 @@ use super::installer::{extract_files, ModernProfile, Processor};
 use crate::download::sha1_file;
 use crate::libraries::maven_path;
 use crate::paths::{join_relative, validate_sha1};
+use crate::progress::Progress;
 use crate::version::VersionJson;
 use crate::{Error, Result};
 
@@ -697,11 +698,6 @@ pub trait ProcessRunner: Send + Sync {
     /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none), or
     /// `None` when it did not finish within `timeout` and was killed.
     fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>>;
-
-    /// Tells the user about a wait (another launch is installing the same version).
-    fn notice(&self, message: &str) {
-        eprintln!("{message}");
-    }
 }
 
 /// Starts the real process.
@@ -738,6 +734,15 @@ pub const CLEARED_JAVA_ENV: [&str; 4] = [
     "JDK_JAVA_OPTIONS",
     "CLASSPATH",
 ];
+
+/// The artifact id of a Maven coordinate (`group:artifact:version[:classifier][@ext]`).
+fn artifact_id(coordinate: &str) -> String {
+    coordinate
+        .split(':')
+        .nth(1)
+        .unwrap_or(coordinate)
+        .to_string()
+}
 
 fn processor_name(c: &ProcessorCommand) -> String {
     format!("processor {} ({})", c.index, c.coordinate)
@@ -776,7 +781,19 @@ pub fn run_processors(
     cwd: &Path,
     log: &Path,
 ) -> Result<()> {
-    run_processors_with(runner, java, cmds, cwd, log, PROCESSOR_TIMEOUT)
+    run_processors_reporting(runner, java, cmds, cwd, log, &|_| {})
+}
+
+/// `run_processors`, reporting `InstallStep` before each processor starts.
+pub fn run_processors_reporting(
+    runner: &dyn ProcessRunner,
+    java: &Path,
+    cmds: &[ProcessorCommand],
+    cwd: &Path,
+    log: &Path,
+    progress: &dyn Fn(Progress),
+) -> Result<()> {
+    run_processors_with(runner, java, cmds, cwd, log, PROCESSOR_TIMEOUT, progress)
 }
 
 /// `run_processors` with an explicit per-processor timeout.
@@ -787,17 +804,23 @@ fn run_processors_with(
     cwd: &Path,
     log: &Path,
     timeout: Duration,
+    progress: &dyn Fn(Progress),
 ) -> Result<()> {
     if let Some(dir) = log.parent() {
         std::fs::create_dir_all(dir)?;
     }
     let mut out = std::fs::File::create(log)?;
     let see = || log.display().to_string();
-    for c in cmds {
+    for (i, c) in cmds.iter().enumerate() {
         let name = processor_name(c);
         let failed = Error::InstallFailed;
         let fail = |e: Error| failed(format!("{name}: {}; see {}", inner(e), see()));
         c.verify_files().map_err(fail)?;
+        progress(Progress::InstallStep {
+            index: i + 1,
+            total: cmds.len(),
+            name: artifact_id(&c.coordinate),
+        });
         writeln!(out, "== {name}: {} {}", c.main_class, c.args.join(" "))?;
         out.flush()?;
         let mut cmd = processor_command(java, c, cwd)?;
@@ -1828,6 +1851,7 @@ mod tests {
             &env.work,
             &log,
             std::time::Duration::from_millis(200),
+            &|_| {},
         )
         .unwrap_err();
         let m = err.to_string();
@@ -1846,6 +1870,7 @@ mod tests {
             &env.work,
             &log,
             std::time::Duration::from_secs(5),
+            &|_| {},
         )
         .unwrap();
         assert_eq!(PROCESSOR_TIMEOUT, std::time::Duration::from_secs(15 * 60));

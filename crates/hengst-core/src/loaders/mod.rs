@@ -9,6 +9,7 @@ use std::str::FromStr;
 use crate::download::{Download, Downloader};
 use crate::libraries;
 use crate::paths::Paths;
+use crate::progress::Progress;
 use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
@@ -189,6 +190,10 @@ pub async fn prepare_loader(
     game: &str,
     env: &Env,
 ) -> Result<LoaderSetup> {
+    dl.report(Progress::ResolvingLoader {
+        kind: req.kind,
+        game: game.to_string(),
+    });
     match req.kind {
         LoaderKind::Fabric | LoaderKind::Quilt | LoaderKind::LegacyFabric => {
             let (version, list_from_cache) = match list_saved(dl, paths, ep, req.kind, game).await {
@@ -247,11 +252,12 @@ pub async fn prepare_loader(
                 game.to_string(),
                 version.maven.clone(),
             );
-            let fi = tokio::task::spawn_blocking(move || {
+            let mut fi = tokio::task::spawn_blocking(move || {
                 forge::open_installer(&p, kind, &g, &maven, installer, sha1)
             })
             .await
             .map_err(|e| std::io::Error::other(format!("installer task failed: {e}")))??;
+            fi.version = version.id.clone();
             let extra_downloads = match &fi.contents.kind {
                 forge::installer::InstallerKind::Modern(profile) => {
                     libraries::resolve(&profile.libraries, env, paths)?.downloads

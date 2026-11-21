@@ -12,6 +12,7 @@ pub mod libraries;
 pub mod loaders;
 pub mod manifest;
 pub mod paths;
+pub mod progress;
 pub mod rules;
 pub mod secret;
 pub mod version;

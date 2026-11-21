@@ -9,6 +9,7 @@ use crate::loaders::merge::merge_version;
 use crate::loaders::{prepare_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader};
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
 use crate::paths::{validate_id, Paths};
+use crate::progress::{self, ProgressSink, Transfer};
 use crate::rules::Env;
 use crate::secret::REDACTED;
 use crate::version::fetch_version;
@@ -103,7 +104,20 @@ pub async fn prepare_with_runner(
     ep: &Endpoints,
     runner: Arc<dyn ProcessRunner>,
 ) -> Result<Prepared> {
-    let dl = Downloader::new(http_client()).with_sha1_cache(paths.sha1_cache());
+    prepare_with_progress(paths, opts, ep, runner, progress::silent()).await
+}
+
+/// `prepare_with_runner` that reports what it is doing to `progress` (see `Progress`).
+pub async fn prepare_with_progress(
+    paths: &Paths,
+    opts: &LaunchOptions,
+    ep: &Endpoints,
+    runner: Arc<dyn ProcessRunner>,
+    progress: ProgressSink,
+) -> Result<Prepared> {
+    let dl = Downloader::new(http_client())
+        .with_sha1_cache(paths.sha1_cache())
+        .with_progress(progress.clone());
     let env = Env::current();
 
     let manifest = fetch_manifest(dl.client(), paths, &ep.manifest).await?;
@@ -176,7 +190,8 @@ pub async fn prepare_with_runner(
     };
     // Maven libraries from loader profiles often carry no hash; nothing is fetched unverified.
     fill_missing_sha1(&dl, &mut downloads).await?;
-    dl.fetch_all(downloads).await?;
+    dl.fetch_all_reporting(downloads, Transfer::GameFiles)
+        .await?;
     if let Some(sha1) = client_sha1.as_ref().filter(|_| merged_jar != vanilla_jar) {
         link_client_jar(&vanilla_jar, &merged_jar, sha1).await?;
     }
@@ -197,8 +212,18 @@ pub async fn prepare_with_runner(
             vanilla_jar.clone(),
         );
         let runner = runner.clone();
+        let progress = progress.clone();
         tokio::task::spawn_blocking(move || {
-            forge::finish_install(&fi, &merged, &paths, &java, &jar, &sha1, runner.as_ref())
+            forge::finish_install(
+                &fi,
+                &merged,
+                &paths,
+                &java,
+                &jar,
+                &sha1,
+                runner.as_ref(),
+                &*progress,
+            )
         })
         .await
         .map_err(|e| std::io::Error::other(format!("install task failed: {e}")))??;

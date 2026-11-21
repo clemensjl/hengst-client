@@ -47,6 +47,7 @@ Requires Rust 1.89 or newer.
 - Fabric, Quilt and Legacy Fabric come from their meta services.
 - Forge is supported from game version 1.7.10 upward, in both installer formats; Forge for older versions is refused. NeoForge is supported from 1.20.1.
 - For Forge and NeoForge the installer is downloaded from the official Forge or NeoForge maven, verified by hash, and its install steps are run locally with the game's Java runtime. This runs third-party installer code on your machine. A `--dry-run` with Forge or NeoForge performs this real install before it prints the command line.
+- The first start of a Forge or NeoForge build takes one to two minutes. The CLI prints one line to stderr for each phase (resolving the build, downloading files, "Step 3 of 6: jarsplitter", "Install finished in 26 s") so the terminal does not look frozen. The output of the installer steps goes to `<data directory>\logs\loader-install-<loader>-<build id>.log`, and the CLI prints its path as "Install log: ..." when the steps start; a failed install names the same log in its error.
 - An install is reused on later launches. An installed Fabric, Quilt, Forge or NeoForge version also starts offline.
 - Every library, jar and installer download is hash-verified; a file without a published hash is refused.
 

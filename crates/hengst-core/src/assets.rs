@@ -1,5 +1,6 @@
 use crate::download::{Download, Downloader};
 use crate::paths::{join_relative, validate_id, validate_sha1, Paths};
+use crate::progress::Transfer;
 use crate::version::AssetIndexRef;
 use crate::Result;
 use serde::Deserialize;
@@ -63,7 +64,7 @@ pub async fn install_assets(
             });
         }
     }
-    dl.fetch_all(downloads).await?;
+    dl.fetch_all_reporting(downloads, Transfer::Assets).await?;
 
     let assets_root = paths.assets();
     let game_assets = if parsed.map_to_resources {

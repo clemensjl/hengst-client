@@ -1,4 +1,5 @@
 use crate::paths::{remove_stale_temps, unique_temp, validate_sha1};
+use crate::progress::{self, Progress, ProgressSink, Transfer};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
 use sha1::{Digest, Sha1};
@@ -67,6 +68,7 @@ pub struct Downloader {
     concurrency: usize,
     retries: u32,
     sha1_cache: Option<PathBuf>,
+    progress: ProgressSink,
 }
 
 impl Downloader {
@@ -76,7 +78,18 @@ impl Downloader {
             concurrency: 16,
             retries: 3,
             sha1_cache: None,
+            progress: progress::silent(),
         }
+    }
+
+    /// Sends the progress events of everything done through this downloader to `sink`.
+    pub fn with_progress(mut self, sink: ProgressSink) -> Self {
+        self.progress = sink;
+        self
+    }
+
+    pub fn report(&self, event: Progress) {
+        (self.progress)(event);
     }
 
     /// Remembers hashes fetched from `<url>.sha1` in this directory (see `Paths::sha1_cache`),
@@ -111,6 +124,24 @@ impl Downloader {
             .try_collect()
             .await?;
         Ok(results.into_iter().filter(|d| *d).count())
+    }
+
+    /// `fetch_all`, announcing the batch (`Downloading`, `Downloaded`) when at least one target
+    /// file is missing. Existing files are not hashed to decide that.
+    pub async fn fetch_all_reporting(&self, items: Vec<Download>, what: Transfer) -> Result<usize> {
+        let mut seen = HashSet::new();
+        let count = items
+            .iter()
+            .filter(|d| seen.insert(&d.path) && !d.path.exists())
+            .count();
+        if count > 0 {
+            self.report(Progress::Downloading { what, count });
+        }
+        let fetched = self.fetch_all(items).await?;
+        if count > 0 {
+            self.report(Progress::Downloaded { what });
+        }
+        Ok(fetched)
     }
 
     /// Returns `Ok(false)` if the file already existed and was valid.

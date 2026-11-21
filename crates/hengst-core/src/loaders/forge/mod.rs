@@ -13,12 +13,13 @@ use self::installer::{
     InstallerKind,
 };
 use self::processors::{
-    install_state_valid, plan, run_processors, write_marker, InstallEnv, ProcessRunner,
+    install_state_valid, plan, run_processors_reporting, write_marker, InstallEnv, ProcessRunner,
 };
 use super::{sort_newest_first, LoaderEndpoints, LoaderKind, LoaderVersion};
 use crate::download::{fill_missing_sha1, get_bytes, sha1_file, Download, Downloader};
 use crate::libraries::maven_path;
 use crate::paths::{join_relative, validate_id, Paths};
+use crate::progress::Progress;
 use crate::version::VersionJson;
 use crate::{Error, Result};
 
@@ -211,6 +212,9 @@ pub async fn fetch_installer(
         sha1_from_cache: false,
     }];
     let dl = dl.clone().with_sha1_cache(paths.sha1_cache());
+    if !item[0].path.exists() {
+        dl.report(Progress::DownloadingInstaller { kind });
+    }
     fill_missing_sha1(&dl, &mut item).await?;
     let (_, sha1) = dl.fetch_verified(&item[0]).await?;
     let [item] = item;
@@ -306,6 +310,9 @@ pub struct ForgeInstall {
     /// Full Maven version of the requested build: picked from the validated version list, or
     /// mapped from the build the user named (`fetch_named`); never a value read from the installer.
     pub maven: String,
+    /// The build id shown to the user (`47.4.28`). Starts as `maven`; `prepare_loader` sets the
+    /// picked version's id.
+    pub version: String,
     pub installer: PathBuf,
     /// SHA-1 the installer was verified against (the Maven repository's).
     pub installer_sha1: String,
@@ -454,6 +461,7 @@ pub fn open_installer(
         kind,
         game: game.to_string(),
         maven: maven.to_string(),
+        version: maven.to_string(),
         installer,
         installer_sha1,
         contents,
@@ -501,6 +509,7 @@ pub fn install_log(paths: &Paths, kind: LoaderKind, id: &str) -> PathBuf {
 /// install state is still valid, then records it. Blocking; call it off the async runtime.
 /// `java` is the runtime the game itself uses. Profiles without client processors (legacy,
 /// spec 0) have no processor stage and no marker: the provided-artifact check is all.
+#[allow(clippy::too_many_arguments)] // one call site; the inputs are independent
 pub fn finish_install(
     fi: &ForgeInstall,
     merged: &VersionJson,
@@ -509,6 +518,7 @@ pub fn finish_install(
     vanilla_jar: &Path,
     vanilla_sha1: &str,
     runner: &dyn ProcessRunner,
+    progress: &dyn Fn(Progress),
 ) -> Result<()> {
     check_home(paths, fi.kind, &fi.game)?;
     let (root, libraries) = absolute_root(paths)?;
@@ -518,7 +528,11 @@ pub fn finish_install(
         &install_lock_path(paths, &fi.game)?,
         &format!("{} for Minecraft {}", fi.kind, fi.game),
         LockTiming::DEFAULT,
-        &|m| runner.notice(m),
+        &|m| {
+            progress(Progress::Notice {
+                message: m.to_string(),
+            })
+        },
     )?;
     // Read again below (extraction, data files): it must still be the verified file.
     check_installer(&fi.installer, &fi.installer_sha1)?;
@@ -566,29 +580,37 @@ pub fn finish_install(
     } else {
         java.to_path_buf()
     };
-    let result = (|| {
+    let result = (|| -> Result<()> {
         let plan = plan(profile, &env)?;
         if plan.commands.is_empty() {
             return Ok(());
         }
         let marker = marker_path(paths, fi.kind, id);
         if install_state_valid(&plan, merged, &libraries, &marker, &fi.installer_sha1)? {
+            progress(Progress::InstallReused);
             return Ok(());
         }
         match std::fs::remove_file(&marker) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e.into()),
             _ => {}
         }
-        run_processors(
-            runner,
-            &java,
-            &plan.commands,
-            &work,
-            &install_log(paths, fi.kind, id),
-        )?;
+        let log = install_log(paths, fi.kind, id);
+        let started = std::time::Instant::now();
+        progress(Progress::InstallStarted {
+            kind: fi.kind,
+            version: fi.version.clone(),
+            game: fi.game.clone(),
+        });
+        progress(Progress::InstallLog { path: log.clone() });
+        run_processors_reporting(runner, &java, &plan.commands, &work, &log, progress)?;
+        progress(Progress::VerifyingInstall);
         // Now the patched client jar exists and must match version.json too.
         verify_provided(merged, &libraries, None)?;
-        write_marker(&plan, &marker, &fi.installer_sha1)
+        write_marker(&plan, &marker, &fi.installer_sha1)?;
+        progress(Progress::InstallFinished {
+            elapsed: started.elapsed(),
+        });
+        Ok(())
     })();
     if result.is_ok() {
         let _ = std::fs::remove_dir_all(&work);
@@ -1149,6 +1171,7 @@ mod tests {
                 &self.vanilla,
                 &sha1_hex(b"vanilla"),
                 runner,
+                &|_| {},
             )
         }
         fn marker(&self) -> PathBuf {

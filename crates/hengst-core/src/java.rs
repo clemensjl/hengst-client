@@ -1,5 +1,6 @@
 use crate::download::{get_bytes, Download, Downloader};
 use crate::paths::{join_relative, validate_id, Paths};
+use crate::progress::Transfer;
 use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
@@ -128,7 +129,7 @@ pub async fn ensure_runtime(
             _ => {}
         }
     }
-    dl.fetch_all(downloads).await?;
+    dl.fetch_all_reporting(downloads, Transfer::Java).await?;
     Ok(exe)
 }
 

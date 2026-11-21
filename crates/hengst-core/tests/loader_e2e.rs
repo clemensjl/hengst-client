@@ -2,12 +2,15 @@
 
 use hengst_core::args::Account;
 use hengst_core::download::sha1_hex;
-use hengst_core::launch::{prepare, prepare_with_runner, Endpoints, LaunchOptions};
+use hengst_core::launch::{
+    prepare, prepare_with_progress, prepare_with_runner, Endpoints, LaunchOptions,
+};
 use hengst_core::libraries::maven_path;
 use hengst_core::loaders::forge;
 use hengst_core::loaders::forge::processors::ProcessRunner;
 use hengst_core::loaders::{LoaderEndpoints, LoaderKind, LoaderRequest};
 use hengst_core::paths::Paths;
+use hengst_core::progress::{Progress, ProgressSink};
 use hengst_core::Error;
 use serde_json::{json, Value};
 use std::io::Write;
@@ -790,6 +793,93 @@ async fn prepares_modern_forge_running_its_processors_once() {
         .await
         .unwrap();
     assert_eq!(std::fs::read(&provided).unwrap(), b"provided forge");
+}
+
+fn recording() -> (ProgressSink, Arc<Mutex<Vec<Progress>>>) {
+    let events = Arc::new(Mutex::new(Vec::new()));
+    let sink = events.clone();
+    (Arc::new(move |e| sink.lock().unwrap().push(e)), events)
+}
+
+/// One short word per event, so a test can compare whole sequences.
+fn shape(events: &[Progress]) -> Vec<String> {
+    use hengst_core::progress::Transfer;
+    let what = |t: &Transfer| match t {
+        Transfer::GameFiles => "files",
+        Transfer::Assets => "assets",
+        Transfer::Java => "java",
+    };
+    events
+        .iter()
+        .map(|e| match e {
+            Progress::ResolvingLoader { .. } => "resolving".to_string(),
+            Progress::DownloadingInstaller { .. } => "installer".to_string(),
+            Progress::Downloading { what: w, count } => format!("{} {count}", what(w)),
+            Progress::Downloaded { what: w } => format!("{} done", what(w)),
+            Progress::InstallStarted { kind, version, .. } => {
+                format!("install {kind} {version}")
+            }
+            Progress::InstallLog { .. } => "log".to_string(),
+            Progress::InstallStep { index, total, name } => {
+                format!("step {index}/{total} {name}")
+            }
+            Progress::VerifyingInstall => "verifying".to_string(),
+            Progress::InstallFinished { .. } => "finished".to_string(),
+            Progress::InstallReused => "reused".to_string(),
+            Progress::Notice { message } => format!("notice {message}"),
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn forge_prepare_reports_its_progress_in_order() {
+    let s = MockServer::start().await;
+    mount_forge_1201(&s).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    let o = opts("1.20.1", Some((LoaderKind::Forge, None)));
+    let ep = forge_endpoints(&s.uri());
+
+    let (sink, events) = recording();
+    prepare_with_progress(&paths, &o, &ep, Arc::new(FakeJava::default()), sink)
+        .await
+        .unwrap();
+    let first = shape(&events.lock().unwrap());
+    assert_eq!(
+        first,
+        [
+            "resolving",
+            "installer",
+            "files 42",
+            "files done",
+            "java 1",
+            "java done",
+            "install forge 47.4.28",
+            "log",
+            "step 1/6 installertools",
+            "step 2/6 installertools",
+            "step 3/6 installertools",
+            "step 4/6 jarsplitter",
+            "step 5/6 ForgeAutoRenamingTool",
+            "step 6/6 binarypatcher",
+            "verifying",
+            "finished",
+            "assets 1",
+            "assets done",
+        ]
+    );
+    let log = forge::install_log(&paths, LoaderKind::Forge, FORGE_ID);
+    assert!(events
+        .lock()
+        .unwrap()
+        .contains(&Progress::InstallLog { path: log }));
+
+    // Second prepare: nothing to download, the recorded install is reused, no step runs.
+    let (sink, events) = recording();
+    prepare_with_progress(&paths, &o, &ep, Arc::new(NoStart), sink)
+        .await
+        .unwrap();
+    assert_eq!(shape(&events.lock().unwrap()), ["resolving", "reused"]);
 }
 
 /// NeoForge from the real 26.3 profile, or the same profile rewritten for 1.20.1, where NeoForge
