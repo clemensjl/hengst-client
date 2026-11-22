@@ -1,5 +1,6 @@
 import { Dialog as DialogPrimitive } from "@base-ui/react/dialog";
 import { XIcon } from "lucide-react";
+import { useId } from "react";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
@@ -32,14 +33,8 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
 }
 
 /** The close button is an icon button: it carries its name and a tooltip with the same text. */
-function DialogCloseButton({
-  label,
-  busyReasonId,
-}: {
-  label: string;
-  /** Set while closing is not possible: the id of the visible text that says why. */
-  busyReasonId?: string;
-}) {
+function DialogCloseButton({ label, busyReason }: { label: string; busyReason?: string }) {
+  const reasonId = useId();
   return (
     <Tooltip>
       <TooltipTrigger
@@ -49,15 +44,27 @@ function DialogCloseButton({
             aria-label={label}
             // Not `disabled`: a disabled button cannot be reached to learn why. The dialog's own
             // close handler refuses while the reason holds.
-            aria-disabled={busyReasonId ? true : undefined}
-            aria-describedby={busyReasonId}
-            render={<Button variant="ghost" size="icon" className="absolute top-3 right-3" />}
+            aria-disabled={busyReason ? true : undefined}
+            aria-describedby={busyReason ? reasonId : undefined}
+            render={
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-3 right-3 aria-disabled:text-text-disabled"
+              />
+            }
           />
         }
       >
         <XIcon aria-hidden="true" />
+        {busyReason && (
+          <span id={reasonId} className="sr-only">
+            {busyReason}
+          </span>
+        )}
       </TooltipTrigger>
-      <TooltipContent>{label}</TooltipContent>
+      {/* While closing waits, the tooltip says why (a disabled control needs a visible reason). */}
+      <TooltipContent>{busyReason ?? label}</TooltipContent>
     </Tooltip>
   );
 }
@@ -66,12 +73,13 @@ function DialogContent({
   className,
   children,
   closeLabel,
-  closeBusyReasonId,
+  closeBusyReason,
   ...props
 }: DialogPrimitive.Popup.Props & {
   /** The name of the close button; without it the dialog has none. */
   closeLabel?: string;
-  closeBusyReasonId?: string;
+  /** Set while closing is not possible: why. Shown as the tooltip and described to assistive technology. */
+  closeBusyReason?: string;
 }) {
   return (
     <DialogPrimitive.Portal>
@@ -85,7 +93,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        {closeLabel && <DialogCloseButton label={closeLabel} busyReasonId={closeBusyReasonId} />}
+        {closeLabel && <DialogCloseButton label={closeLabel} busyReason={closeBusyReason} />}
       </DialogPrimitive.Popup>
     </DialogPrimitive.Portal>
   );

@@ -89,7 +89,8 @@ function CodeView({
   const [announcement, setAnnouncement] = useState("");
   useEffect(() => {
     setAnnouncement(t("signIn.code.announce", { code: Array.from(state.userCode).join(" ") }));
-  }, [t, state.userCode]);
+    // Once per code: a change of language does not announce it again.
+  }, [state.userCode]);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -426,17 +427,11 @@ export function SignInDialog({
       <DialogContent
         className="w-140"
         closeLabel={t("common.close")}
-        closeBusyReasonId={state.phase === "completing" ? "sign-in-busy-reason" : undefined}
+        closeBusyReason={state.phase === "completing" ? t("signIn.closeBusy") : undefined}
         initialFocus={primaryRef}
         finalFocus={chipRef}
       >
         <DialogTitle>{title}</DialogTitle>
-        {/* Why the close button waits; read through its aria-describedby, there only while it waits. */}
-        {state.phase === "completing" && (
-          <span id="sign-in-busy-reason" className="sr-only">
-            {t("signIn.closeBusy")}
-          </span>
-        )}
         <DialogBody>
           <Body signIn={signIn} copyRef={copyRef} bodyRef={bodyRef} devOffline={devOffline} />
         </DialogBody>

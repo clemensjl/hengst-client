@@ -40,7 +40,7 @@ export async function setup(
 ) {
   const backend = fakeBackend({ accounts, canSignIn: options.canSignIn ?? true });
   render(
-    <TooltipProvider>
+    <TooltipProvider delay={0}>
       <AccountChip />
       <AccountDialogs />
     </TooltipProvider>,

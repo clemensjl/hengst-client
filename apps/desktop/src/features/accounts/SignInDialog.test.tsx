@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { toast } from "sonner";
 import { describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import i18n from "@/i18n";
 import { AccountChip } from "@/features/accounts/AccountChip";
 import { AccountDialogs } from "@/features/accounts/AccountDialogs";
 import { useApp } from "@/stores/app";
@@ -394,6 +395,37 @@ describe("SignInDialog focus, announcements and races", () => {
     expect(live.closest("[aria-live]")?.getAttribute("aria-live")).toBe("polite");
   });
 
+  it("announces a code once: switching the language does not announce it again", async () => {
+    const backend = await setup();
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(1));
+    act(() => {
+      backend.started();
+      backend.emit({
+        event: "deviceCode",
+        data: {
+          userCode: "ABCD1234",
+          verificationUri: "https://www.microsoft.com/link",
+          expiresAt: Math.floor(Date.now() / 1000) + 900,
+        },
+      });
+    });
+    const live = await screen.findByText("Your code is A B C D 1 2 3 4");
+    let changes = 0;
+    const observer = new MutationObserver((records) => (changes += records.length));
+    observer.observe(live, { childList: true, characterData: true, subtree: true });
+    await act(async () => {
+      await i18n.changeLanguage("de");
+    });
+    await act(async () => {});
+    observer.disconnect();
+    expect(changes).toBe(0);
+    expect(live.textContent).toBe("Your code is A B C D 1 2 3 4");
+    await act(async () => {
+      await i18n.changeLanguage("en");
+    });
+  });
+
   it("shows the address the service gave as text, only if it is https", async () => {
     const backend = await setup();
     fireEvent.click(button("Use a code instead"));
@@ -448,6 +480,49 @@ describe("SignInDialog focus, announcements and races", () => {
     });
     // The switch's own cancel ended the browser sign-in; no code sign-in was started after the close.
     expect(backend.count("login_start")).toBe(1);
+  });
+
+  it("escape during the switch whose cancel is refused (the account is being saved) keeps the dialog until the sign-in ends", async () => {
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "browserOpened" }));
+    backend.cancelAnswer = false;
+    fireEvent.click(button("Use a code instead"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(backend.count("login_cancel")).toBeGreaterThanOrEqual(1));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    // Neither a new sign-in nor a close: the browser sign-in is saving and goes on.
+    expect(backend.count("login_start")).toBe(1);
+    expect(screen.queryByRole("dialog")).not.toBeNull();
+    act(() => backend.emit({ event: "completing" }));
+    act(() =>
+      backend.emit({
+        event: "signedIn",
+        data: { account: account("b", "Jonas_T", { selected: true }) },
+      }),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(toast).toHaveBeenCalledWith("Signed in as Jonas_T");
+  });
+
+  it("the close button during completing shows why it waits, as a tooltip as well as a description", async () => {
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => {
+      backend.emit({ event: "browserOpened" });
+      backend.emit({ event: "completing" });
+    });
+    const x = await within(dialog()).findByRole("button", { name: "Close" });
+    expect(x.getAttribute("aria-disabled")).toBe("true");
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    act(() => x.focus());
+    await waitFor(() =>
+      expect(document.querySelector("[data-slot=tooltip-content]")?.textContent).toBe(
+        "Closing works once the sign-in is done",
+      ),
+    );
   });
 
   it("a rejected login_cancel still closes the dialog and raises no unhandled rejection", async () => {

@@ -720,6 +720,28 @@ async fn slow_scenario_delays_every_answer() {
     );
 }
 
+#[tokio::test]
+async fn browser_stalls_scenario_leaves_the_browser_waiting_and_the_code_pending() {
+    let s = Services::start(AuthScenario::BrowserStalls(2)).await;
+    let a = auth(&s);
+    // The device code is issued at once.
+    let start = Instant::now();
+    let code = a.start_device_login().await.unwrap();
+    assert!(start.elapsed() < Duration::from_secs(5));
+    assert!(!code.user_code.is_empty());
+    // The authorize page does not answer: the browser sign-in would wait.
+    let login = a.start_browser_login().await.unwrap();
+    let asked = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_millis(500))
+        .build()
+        .unwrap()
+        .get(login.authorize_url())
+        .send()
+        .await;
+    assert!(asked.unwrap_err().is_timeout());
+}
+
 // ---- recording, isolation ----
 
 #[tokio::test]

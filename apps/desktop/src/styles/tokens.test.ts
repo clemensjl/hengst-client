@@ -16,7 +16,13 @@ import {
 import { buttonVariants } from "@/components/ui/button";
 import { classConflicts, classLiterals } from "./classConflicts";
 import { cnClassLists } from "./cnCalls";
-import { ALLOWED_SAMPLES, BANNED_CLASSES, bannedIn } from "./gatePatterns";
+import {
+  ALLOWED_SAMPLES,
+  ARBITRARY_COLOR_WHY,
+  BANNED_CLASSES,
+  PALETTE_WHY,
+  bannedIn,
+} from "./gatePatterns";
 import { handWritten } from "./sourceFiles";
 
 const THEMES = [":root", ".dark"] as const;
@@ -278,37 +284,72 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
 
   // Each banned pattern must flag its own sample, and the patterns must not be so wide that they
   // flag what the design allows: a pattern that silently stops matching fails here.
-  it("no hand-written source uses a color of Tailwind's default palette", () => {
+  it("no hand-written source uses a color of Tailwind's default palette or an arbitrary color", () => {
     expect(handWritten.length).toBeGreaterThan(10);
     for (const { file, text } of handWritten) {
       expect(
-        bannedIn(text).filter((why) => /default palette/.test(why)),
+        bannedIn(text).filter((why) => why === PALETTE_WHY || why === ARBITRARY_COLOR_WHY),
         file,
       ).toEqual([]);
     }
-    for (const sample of [
+  });
+
+  it("the palette pattern itself flags every spelling of a palette color, the arbitrary pattern every literal color", () => {
+    // Each sample must be flagged by the pattern named for it, not by some other pattern.
+    const palette = [
       "text-red-500",
       "bg-blue-600",
       "bg-white",
+      "bg-black",
       "border-gray-200",
+      "border-t-red-500",
+      "border-x-red-500",
+      "border-b-slate-300",
+      "border-s-green-600",
+      "ring-offset-red-500",
+      "ring-offset-white",
+      "placeholder-red-500",
+      "outline-blue-500",
+      "decoration-pink-500",
+      "divide-zinc-200",
+      "hover:text-red-500",
       "dark:text-zinc-100",
-    ]) {
-      expect(bannedIn(`<i className="${sample}" />`).join(), sample).toMatch(
-        /default palette|white|dark/,
-      );
+      "wide:hover:bg-gray-100",
+    ];
+    for (const sample of palette) {
+      expect(bannedIn(`<i className="${sample}" />`), sample).toContain(PALETTE_WHY);
     }
-    // The design's own names are not the palette.
+    const arbitrary = [
+      "bg-[#fff]",
+      "text-[#123456]",
+      "border-t-[#fff]",
+      "ring-offset-[#fff]",
+      "placeholder-[#fff]",
+      "bg-[rgb(1,2,3)]",
+      "hover:bg-[oklch(0.5_0.1_20)]",
+    ];
+    for (const sample of arbitrary) {
+      expect(bannedIn(`<i className="${sample}" />`), sample).toContain(ARBITRARY_COLOR_WHY);
+    }
+    // The design's own names, sizes and look-alikes are not the palette.
     for (const fine of [
       "text-danger",
       "bg-surface-raised",
       "text-red",
       "bg-blue-ish",
       "border-input",
+      "border-t-2",
+      "border-x",
+      "ring-offset-2",
+      "placeholder-shown",
+      "bg-transparent",
+      "text-[13px]",
+      "border-t-border-strong",
     ]) {
-      expect(
-        bannedIn(fine).filter((why) => /default palette/.test(why)),
-        fine,
-      ).toEqual([]);
+      const flagged = bannedIn(fine).filter(
+        (why) => why === PALETTE_WHY || why === ARBITRARY_COLOR_WHY,
+      );
+      expect(flagged, fine).toEqual([]);
     }
   });
 

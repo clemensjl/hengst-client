@@ -194,6 +194,11 @@ mod tests {
             AuthScenario::from_name("device-expired"),
             Some(AuthScenario::DeviceExpired)
         );
+        assert_eq!(
+            AuthScenario::from_name("browser-stalls:6"),
+            Some(AuthScenario::BrowserStalls(6))
+        );
+        assert_eq!(AuthScenario::from_name("browser-stalls:x"), None);
         assert_eq!(AuthScenario::from_name("device-pending:x"), None);
         assert_eq!(AuthScenario::from_name("slow:abc"), None);
         assert_eq!(AuthScenario::from_name("nope"), None);

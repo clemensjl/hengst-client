@@ -14,16 +14,23 @@ const literal = (s: string): RegExp => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/
 const word = (s: string, why: string): Banned => ({ why, pattern: literal(s), sample: s });
 
 /** The utilities that take a color; an alpha modifier or an arbitrary value on them is ruled out. */
+// Every utility that takes a color, including the side-specific borders (border-t, border-x ...),
+// the ring offset and the placeholder color.
 const COLOR_UTILITY =
-  "(?:bg|text|border|ring|outline|fill|stroke|from|to|via|decoration|shadow|divide|accent|caret)";
+  "(?:bg|text|border(?:-[xytrblse])?|ring(?:-offset)?|outline|fill|stroke|from|to|via|decoration|shadow|divide|accent|caret|placeholder)";
 const VARIANTS = "(?:[a-z0-9-]+:)*";
+
+/** The reasons of two patterns the tests name specifically. */
+export const PALETTE_WHY =
+  "a color of Tailwind's default palette (the palette is reset: only the tokens exist)";
+export const ARBITRARY_COLOR_WHY = "arbitrary color literal";
 
 const PALETTE =
   "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
 
 export const BANNED_CLASSES: Banned[] = [
   {
-    why: "a color of Tailwind's default palette (the palette is reset: only the tokens exist)",
+    why: PALETTE_WHY,
     pattern: new RegExp(
       String.raw`\b${VARIANTS}${COLOR_UTILITY}-(?:white|black|(?:${PALETTE})-\d{2,3})(?![\w-])`,
     ),
@@ -98,7 +105,7 @@ export const BANNED_CLASSES: Banned[] = [
     sample: "bg-[#fff]/50",
   },
   {
-    why: "arbitrary color literal",
+    why: ARBITRARY_COLOR_WHY,
     pattern: new RegExp(
       `\\b${VARIANTS}${COLOR_UTILITY}-\\[(?:#|rgb|hsl|oklch|oklab|lab|lch|color-mix|color:)`,
       "i",

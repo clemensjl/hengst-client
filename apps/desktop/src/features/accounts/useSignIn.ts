@@ -49,6 +49,8 @@ export function useSignIn(language: Language): SignIn {
   const cancelled = useRef(false);
   /** The dialog is being left: nothing may be started any more (a switch under way is dropped). */
   const leaving = useRef(false);
+  /** The answer of the cancel that a switch to the code sent: did it end the browser sign-in? */
+  const switchResult = useRef<Promise<boolean>>(Promise.resolve(false));
 
   // A failure, or any other end, makes the next start possible.
   useEffect(() => {
@@ -108,9 +110,13 @@ export function useSignIn(language: Language): SignIn {
     if (s.phase === "completing") return false;
     if (switching.current) {
       // Escape during the switch to the code: the switch is already cancelling the browser
-      // sign-in; it must not start the code afterwards. Leave now.
+      // sign-in. Leaving is announced first, so the switch does not start the code afterwards;
+      // then its answer decides. Refused (the account is being saved): stay, the terminal event
+      // comes and the dialog behaves as in `completing`.
       leaving.current = true;
-      return true;
+      const ended = await switchResult.current;
+      if (!ended) leaving.current = false;
+      return ended;
     }
     const id = currentOp();
     if (id === null) {
@@ -134,8 +140,9 @@ export function useSignIn(language: Language): SignIn {
     const s = stateRef.current;
     if (s.phase !== "waitingBrowser" || switching.current) return;
     switching.current = true;
-    void api
-      .loginCancel(s.op)
+    const answer = api.loginCancel(s.op);
+    switchResult.current = answer.catch(() => false);
+    void answer
       .then((cancelled) => {
         if (!cancelled) {
           // Saving or already over: no new sign-in; the events of this one go on.

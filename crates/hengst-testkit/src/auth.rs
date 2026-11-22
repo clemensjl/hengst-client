@@ -121,13 +121,18 @@ pub enum AuthScenario {
     /// Everything works, but every answer of the sign-in services waits this long. The Mojang
     /// and Fabric mocks (`mount_mojang`) are not delayed.
     Slow(Duration),
+    /// For looking at the waiting phases of a sign-in by eye: the authorize page never answers
+    /// (the browser sign-in waits), the device code works but its poll answers
+    /// `authorization_pending` this many times first, each token answer taking a second.
+    /// Everything else is as in `Ok`.
+    BrowserStalls(u32),
 }
 
 impl AuthScenario {
     /// The names `hengst-mock` reads from `HENGST_MOCK_SCENARIO`: `ok`, `not-approved`,
     /// `no-xbox`, `declined`, `no-game`, `no-profile`, `refresh-expired`, `refresh-rotates`,
-    /// `network-failure`, `device-pending:<polls>`, `device-slow-down`, `device-expired` and
-    /// `slow:<milliseconds>`.
+    /// `network-failure`, `device-pending:<polls>`, `device-slow-down`, `device-expired`,
+    /// `browser-stalls:<polls>` and `slow:<milliseconds>`.
     pub fn from_name(name: &str) -> Option<AuthScenario> {
         Some(match name {
             "ok" => AuthScenario::Ok,
@@ -144,6 +149,8 @@ impl AuthScenario {
             other => {
                 if let Some(polls) = other.strip_prefix("device-pending:") {
                     AuthScenario::DevicePending(polls.parse().ok()?)
+                } else if let Some(polls) = other.strip_prefix("browser-stalls:") {
+                    AuthScenario::BrowserStalls(polls.parse().ok()?)
                 } else {
                     let ms = other.strip_prefix("slow:")?.parse().ok()?;
                     AuthScenario::Slow(Duration::from_millis(ms))
@@ -375,6 +382,14 @@ impl Respond for Endpoint {
         };
         match st.scenario {
             AuthScenario::Slow(delay) => response.set_delay(delay),
+            // Ten minutes: longer than any look at the screen takes.
+            AuthScenario::BrowserStalls(_) if matches!(self.kind, Kind::Authorize) => {
+                response.set_delay(Duration::from_secs(600))
+            }
+            // Every token answer takes a second, so the pending polls last long enough to look at.
+            AuthScenario::BrowserStalls(_) if matches!(self.kind, Kind::Token) => {
+                response.set_delay(Duration::from_secs(1))
+            }
             _ => response,
         }
     }
@@ -811,7 +826,7 @@ fn device_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTempl
         AuthScenario::DeviceExpired => {
             return oauth_error(400, "expired_token", "the device_code expired")
         }
-        AuthScenario::DevicePending(n) if polls <= n => {
+        AuthScenario::DevicePending(n) | AuthScenario::BrowserStalls(n) if polls <= n => {
             return oauth_error(
                 400,
                 "authorization_pending",
