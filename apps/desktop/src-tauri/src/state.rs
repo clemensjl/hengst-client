@@ -1,3 +1,4 @@
+use crate::accounts::{Accounts, Operations};
 use crate::events::EventHub;
 use crate::settings::{load_settings, SettingsHandle};
 use hengst_core::auth::unix_now;
@@ -14,10 +15,23 @@ pub struct AppState {
     pub events: EventHub,
     pub versions: VersionsCache,
     pub settings: SettingsHandle,
+    pub accounts: Arc<Accounts>,
+    pub operations: Operations,
 }
 
 impl AppState {
+    /// Without a secret store and without sign-in: for tests and tools that do not use accounts.
     pub fn new(paths: Paths, endpoints: Endpoints) -> AppState {
+        let accounts = Accounts::without_secret_store(
+            &paths,
+            "no secret store configured".to_string(),
+            None,
+            Arc::new(|_| Err(())),
+        );
+        AppState::with_accounts(paths, endpoints, accounts)
+    }
+
+    pub fn with_accounts(paths: Paths, endpoints: Endpoints, accounts: Accounts) -> AppState {
         let loaded = load_settings(&paths, unix_now());
         if let Some(reason) = &loaded.blocked {
             eprintln!("settings: {reason}; the defaults are used and nothing is saved until the file can be read");
@@ -28,6 +42,8 @@ impl AppState {
             endpoints,
             events: EventHub::default(),
             versions: VersionsCache::default(),
+            accounts: Arc::new(accounts),
+            operations: Operations::default(),
         }
     }
 }

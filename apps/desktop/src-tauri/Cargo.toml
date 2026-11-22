@@ -21,14 +21,16 @@ dev-offline = ["hengst-core/dev-offline"]
 # Makes the app load its embedded pages instead of the dev server. `tauri build` turns it on; a
 # release build without it fails to compile (see lib.rs).
 custom-protocol = ["tauri/custom-protocol"]
-# Task 7 adds dep:hengst-testkit.
-e2e = []
+# Mock services instead of Microsoft and Mojang, in-memory secrets, a visiting "browser". Debug builds
+# only (compile_error in lib.rs); the kit is not linked without it.
+e2e = ["dep:hengst-testkit"]
 
 [build-dependencies]
 tauri-build = { version = "=2.7.6", features = [] }
 
 [dependencies]
 hengst-core = { path = "../../../crates/hengst-core" }
+hengst-testkit = { path = "../../../crates/hengst-testkit", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 tauri = { version = "=2.12.7", features = [] }
@@ -38,6 +40,8 @@ tokio.workspace = true
 ts-rs = "=12.0.1"
 
 [dev-dependencies]
+hengst-testkit = { path = "../../../crates/hengst-testkit" }
+static_assertions = "1.1"
 tauri = { version = "=2.12.7", features = ["test"] }
 tempfile.workspace = true
 wiremock.workspace = true

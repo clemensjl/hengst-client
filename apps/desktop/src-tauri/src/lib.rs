@@ -23,6 +23,7 @@ macro_rules! handler {
 #[cfg(all(dev, not(debug_assertions)))]
 compile_error!("a release build needs the `custom-protocol` feature, which `pnpm tauri build` adds; without it the app would load the dev server URL");
 
+pub mod accounts;
 #[cfg(test)]
 mod acl_tests;
 pub mod commands;

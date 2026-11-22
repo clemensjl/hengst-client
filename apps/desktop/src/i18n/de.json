@@ -136,5 +136,9 @@
   "errors.offline.launch.body": "Für diese Version fehlen Dateien. Prüfe die Internetverbindung und versuche es erneut.",
   "errors.credentialStore.signIn.title": "Die Anmeldung konnte nicht gespeichert werden",
   "errors.credentialStore.signIn.body": "Die Windows-Anmeldeinformationsverwaltung hat den Zugriff verweigert. Versuche es erneut.",
-  "errors.copyFailed": "Kopieren fehlgeschlagen: Markiere den Text und drücke Strg+C."
+  "errors.copyFailed": "Kopieren fehlgeschlagen: Markiere den Text und drücke Strg+C.",
+  "accounts.loginPage.successTitle": "Microsoft-Anmeldung abgeschlossen",
+  "accounts.loginPage.successBody": "Du kannst zu Hengst Client zurückkehren und diesen Tab schließen. Dort geht es automatisch weiter.",
+  "accounts.loginPage.failureTitle": "Anmeldung nicht abgeschlossen",
+  "accounts.loginPage.failureBody": "Kehre zu Hengst Client zurück. Dort steht, was passiert ist, und du kannst es erneut versuchen."
 }

@@ -1,5 +1,6 @@
 //! Serializable types the web view sees. Core types never cross the IPC boundary.
 
+pub mod accounts;
 pub mod app;
 pub mod error;
 pub mod settings;
@@ -13,6 +14,13 @@ pub type Export = fn(&Config) -> Result<(), ExportError>;
 
 pub const ALL_TYPES: &[Export] = &[
     app::AppInfo::export_all,
+    accounts::AccountKindDto::export_all,
+    accounts::AccountDto::export_all,
+    accounts::AccountsDto::export_all,
+    accounts::LoginMethod::export_all,
+    accounts::LoginPagesDto::export_all,
+    accounts::OperationId::export_all,
+    accounts::LoginEvent::export_all,
     versions::VersionFilter::export_all,
     versions::GameVersionKind::export_all,
     versions::GameVersionDto::export_all,

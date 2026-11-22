@@ -1,5 +1,6 @@
 //! App start: debug arguments, plugins, navigation guard, the main window and its saved state.
 
+use crate::accounts::Accounts;
 use crate::settings::{window_theme, Theme};
 use crate::state::AppState;
 use crate::window_state::{self, MonitorArea, Placement, Size, Tracker, WindowState, DEFAULT_SIZE};
@@ -23,7 +24,8 @@ pub struct StartupArgs {
     pub home: Option<PathBuf>,
     /// `--window-size <W>x<H>`: the inner size, clamped to the minimum and the work area.
     pub window_size: Option<Size>,
-    /// `--e2e-base-url <url>`: wired into the endpoints by Task 7.
+    /// `--e2e-base-url <url>`: the mock services of an `e2e` build (`HENGST_E2E_BASE_URL` is the
+    /// same thing).
     pub e2e_base_url: Option<String>,
 }
 
@@ -296,6 +298,15 @@ fn create_window(
             focused.err()
         ),
     }
+    // A sign-in that is still waiting ends with its window: its listener and tasks are freed.
+    {
+        let handle = app.clone();
+        window.on_window_event(move |event| {
+            if let WindowEvent::Destroyed = event {
+                handle.state::<AppState>().operations.cancel_all();
+            }
+        });
+    }
     // With the setting on System the native background follows the OS theme at runtime too.
     {
         let (themed, handle) = (window.clone(), app.clone());
@@ -340,10 +351,57 @@ fn create_window(
     Ok(())
 }
 
+/// What a real run talks to: Microsoft and Mojang, the Windows Credential Manager, the system
+/// browser. Sign-in is only offered when the build has a client id.
+#[cfg(not(feature = "e2e"))]
+fn services(paths: &Paths, _args: &StartupArgs) -> (Endpoints, Accounts) {
+    use hengst_core::auth::{client_id, AuthEndpoints, MicrosoftAuth};
+    let auth = client_id()
+        .ok()
+        .map(|id| MicrosoftAuth::new(id, AuthEndpoints::default()));
+    let opener = crate::accounts::system_browser_opener();
+    #[cfg(windows)]
+    let accounts = match hengst_core::auth::store::KeyringSecretStore::new() {
+        Ok(store) => Accounts::new(paths, Box::new(store), auth, opener),
+        // The list keeps working; signing in reports `credentialStore`.
+        Err(e) => Accounts::without_secret_store(paths, e.to_string(), auth, opener),
+    };
+    #[cfg(not(windows))]
+    let accounts = Accounts::without_secret_store(
+        paths,
+        "the credential store exists on Windows only".to_string(),
+        auth,
+        opener,
+    );
+    (Endpoints::default(), accounts)
+}
+
+/// The `e2e` build: every service is the test kit's mock at `--e2e-base-url` (or
+/// `HENGST_E2E_BASE_URL`), secrets stay in memory and the "browser" is the kit. Debug builds only.
+#[cfg(feature = "e2e")]
+fn services(paths: &Paths, args: &StartupArgs) -> (Endpoints, Accounts) {
+    use hengst_core::auth::store::MemorySecretStore;
+    use hengst_core::auth::MicrosoftAuth;
+    let base = args
+        .e2e_base_url
+        .clone()
+        .or_else(|| std::env::var("HENGST_E2E_BASE_URL").ok())
+        .expect("the e2e build needs --e2e-base-url or HENGST_E2E_BASE_URL");
+    let auth = MicrosoftAuth::new("e2e-client".into(), hengst_testkit::auth_endpoints(&base));
+    let accounts = Accounts::new(
+        paths,
+        Box::new(MemorySecretStore::default()),
+        Some(auth),
+        crate::accounts::visiting_browser_opener(),
+    );
+    (hengst_testkit::endpoints(&base), accounts)
+}
+
 pub fn run() {
     let args = StartupArgs::from_env();
     let paths = Paths::new(args.home.clone().unwrap_or_else(Paths::default_root));
-    let state = AppState::new(paths.clone(), Endpoints::default());
+    let (endpoints, accounts) = services(&paths, &args);
+    let state = AppState::with_accounts(paths.clone(), endpoints, accounts);
     let theme = state.settings.get().theme;
     let mut context = tauri::generate_context!();
     let debug = cfg!(debug_assertions);

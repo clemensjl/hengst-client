@@ -56,6 +56,9 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
             crate::commands::open::open_url,
+            crate::commands::accounts::accounts_list,
+            crate::commands::accounts::login_cancel,
+            crate::commands::accounts::login_reopen_browser,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -107,5 +110,40 @@ fn open_url_refuses_a_free_url_from_the_web_view() {
         let err = call_with(&app, "main", "open_url", InvokeBody::Json(body)).unwrap_err();
         // Granted to the window, but the argument is not a `UrlTarget`: nothing is opened.
         assert!(!err.to_string().contains("not allowed"), "{err}");
+    }
+}
+
+#[test]
+fn the_main_window_may_call_the_account_commands_and_others_may_not() {
+    let (app, _dir) = app();
+    let list = call(&app, "main", "accounts_list").unwrap();
+    // The development account is the only possible entry (builds with `dev-offline`).
+    let microsoft = list["accounts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|a| a["kind"] == "microsoft")
+        .count();
+    assert_eq!(microsoft, 0);
+    assert_eq!(list["canSignIn"], false);
+    let cancelled = call_with(
+        &app,
+        "main",
+        "login_cancel",
+        InvokeBody::Json(serde_json::json!({ "op": 5 })),
+    );
+    assert_eq!(cancelled.unwrap(), serde_json::json!(false));
+    // An operation that does not run has no address to open again: a typed error, not a panic.
+    let err = call_with(
+        &app,
+        "main",
+        "login_reopen_browser",
+        InvokeBody::Json(serde_json::json!({ "op": 5 })),
+    )
+    .unwrap_err();
+    assert_eq!(err["code"], "invalidInput");
+    for cmd in ["accounts_list", "login_cancel", "login_reopen_browser"] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }
 }

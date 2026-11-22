@@ -1,7 +1,11 @@
-import { invoke } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
+import type { AccountsDto } from "./bindings/AccountsDto";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { ErrorDto } from "./bindings/ErrorDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
+import type { LoginEvent } from "./bindings/LoginEvent";
+import type { LoginMethod } from "./bindings/LoginMethod";
+import type { LoginPagesDto } from "./bindings/LoginPagesDto";
 import type { SettingsDto } from "./bindings/SettingsDto";
 import type { SettingsPatch } from "./bindings/SettingsPatch";
 import type { UrlTarget } from "./bindings/UrlTarget";
@@ -49,4 +53,27 @@ export const api = {
   settingsGet: (): Promise<SettingsDto> => guard(invoke<SettingsDto>("settings_get")),
   settingsUpdate: (change: Partial<SettingsPatch>): Promise<SettingsDto> =>
     guard(invoke<SettingsDto>("settings_update", { patch: { ...KEEP, ...change } })),
+  accountsList: (): Promise<AccountsDto> => guard(invoke<AccountsDto>("accounts_list")),
+  /** `id` is the id of an entry of `accountsList`. */
+  accountSelect: (id: string): Promise<void> => guard(invoke<void>("account_select", { id })),
+  accountRemove: (id: string): Promise<void> => guard(invoke<void>("account_remove", { id })),
+  /**
+   * Starts a sign-in; `onEvent` gets that sign-in's events and nobody else's. The first event is
+   * `started` with the operation id, which can arrive before this resolves. A sign-in that runs
+   * is cancelled by a new one.
+   */
+  loginStart: (
+    method: LoginMethod,
+    pages: LoginPagesDto,
+    onEvent: (e: LoginEvent) => void,
+  ): Promise<number> => {
+    const channel = new Channel<LoginEvent>();
+    channel.onmessage = onEvent;
+    return guard(invoke<number>("login_start", { method, pages, channel }));
+  },
+  /** `true` if the sign-in was still running; its channel then gets `cancelled`. */
+  loginCancel: (op: number): Promise<boolean> => guard(invoke<boolean>("login_cancel", { op })),
+  /** Opens the sign-in page again; the address never reaches the web view. */
+  loginReopenBrowser: (op: number): Promise<void> =>
+    guard(invoke<void>("login_reopen_browser", { op })),
 };

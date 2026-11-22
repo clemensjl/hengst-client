@@ -22,6 +22,21 @@ pub trait SecretStore: Send + Sync {
     fn delete(&self, key: &str) -> Result<()>;
 }
 
+/// A boxed store is a store: the desktop app picks the real or the in-memory one at start-up.
+impl<S: SecretStore + ?Sized> SecretStore for Box<S> {
+    fn get(&self, key: &str) -> Result<Option<Secret>> {
+        (**self).get(key)
+    }
+
+    fn set(&self, key: &str, value: &Secret) -> Result<()> {
+        (**self).set(key, value)
+    }
+
+    fn delete(&self, key: &str) -> Result<()> {
+        (**self).delete(key)
+    }
+}
+
 /// In-memory store for tests.
 #[derive(Default)]
 pub struct MemorySecretStore {
@@ -118,6 +133,14 @@ pub struct StoredAccount {
     pub name: String,
     pub xuid: String,
     pub minecraft_expires_at: u64,
+    /// The saved login stopped working (or could not be cleaned up completely): the user has to
+    /// sign in again. Not written while false, so files stay as older versions know them.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub sign_in_required: bool,
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -188,6 +211,7 @@ impl<S: SecretStore> AccountStore<S> {
             name: s.profile.name.clone(),
             xuid: s.xuid.clone(),
             minecraft_expires_at: s.minecraft_expires_at,
+            sign_in_required: false,
         };
         self.secrets.set(
             &secret_key(&account.uuid, SecretKind::Refresh),
@@ -220,6 +244,22 @@ impl<S: SecretStore> AccountStore<S> {
         file.default = Some(account.uuid.clone());
         self.write(&file)?;
         Ok(account)
+    }
+
+    /// Records that this account has to sign in again (see `StoredAccount::sign_in_required`).
+    /// Touches the file only; a new `save_session` clears the flag.
+    pub fn mark_sign_in_required(&self, selector: &str) -> Result<StoredAccount> {
+        let mut file = self.load()?;
+        let uuid = pick(&file, Some(selector))?.uuid.clone();
+        let account = file
+            .accounts
+            .iter_mut()
+            .find(|a| a.uuid == uuid)
+            .expect("picked from this list");
+        account.sign_in_required = true;
+        let marked = account.clone();
+        self.write(&file)?;
+        Ok(marked)
     }
 
     /// Deletes both tokens and the entry. If it was the default, the first
@@ -474,6 +514,50 @@ mod tests {
             .is_err());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), foreign);
         assert!(!has_secret(&store, UUID_A, SecretKind::Refresh));
+    }
+
+    #[test]
+    fn boxed_secret_store_delegates() {
+        let boxed: Box<dyn SecretStore> = Box::new(MemorySecretStore::default());
+        let dir = tempfile::tempdir().unwrap();
+        let store = AccountStore::new(dir.path().join("accounts.json"), boxed);
+        let acc = store
+            .save_session(&session("Steve", UUID_A, "mc-a", "rt-a"))
+            .unwrap();
+        assert_eq!(
+            store.secret(&acc, SecretKind::Minecraft).unwrap().expose(),
+            "mc-a"
+        );
+        store.remove(UUID_A).unwrap();
+        assert!(matches!(
+            store.secret(&acc, SecretKind::Minecraft),
+            Err(Error::Auth(AuthError::LoginExpired { .. }))
+        ));
+    }
+
+    #[test]
+    fn sign_in_required_is_saved_cleared_by_a_new_session_and_absent_from_old_files() {
+        let (_d, file, store) = fresh();
+        store
+            .save_session(&session("Steve", UUID_A, "mc-a", "rt-a"))
+            .unwrap();
+        // An account without the flag does not write the key (the file stays as the CLI knows it).
+        assert!(!std::fs::read_to_string(&file)
+            .unwrap()
+            .contains("sign_in_required"));
+        assert!(!store.find(Some(UUID_A)).unwrap().sign_in_required);
+        store.mark_sign_in_required(UUID_A).unwrap();
+        assert!(load_accounts_file(&file).unwrap().accounts[0].sign_in_required);
+        // The secrets stay: marking only records that the saved login stopped working.
+        assert!(has_secret(&store, UUID_A, SecretKind::Refresh));
+        store
+            .save_session(&session("Steve", UUID_A, "mc-a2", "rt-a2"))
+            .unwrap();
+        assert!(!load_accounts_file(&file).unwrap().accounts[0].sign_in_required);
+        assert!(matches!(
+            store.mark_sign_in_required("nobody"),
+            Err(Error::Auth(AuthError::AccountNotFound { .. }))
+        ));
     }
 
     #[test]
