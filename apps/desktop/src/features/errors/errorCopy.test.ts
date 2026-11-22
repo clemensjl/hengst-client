@@ -60,9 +60,9 @@ describe("errorKeys", () => {
   });
 
   it("context titles end without a full stop and context bodies end with one, in de and en", () => {
-    // errors.<code>.<context>.title|body: the wording that differs by place (sign-in, launch).
+    // errors.<code>.<context>.title|body: the wording that differs by place (sign-in, launch, folder).
     const contextKeys = Object.keys(en_json).filter((k) =>
-      /^errors\.[a-zA-Z]+\.(signIn|launch)\.(title|body)$/.test(k),
+      /^errors\.[a-zA-Z]+\.(signIn|launch|folder)\.(title|body)$/.test(k),
     );
     expect(contextKeys.length).toBeGreaterThanOrEqual(10);
     for (const json of [de_json, en_json] as Record<string, string>[]) {
@@ -131,7 +131,11 @@ const ALL_CODES = [
   "instanceFormatTooNew",
   "invalidInstanceName",
   "instanceUnreadable",
+  "instanceLinked",
   "recycleBinPartial",
+  "recycleBinFailed",
+  "instanceRunning",
+  "busy",
 ];
 
 describe("wire codes and copy groups", () => {
@@ -152,7 +156,7 @@ describe("wire codes and copy groups", () => {
     "versionsFailed",
     "versionsRefreshFailed",
   ];
-  const CONTEXTS = ["signIn", "launch"];
+  const CONTEXTS = ["signIn", "launch", "folder"];
 
   it("no errors.<group> exists without a matching code or a listed non-code group", () => {
     for (const json of [de_json, en_json] as Record<string, string>[]) {

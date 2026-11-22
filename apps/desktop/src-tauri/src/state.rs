@@ -6,8 +6,13 @@ use hengst_core::launch::Endpoints;
 use hengst_core::manifest::{load_cached, VersionManifest};
 use hengst_core::paths::Paths;
 use hengst_core::Result;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// Moves a folder to the Recycle Bin. The app's one way to remove an instance: it never deletes
+/// permanently. Tests replace it.
+pub type Trasher = Arc<dyn Fn(&Path) -> Result<()> + Send + Sync>;
 
 pub struct AppState {
     pub paths: Paths,
@@ -17,6 +22,13 @@ pub struct AppState {
     pub settings: SettingsHandle,
     pub accounts: Arc<Accounts>,
     pub operations: Operations,
+    /// The one lock of `instances_list` (with its adoption of CLI folders), `instance_create` and
+    /// `instance_delete`: a list never adopts a folder that a create has made but not yet filled.
+    pub instance_lock: tokio::sync::Mutex<()>,
+    /// The instance the app is preparing or running. Always `None` in 4a; 4b sets it. An instance
+    /// the CLI started is invisible to the app and not covered.
+    pub active_instance: Mutex<Option<String>>,
+    pub trasher: Trasher,
 }
 
 impl AppState {
@@ -44,6 +56,9 @@ impl AppState {
             versions: VersionsCache::default(),
             accounts: Arc::new(accounts),
             operations: Operations::default(),
+            instance_lock: tokio::sync::Mutex::new(()),
+            active_instance: Mutex::new(None),
+            trasher: Arc::new(crate::recycle::move_to_recycle_bin),
         }
     }
 }

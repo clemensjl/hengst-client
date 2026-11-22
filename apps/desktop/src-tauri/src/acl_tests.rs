@@ -62,6 +62,13 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
             crate::commands::accounts::login_start,
             crate::commands::accounts::login_cancel,
             crate::commands::accounts::login_reopen_browser,
+            crate::commands::instances::loader_kinds,
+            crate::commands::instances::loader_versions,
+            crate::commands::instances::instances_list,
+            crate::commands::instances::instance_create,
+            crate::commands::instances::instance_select,
+            crate::commands::instances::instance_delete,
+            crate::commands::open::open_location,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -167,5 +174,59 @@ fn the_main_window_may_call_all_six_account_commands_and_others_may_not() {
     ] {
         let err = call(&app, "other", cmd).unwrap_err();
         assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+}
+
+#[test]
+fn the_main_window_may_call_the_instance_commands_and_others_may_not() {
+    let (app, _dir) = app();
+    // Granted: the call gets as far as its arguments and the data (no network is reached with
+    // these values).
+    let kinds = call(&app, "main", "loader_kinds").unwrap();
+    assert_eq!(kinds.as_array().unwrap().len(), 5);
+    assert_eq!(
+        call(&app, "main", "instances_list").unwrap(),
+        serde_json::json!([])
+    );
+    for (cmd, body) in [
+        ("instance_select", serde_json::json!({ "id": "nobody" })),
+        ("instance_delete", serde_json::json!({ "id": "..\\x" })),
+        (
+            "open_location",
+            serde_json::json!({ "target": { "kind": "instance", "id": "nobody" } }),
+        ),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "instanceNotFound", "{cmd}: {err}");
+    }
+    for cmd in [
+        "loader_kinds",
+        "loader_versions",
+        "instances_list",
+        "instance_create",
+        "instance_select",
+        "instance_delete",
+        "open_location",
+    ] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+}
+
+#[test]
+fn open_location_refuses_a_path_from_the_web_view() {
+    let (app, _dir) = app();
+    for body in [
+        serde_json::json!({ "target": { "kind": "path", "path": "C:\\Windows" } }),
+        serde_json::json!({ "target": "C:\\Windows" }),
+        serde_json::json!({ "path": "C:\\Windows" }),
+    ] {
+        let err = call_with(&app, "main", "open_location", InvokeBody::Json(body)).unwrap_err();
+        // Granted to the window, but the argument is not an `OpenTarget`: nothing is opened.
+        assert!(!err.to_string().contains("not allowed"), "{err}");
+        assert!(
+            err.get("code").is_none(),
+            "an argument error, not a command result: {err}"
+        );
     }
 }

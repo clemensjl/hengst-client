@@ -72,9 +72,13 @@ pub fn error_dto(e: &Error) -> ErrorDto {
             put("id", id.clone());
             (ErrorCode::InstanceNotFound, Some(Retry))
         }
-        Error::InstanceUnreadable { id, .. } | Error::InstanceLinked { id } => {
+        Error::InstanceUnreadable { id, .. } => {
             put("id", id.clone());
             (ErrorCode::InstanceUnreadable, None)
+        }
+        Error::InstanceLinked { id } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceLinked, None)
         }
         Error::InstancePartlyMoved { id } => {
             put("id", id.clone());
@@ -714,7 +718,7 @@ mod mapping_tests {
             ),
             row(
                 Error::InstanceLinked { id: "9.9".into() },
-                ErrorCode::InstanceUnreadable,
+                ErrorCode::InstanceLinked,
                 None,
                 &[("id", "9.9")],
             ),
@@ -933,11 +937,15 @@ mod mapping_tests {
             ErrorCode::InstanceFormatTooNew => "instanceFormatTooNew",
             ErrorCode::InvalidInstanceName => "invalidInstanceName",
             ErrorCode::InstanceUnreadable => "instanceUnreadable",
+            ErrorCode::InstanceLinked => "instanceLinked",
             ErrorCode::RecycleBinPartial => "recycleBinPartial",
+            ErrorCode::RecycleBinFailed => "recycleBinFailed",
+            ErrorCode::InstanceRunning => "instanceRunning",
+            ErrorCode::Busy => "busy",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 46] = [
+    const ALL_CODES: [ErrorCode; 50] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -983,7 +991,11 @@ mod mapping_tests {
         ErrorCode::InstanceFormatTooNew,
         ErrorCode::InvalidInstanceName,
         ErrorCode::InstanceUnreadable,
+        ErrorCode::InstanceLinked,
         ErrorCode::RecycleBinPartial,
+        ErrorCode::RecycleBinFailed,
+        ErrorCode::InstanceRunning,
+        ErrorCode::Busy,
     ];
 
     #[test]

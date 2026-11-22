@@ -7,6 +7,7 @@ macro_rules! with_commands {
             app::subscribe_events,
             versions::game_versions,
             open::open_url,
+            open::open_location,
             settings::settings_get,
             settings::settings_update,
             accounts::accounts_list,
@@ -14,7 +15,13 @@ macro_rules! with_commands {
             accounts::account_remove,
             accounts::login_start,
             accounts::login_cancel,
-            accounts::login_reopen_browser
+            accounts::login_reopen_browser,
+            instances::loader_kinds,
+            instances::loader_versions,
+            instances::instances_list,
+            instances::instance_create,
+            instances::instance_select,
+            instances::instance_delete
         )
     };
 }

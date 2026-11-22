@@ -3,6 +3,7 @@
 pub mod accounts;
 pub mod app;
 pub mod error;
+pub mod instances;
 pub mod settings;
 pub mod versions;
 
@@ -20,6 +21,16 @@ pub const ALL_TYPES: &[Export] = &[
     accounts::LoginMethod::export_all,
     accounts::OperationId::export_all,
     accounts::LoginEvent::export_all,
+    instances::LoaderKindDto::export_all,
+    instances::LoaderInfoDto::export_all,
+    instances::LoaderVersionDto::export_all,
+    instances::LoaderVersionsDto::export_all,
+    instances::InstanceLoaderDto::export_all,
+    instances::InstanceStatus::export_all,
+    instances::InstanceDto::export_all,
+    instances::LoaderRequestDto::export_all,
+    instances::CreateInstanceRequest::export_all,
+    instances::OpenTarget::export_all,
     versions::VersionFilter::export_all,
     versions::GameVersionKind::export_all,
     versions::GameVersionDto::export_all,

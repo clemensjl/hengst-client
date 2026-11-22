@@ -11,6 +11,7 @@ use hengst_core::secret::Secret;
 use hengst_core::Error;
 use hengst_desktop_lib::accounts::{Accounts, BrowserOpener, Operations};
 use hengst_desktop_lib::commands::app::app_info_impl;
+use hengst_desktop_lib::commands::instances::{instances_list_impl, loader_kinds_impl};
 use hengst_desktop_lib::dto::accounts::{LoginEvent, LoginMethod};
 use hengst_desktop_lib::dto::settings::SettingsDto;
 use hengst_desktop_lib::error::error_dto;
@@ -159,9 +160,34 @@ async fn no_dto_or_event_contains_a_token() {
             refresh_token: Secret::new(format!("{FAKE}-refresh")),
         })
         .unwrap();
+    // An instance whose file carries the fake token in fields the app does not know (at the top
+    // level and inside "loader") and in its Java path, plus an unreadable one that quotes it.
+    let folder = paths.instance("9.9");
+    std::fs::create_dir_all(&folder).unwrap();
+    std::fs::write(
+        folder.join("instance.json"),
+        serde_json::json!({
+            "format": 1, "name": "Mira_K world", "game": "9.9",
+            "loader": {"kind": "fabric", "version": "0.99.0", "token": FAKE},
+            "java": format!("C:\\{FAKE}\\javaw.exe"), "createdAt": 1, "notes": FAKE,
+            "nested": {"deep": FAKE}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    std::fs::create_dir_all(paths.instance("broken")).unwrap();
+    std::fs::write(
+        paths.instance("broken").join("instance.json"),
+        format!("{{ \"notes\": \"{FAKE}\" "),
+    )
+    .unwrap();
     let state = AppState::new(paths.clone(), Endpoints::default());
 
     let mut seen: Vec<String> = Vec::new();
+    let list = instances_list_impl(&state).await.unwrap();
+    assert_eq!(list.len(), 2);
+    seen.push(serde_json::to_string(&list).unwrap());
+    seen.push(serde_json::to_string(&loader_kinds_impl()).unwrap());
     let accounts = state.accounts.list(&state.settings.get()).unwrap();
     seen.push(serde_json::to_string(&accounts).unwrap());
     seen.push(serde_json::to_string(&app_info_impl(&state)).unwrap());
@@ -174,6 +200,10 @@ async fn no_dto_or_event_contains_a_token() {
     assert!(seen.len() > 12);
     assert!(seen.iter().any(|s| s.contains("Mira_K")));
     assert!(seen.iter().any(|s| s.contains("FakeTokenPlayer")));
+    assert!(
+        seen.iter().any(|s| s.contains("Mira_K world")),
+        "the instance row is covered"
+    );
     for s in &seen {
         assert!(!s.contains(FAKE), "token leaked into: {s}");
     }

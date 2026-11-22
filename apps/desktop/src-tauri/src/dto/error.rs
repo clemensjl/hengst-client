@@ -54,17 +54,28 @@ pub enum ErrorCode {
     FileSystem,
     /// The system refused to open a link in the browser (`open_url`).
     OpenFailed,
-    /// No instance with this id (also: its file cannot be read); `params.id`.
+    /// No instance with this id (also: an id that is not a folder name at all); `params.id`.
     InstanceNotFound,
     /// Every folder name for this version is taken; `params.id` is the first one.
     InstanceExists,
     /// Saved by a newer build; `params.id` and `params.format`.
     InstanceFormatTooNew,
     InvalidInstanceName,
-    /// The instance's file is damaged or cannot be read, or its folder is a link; `params.id`.
+    /// The instance's file is damaged or cannot be read; `params.id`.
     InstanceUnreadable,
+    /// The instance's folder is a link (junction or symlink), which the app does not follow;
+    /// `params.id`.
+    InstanceLinked,
     /// A failed move to the Recycle Bin took part of the instance with it; `params.id`.
     RecycleBinPartial,
+    /// The Recycle Bin did not take the folder (too large for it, a drive without one, the
+    /// Windows setting "Don't move files to the Recycle Bin", the folder in use). Nothing was
+    /// deleted, never permanently; `params.id`.
+    RecycleBinFailed,
+    /// The instance is being prepared or runs; it cannot be deleted now. `params.id`.
+    InstanceRunning,
+    /// Another create or delete of an instance is in progress.
+    Busy,
 }
 
 /// A page the web view may ask the app to open. The addresses are fixed in Rust (`open::resolve_url`);

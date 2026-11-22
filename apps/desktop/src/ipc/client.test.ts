@@ -85,4 +85,44 @@ describe("ipc client", () => {
       dto: { code: "invalidInput" },
     });
   });
+
+  it("instance commands use camelCase args and send only slugs, ids and targets", async () => {
+    const seen: [string, unknown][] = [];
+    mockIPC((cmd, args) => {
+      seen.push([cmd, args]);
+      return cmd === "loader_kinds" || cmd === "instances_list" ? [] : undefined;
+    });
+    await api.loaderKinds();
+    await api.loaderVersions("legacy-fabric", "1.8.9");
+    await api.instancesList();
+    const req = {
+      name: "1.8.9 Legacy Fabric",
+      game: "1.8.9",
+      loader: { kind: "legacy-fabric", version: "0.15.1" },
+    } as const;
+    await api.instanceCreate(req);
+    await api.instanceSelect("1.8.9");
+    await api.instanceDelete("1.8.9");
+    await api.openLocation({ kind: "instance", id: "1.8.9" });
+    await api.openLocation({ kind: "dataDir" });
+    expect(seen).toEqual([
+      ["loader_kinds", {}],
+      ["loader_versions", { kind: "legacy-fabric", game: "1.8.9" }],
+      ["instances_list", {}],
+      ["instance_create", { req }],
+      ["instance_select", { id: "1.8.9" }],
+      ["instance_delete", { id: "1.8.9" }],
+      ["open_location", { target: { kind: "instance", id: "1.8.9" } }],
+      ["open_location", { target: { kind: "dataDir" } }],
+    ]);
+  });
+
+  it("a Recycle Bin failure rejects with the typed error and its id", async () => {
+    mockIPC(() => {
+      throw { code: "recycleBinFailed", params: { id: "9.9" }, action: null, detail: "x" };
+    });
+    await expect(api.instanceDelete("9.9")).rejects.toMatchObject({
+      dto: { code: "recycleBinFailed", params: { id: "9.9" } },
+    });
+  });
 });

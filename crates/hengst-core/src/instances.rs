@@ -212,20 +212,34 @@ fn has_exact_entry(root: &Path, id: &str) -> Result<bool> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
+    exact_entry(rd.map(|e| e.map(|e| e.file_name())), id)
+}
+
+fn exact_entry(
+    names: impl Iterator<Item = std::io::Result<std::ffi::OsString>>,
+    id: &str,
+) -> Result<bool> {
+    let mut failure = None;
     let mut errors = 0;
-    for entry in rd {
-        match entry {
-            Ok(e) if e.file_name() == std::ffi::OsStr::new(id) => return Ok(true),
+    for name in names {
+        match name {
+            Ok(n) if n == std::ffi::OsStr::new(id) => return Ok(true),
             Ok(_) => {}
             Err(e) => {
+                failure.get_or_insert(e);
                 errors += 1;
+                // A failing iterator can fail on every call: do not spin on it.
                 if errors > 16 {
-                    return Err(e.into());
+                    break;
                 }
             }
         }
     }
-    Ok(false)
+    // An entry that could not be read may have been the one: that is not "not found".
+    match failure {
+        Some(e) => Err(e.into()),
+        None => Ok(false),
+    }
 }
 
 /// The folder of an existing instance. The only way an id from a caller becomes a path: the id
@@ -551,6 +565,7 @@ pub fn create(paths: &Paths, new: &NewInstance, now: u64) -> Result<Instance> {
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e.into()),
         }
+        remove_stale_temps(&dir.join(INSTANCE_FILE));
         let written = config_bytes(&config, Default::default()).and_then(|bytes| {
             write_atomic_sync(&dir.join(INSTANCE_FILE), &bytes, Replace::Never).map_err(Error::from)
         });
@@ -665,6 +680,7 @@ fn adopt_with(
             extra: Default::default(),
         };
         before_write(&dir);
+        remove_stale_temps(&file);
         let written = config_bytes(&config, Default::default())
             .ok()
             .is_some_and(|bytes| write_atomic_sync(&file, &bytes, Replace::Never).is_ok());
@@ -684,15 +700,27 @@ fn top_level_names(dir: &Path) -> Option<HashSet<std::ffi::OsString>> {
     Some(names)
 }
 
-/// After a failed move: the folder is gone, or entries that were directly inside it are missing.
+/// What a failed move left behind.
+enum Aftermath {
+    /// The folder is gone entirely.
+    Gone,
+    /// The folder is there and entries that were directly inside it are missing.
+    Partial,
+    /// Nothing that can be told: the folder is there and complete, or cannot be judged.
+    Untouched,
+}
+
 /// Limit: only the top level is compared, so a failure that removed files deeper down (inside
 /// `saves/`, say) is not noticed, and a folder that cannot be listed is not judged.
-fn looks_partly_moved(dir: &Path, before: Option<&HashSet<std::ffi::OsString>>) -> bool {
+fn after_failed_move(dir: &Path, before: Option<&HashSet<std::ffi::OsString>>) -> Aftermath {
     match std::fs::symlink_metadata(dir) {
-        Err(e) => e.kind() == std::io::ErrorKind::NotFound,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Aftermath::Gone,
+        Err(_) => Aftermath::Untouched,
         Ok(_) => match (before, top_level_names(dir)) {
-            (Some(before), Some(after)) => before.iter().any(|name| !after.contains(name)),
-            _ => false,
+            (Some(before), Some(after)) if before.iter().any(|name| !after.contains(name)) => {
+                Aftermath::Partial
+            }
+            _ => Aftermath::Untouched,
         },
     }
 }
@@ -701,9 +729,11 @@ fn looks_partly_moved(dir: &Path, before: Option<&HashSet<std::ffi::OsString>>) 
 /// instance that `instance_dir` accepts: unknown ids, links and folders without `instance.json` are
 /// refused, and so is an instance from a newer format; an unreadable one may be deleted. If `trash`
 /// fails with the folder untouched, that error is returned and nothing else happens; if it fails
-/// after the folder is gone or entries are missing (see `looks_partly_moved`), the error is
-/// `InstancePartlyMoved`. If `trash` reports success and the folder is still there, it is an I/O
-/// error. There is no other way to remove the folder. The shared `versions`, `libraries` and
+/// after the folder is gone entirely, the instance is gone and the result is `Ok` (it is in the bin
+/// or was removed by the shell: the caller refreshes its list); if it fails after entries directly
+/// inside the folder are missing (see `after_failed_move`), the error is `InstancePartlyMoved`. If
+/// `trash` reports success and the folder is still there, it is an I/O error. There is no other way
+/// to remove the folder. The shared `versions`, `libraries` and
 /// `assets` are never touched. Whether the instance is running is for the caller to know.
 pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
     let _lock = lock_existing(paths, id)?;
@@ -716,10 +746,11 @@ pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> R
     }
     let before = top_level_names(&dir);
     if let Err(e) = trash(&std::path::absolute(&dir)?) {
-        if looks_partly_moved(&dir, before.as_ref()) {
-            return Err(Error::InstancePartlyMoved { id: id.to_string() });
-        }
-        return Err(e);
+        return match after_failed_move(&dir, before.as_ref()) {
+            Aftermath::Gone => Ok(()),
+            Aftermath::Partial => Err(Error::InstancePartlyMoved { id: id.to_string() }),
+            Aftermath::Untouched => Err(e),
+        };
     }
     if std::fs::symlink_metadata(&dir).is_ok() {
         return Err(Error::Io(std::io::Error::other(format!(

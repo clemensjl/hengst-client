@@ -51,7 +51,11 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   instanceFormatTooNew: keys("instanceFormatTooNew"),
   invalidInstanceName: keys("invalidInstanceName"),
   instanceUnreadable: keys("instanceUnreadable"),
+  instanceLinked: keys("instanceLinked"),
   recycleBinPartial: keys("recycleBinPartial"),
+  recycleBinFailed: keys("recycleBinFailed"),
+  instanceRunning: keys("instanceRunning"),
+  busy: keys("busy"),
 };
 
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
@@ -60,9 +64,10 @@ const COPY_PARAMS = ["loader", "game", "version", "name"] as const;
 /**
  * Where an error shows up, for codes whose wording depends on it: `errors.<code>.<context>.title`
  * and `.body` are looked up first, the generic `errors.<code>.*` is the fallback. `signIn` carries
- * the wording of DESIGN.md 11.5, `launch` the offline text of the launch panel (10.2).
+ * the wording of DESIGN.md 11.5, `launch` the offline text of the launch panel (10.2), `folder`
+ * the failure of "Open folder" (`openFailed` is about a link in the browser otherwise).
  */
-export type ErrorContext = "signIn" | "launch";
+export type ErrorContext = "signIn" | "launch" | "folder";
 
 /*
  * `missingClientId` is the "build without client id" state of DESIGN.md 11.6. It cannot occur in a

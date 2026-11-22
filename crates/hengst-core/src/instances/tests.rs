@@ -1079,14 +1079,29 @@ fn a_trasher_that_removes_part_and_then_fails_gives_the_partly_moved_error() {
 }
 
 #[test]
-fn a_trasher_that_moves_everything_and_then_fails_gives_the_partly_moved_error() {
+fn a_trasher_that_moves_everything_and_then_fails_is_a_success() {
+    // The instance is gone from its folder (in the bin or deleted by the shell): the caller has to
+    // refresh its list, not hear that "the rest is still in place".
     let (_d, paths) = home();
     instance_with_world(&paths);
     let r = delete(&paths, "1.21.11", &|p| {
         std::fs::remove_dir_all(p)?;
         Err(Error::Io(std::io::Error::other("late failure")))
     });
-    assert!(matches!(r, Err(Error::InstancePartlyMoved { .. })), "{r:?}");
+    assert!(r.is_ok(), "{r:?}");
+    assert!(!paths.instance("1.21.11").exists());
+    assert!(items(&paths).is_empty());
+}
+
+#[test]
+fn a_trasher_error_with_the_folder_gone_is_ok_for_a_broken_instance_too() {
+    let (_d, paths) = home();
+    write_meta(&paths, "bad", "{ not json");
+    let r = delete(&paths, "bad", &|p| {
+        std::fs::remove_dir_all(p)?;
+        Err(Error::Io(std::io::Error::other("late failure")))
+    });
+    assert!(r.is_ok(), "{r:?}");
 }
 
 #[test]
@@ -1183,4 +1198,87 @@ fn link_and_partial_errors_are_distinct_variants() {
         Error::InstancePartlyMoved { id: "x".into() }.to_string(),
         "instance x was only partly moved to the Recycle Bin"
     );
+}
+
+// Carried from the reviews of the instances module
+
+#[test]
+fn unpinning_the_loader_version_writes_null_and_the_reloaded_instance_has_none() {
+    let (_d, paths) = home();
+    create(&paths, &new_instance("F", "1.20.1", forge("47.2.0")), 1).unwrap();
+    let id = "1.20.1-forge";
+    update(&paths, id, |c| c.loader.as_mut().unwrap().version = None).unwrap();
+    let on_disk: serde_json::Value = serde_json::from_slice(&read_meta(&paths, id)).unwrap();
+    assert_eq!(on_disk["loader"]["version"], serde_json::Value::Null);
+    assert_eq!(on_disk["loader"]["kind"], "forge");
+    let loaded = load(&paths, id).unwrap();
+    assert_eq!(loaded.config.loader.unwrap().version, None);
+}
+
+#[test]
+fn a_panic_in_the_update_closure_writes_nothing_and_releases_the_lock() {
+    let (_d, paths) = home();
+    make(&paths, "A", "1.21.11");
+    let before = read_meta(&paths, "1.21.11");
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = update(&paths, "1.21.11", |c| {
+            c.name = "changed before the panic".into();
+            panic!("closure failed");
+        });
+    }));
+    assert!(caught.is_err());
+    assert_eq!(read_meta(&paths, "1.21.11"), before);
+    // The lock is free again: a writer does not wait for the timeout.
+    let started = std::time::Instant::now();
+    update(&paths, "1.21.11", |c| c.name = "after".into()).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(5));
+    assert_eq!(load(&paths, "1.21.11").unwrap().config.name, "after");
+}
+
+#[cfg(windows)]
+#[test]
+fn a_name_the_system_cannot_look_up_marks_the_scan_incomplete_for_directories_and_files() {
+    // `|` is not valid in a Windows name: the lookup fails with an error other than "not there".
+    let (d, _paths) = home();
+    let bad = d.path().join("a|b");
+    assert!(plain_dir(&bad).is_err(), "the directory arm");
+    assert!(plain_file(&bad).is_err(), "the file arm");
+    assert!(!is_plain_dir(&bad) && !is_plain_file(&bad));
+    let entries = vec![Ok((std::ffi::OsString::from("x"), bad.clone()))];
+    let (ids, incomplete) = scan(entries.into_iter());
+    assert!(ids.is_empty() && incomplete);
+    // Plain absence is not an error.
+    assert_eq!(plain_dir(&d.path().join("nothing")), Ok(false));
+    assert_eq!(plain_file(&d.path().join("nothing")), Ok(false));
+}
+
+#[test]
+fn the_exact_name_scan_reports_iterator_errors_instead_of_not_found() {
+    let name = |n: &str| Ok(std::ffi::OsString::from(n));
+    let bad = || Err(std::io::Error::other("iterator failed"));
+    assert!(exact_entry(vec![name("a"), bad(), name("b")].into_iter(), "c").is_err());
+    assert!(exact_entry(vec![name("a"), bad(), name("b")].into_iter(), "b").unwrap());
+    assert!(!exact_entry(vec![name("a"), name("b")].into_iter(), "c").unwrap());
+    // An iterator that fails forever ends with the error.
+    assert!(exact_entry(std::iter::repeat_with(bad), "c").is_err());
+}
+
+fn stale_part(dir: &Path, base: &str) -> PathBuf {
+    // Another process's temp file, untouched for longer than the cleanup age.
+    let part = dir.join(format!("{base}.4000000.1.part"));
+    let f = std::fs::File::create(&part).unwrap();
+    let old = std::time::SystemTime::now() - Duration::from_secs(3600);
+    f.set_modified(old).unwrap();
+    part
+}
+
+#[test]
+fn adopt_removes_a_stale_temp_file_next_to_the_instance_json() {
+    let (_d, paths) = home();
+    let dir = paths.instance("1.21.11");
+    std::fs::create_dir_all(&dir).unwrap();
+    let part = stale_part(&dir, INSTANCE_FILE);
+    assert_eq!(adopt(&paths, |g| g == "1.21.11", 1).unwrap(), ["1.21.11"]);
+    assert!(!part.exists());
+    assert!(dir.join(INSTANCE_FILE).is_file());
 }
