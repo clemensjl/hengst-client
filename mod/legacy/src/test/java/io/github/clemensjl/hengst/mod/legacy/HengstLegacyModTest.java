@@ -23,7 +23,9 @@ import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
+import io.github.clemensjl.hengst.mod.common.ui.Widget;
 import java.lang.management.ManagementFactory;
+import java.lang.reflect.Field;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -64,7 +66,8 @@ class HengstLegacyModTest {
         HengstCore core = HengstLegacyMod.GUARD.start(() -> workingPlatform(dir, opened), TimeSource.SYSTEM);
         core.onOpenSettingsKey();
         opened[0].render(CANVAS, 0, 0, 0f);
-        opened[0].mouseClicked(12, 66, 0);                        // the FPS switch: a change waiting to be saved
+        int[] fps = featureSwitch(opened[0], "fps");
+        opened[0].mouseClicked(fps[0], fps[1], 0);                 // the FPS switch: a change waiting to be saved
         Path profile = dir.resolve("hengst/profiles/default.json");
         assertFalse(Files.exists(profile));
         HengstLegacyMod.ENABLED = true;
@@ -197,6 +200,7 @@ class HengstLegacyModTest {
 
     @Test
     void aThrowingFeatureInTheKeyCatalogLeavesTheModInert() {
+        KeyBinding[] before = LegacyKeys.bindings();
         boolean[] platformCreated = new boolean[1];
         HengstCore core = assertDoesNotThrow(() -> HengstLegacyMod.start(() -> new ThrowingFeature().keys(), LegacyKeys::code,
                 () -> {
@@ -205,21 +209,90 @@ class HengstLegacyModTest {
                 }));
         assertNull(core);
         assertFalse(platformCreated[0], "the core is not started");
-        assertFalse(HengstLegacyMod.ENABLED);
+        assertSame(before, LegacyKeys.bindings(), "no binding array assigned");
     }
 
     @Test
     void anUnmappedDefaultKeyLeavesTheModInert() {
+        KeyBinding[] before = LegacyKeys.bindings();
         boolean[] platformCreated = new boolean[1];
+        List<KeyBinding> registered = new ArrayList<>();
         HengstCore core = assertDoesNotThrow(() -> HengstLegacyMod.start(() -> FeatureCatalog.keys(GameVersion.V1_8_9), key -> {
             throw new IllegalArgumentException("no key code for " + key);
+        }, m -> {
+            registered.add(m);
+            return m;
         }, () -> {
             platformCreated[0] = true;
             return null;
         }));
         assertNull(core);
         assertFalse(platformCreated[0], "the core is not started");
-        assertFalse(HengstLegacyMod.ENABLED);
+        assertTrue(registered.isEmpty(), "every key code is computed before the first registration");
+        assertSame(before, LegacyKeys.bindings(), "no binding array assigned");
+    }
+
+    @Test
+    void aHelperThatThrowsAfterTheFirstBindingAssignsNoBindingsAndLeavesTheModInert() {
+        KeyBinding[] before = LegacyKeys.bindings();
+        boolean[] platformCreated = new boolean[1];
+        List<KeyBinding> registered = new ArrayList<>();
+        HengstCore core = assertDoesNotThrow(() -> HengstLegacyMod.start(() -> FeatureCatalog.keys(GameVersion.V1_8_9),
+                LegacyKeys::code, m -> {
+                    if (!registered.isEmpty()) {
+                        throw new IllegalArgumentException("Attempted to register two key bindings with equal ID: "
+                                + m.getTranslationKey());
+                    }
+                    registered.add(m);
+                    return m;
+                }, () -> {
+                    platformCreated[0] = true;
+                    return null;
+                }));
+        assertNull(core);
+        assertEquals(1, registered.size(), "the first binding went through the helper");
+        assertFalse(platformCreated[0], "the core is not started");
+        assertSame(before, LegacyKeys.bindings(), "no binding array assigned after a partial registration");
+    }
+
+    @Test
+    void a_hold_key_held_through_a_focus_loss_allocates_nothing(@TempDir Path dir) {
+        KeyFeature f = new KeyFeature(true);
+        HengstCore core = startWithKeys(dir, new UiScreen[1], f);
+        FakeKey[] maps = fakes(core);
+        FakeKey hold = maps[maps.length - 2];
+        for (int i = 0; i < 2000; i++) {
+            heldThroughFocusLoss(core, maps, hold, f);             // warm up
+        }
+        f.downs = 0;
+        f.ups = 0;
+        int releasedByFocus = 0;
+        com.sun.management.ThreadMXBean mx = (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+        long before = mx.getThreadAllocatedBytes(Thread.currentThread().getId());
+        for (int i = 0; i < 1000; i++) {
+            releasedByFocus += heldThroughFocusLoss(core, maps, hold, f);
+        }
+        long allocated = mx.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
+        assertEquals(1000, f.downs, "a press of the held HOLD key per cycle");
+        assertEquals(1000, releasedByFocus, "its release, sent by the focus loss while the key still reads pressed");
+        assertEquals(1000, f.ups, "no second release when the key then reads up");
+        assertTrue(allocated < 2048, "allocated " + allocated + " bytes");
+    }
+
+    /**
+     * The HOLD key pressed and held, the focus lost while it still reads pressed, then the key released; returns the
+     * releases the focus-loss tick delivered.
+     */
+    private static int heldThroughFocusLoss(HengstCore core, FakeKey[] maps, FakeKey hold, KeyFeature f) {
+        hold.clicks = 1;
+        hold.down = true;
+        LegacyKeys.tick(core, maps, true);
+        int ups = f.ups;
+        LegacyKeys.tick(core, maps, false);
+        int released = f.ups - ups;
+        hold.down = false;
+        LegacyKeys.tick(core, maps, true);
+        return released;
     }
 
     @Test
@@ -264,6 +337,37 @@ class HengstLegacyModTest {
         }
         long allocated = mx.getThreadAllocatedBytes(Thread.currentThread().getId()) - before;
         assertTrue(allocated < 2048, "allocated " + allocated + " bytes");   // an iterator per call: over 60 KB
+    }
+
+    /**
+     * A point on the switch of a feature's row in the open settings screen, from the list's own placement after a
+     * render (rows, offset and indicator gutter as drawn), not from literals: the list may overflow and scroll.
+     */
+    private static int[] featureSwitch(UiScreen safe, String id) throws Exception {
+        Object settings = field(safe, "screen");
+        Object list = field(settings, "featureList");
+        for (Object row : (List<?>) field(list, "widgets")) {
+            Field feature;
+            try {
+                feature = row.getClass().getDeclaredField("feature");
+            } catch (NoSuchFieldException groupHeading) {
+                continue;
+            }
+            feature.setAccessible(true);
+            if (id.equals(((Feature) feature.get(row)).id())) {
+                Widget w = (Widget) row;
+                int top = (Integer) field(list, "y");
+                assertTrue(w.y >= top && w.y + w.h <= top + (Integer) field(list, "h"), id + " row drawn");
+                return new int[] {w.x + 2, w.y + w.h / 2};
+            }
+        }
+        throw new AssertionError("no row for " + id);
+    }
+
+    private static Object field(Object owner, String name) throws Exception {
+        Field f = owner.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(owner);
     }
 
     /** A feature with one HOLD and one PRESS key: the last two indexes of the core's key list. */

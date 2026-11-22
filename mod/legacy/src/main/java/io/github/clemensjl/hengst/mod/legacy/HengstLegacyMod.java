@@ -12,10 +12,12 @@ import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
 import java.util.List;
 import java.util.function.Supplier;
 import java.util.function.ToIntFunction;
+import java.util.function.UnaryOperator;
 import net.fabricmc.api.ClientModInitializer;
 import net.legacyfabric.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.legacyfabric.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -81,8 +83,14 @@ public final class HengstLegacyMod implements ClientModInitializer {
      */
     static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
             Supplier<? extends Platform> platform) {
+        return start(keys, codes, LegacyKeys.REGISTRAR, platform);
+    }
+
+    /** {@link #start(Supplier, ToIntFunction, Supplier)} with the API mod's key helper replaceable, for the tests. */
+    static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
+            UnaryOperator<KeyBinding> registrar, Supplier<? extends Platform> platform) {
         try {
-            LegacyKeys.register(keys.get(), codes);
+            LegacyKeys.register(keys.get(), codes, registrar);
         } catch (RuntimeException | LinkageError e) {
             LOGGER.error("[hengst] key bindings failed to register; the mod stays inactive", e);
             return null;

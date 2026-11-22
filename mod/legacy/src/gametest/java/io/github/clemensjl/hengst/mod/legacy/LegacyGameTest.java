@@ -1,12 +1,17 @@
 package io.github.clemensjl.hengst.mod.legacy;
 
+import io.github.clemensjl.hengst.mod.common.FeatureCatalog;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
+import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
+import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
+import io.github.clemensjl.hengst.mod.common.hud.TextHudModule;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameKey;
@@ -15,20 +20,35 @@ import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import io.github.clemensjl.hengst.mod.common.ui.ScrollList;
+import io.github.clemensjl.hengst.mod.common.ui.SettingsModel;
+import io.github.clemensjl.hengst.mod.common.ui.SettingsScreen;
+import io.github.clemensjl.hengst.mod.common.ui.Widget;
 import java.awt.image.BufferedImage;
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.lang.management.ManagementFactory;
 import java.lang.reflect.Field;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Calendar;
 import java.util.EnumSet;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.Callable;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import javax.imageio.ImageIO;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.loader.api.FabricLoader;
@@ -39,6 +59,13 @@ import net.minecraft.client.gui.screen.GameMenuScreen;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.screen.TitleScreen;
 import net.minecraft.client.gui.screen.ingame.SurvivalInventoryScreen;
+import net.minecraft.client.gui.screen.options.ControlsListWidget;
+import net.minecraft.client.gui.screen.options.ControlsOptionsScreen;
+import net.minecraft.client.gui.widget.TextFieldWidget;
+import net.minecraft.client.option.KeyBinding;
+import net.minecraft.client.resource.language.I18n;
+import net.minecraft.client.resource.language.LanguageDefinition;
+import net.minecraft.client.resource.language.LanguageManager;
 import net.minecraft.client.util.ScreenshotUtils;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.text.LiteralText;
@@ -97,7 +124,10 @@ public final class LegacyGameTest implements ClientModInitializer {
         if (phase == null) {
             return;
         }
-        ClientTickEvents.END_CLIENT_TICK.register(c -> ticks++);
+        ClientTickEvents.END_CLIENT_TICK.register(c -> {
+            ticks++;
+            measureDispatch(c);
+        });
         Thread test = new Thread(() -> {
             try {
                 runTest("restart".equals(phase));
@@ -350,7 +380,6 @@ public final class LegacyGameTest implements ClientModInitializer {
                 "the settings key pressed in chat does not open the settings later");
         pass("the settings key does nothing while chat is open");
 
-        registerDummyFeatures(core);
         key(Keyboard.KEY_RSHIFT, (char) 0);
         waitUntil(() -> MinecraftClient.getInstance().currentScreen instanceof LegacyScreenHost, 3_000,
                 "settings key opens the mod's screen");
@@ -442,9 +471,909 @@ public final class LegacyGameTest implements ClientModInitializer {
         inputAfterClose(platform);
         faintFill(layout);
 
+        keyRegistration(core);
+        infoModules(core);
+        settingsWithTheFullCatalog(core);
+        languageSwitch(core);
+        dispatchAllocation();
+        check(onClient(() -> core.renderer().activeCount()) == 4, "four active modules after the M1a steps");
+        pass("after the M1a steps only the four M0 modules are active");
+
         dragFpsToBottomRight(core, layout);
         moduleOverHotbarItem(core);
     }
+
+    // ---- M1a: key registration, the seven text modules, the settings with the full catalog, language ----
+
+    private static final String[] HENGST_KEYS = {"key.hengst.settings", "key.hengst.hud_editor",
+        "key.hengst.stopwatch.toggle", "key.hengst.stopwatch.reset"};
+    private static final long MEMORY_SLACK_MB = 64;
+    private static final long LANGUAGE_BOUND_MS = 1_500;
+    private static final long DISPATCH_TOLERANCE = 4096;
+    private static final long ALLOCATING_CALLS = 3;
+    private static final int GROUP_TEXT = 0xFFAAAAAA;
+    private static final int NOTICE = 0xFFAAAAAA;
+    private static final int THUMB = 0xC0FFFFFF;
+    private static final int TRACK = 0x40FFFFFF;
+
+    /** The game's key binding list holds exactly the catalog's bindings, in catalog order, in the mod's category. */
+    private static void keyRegistration(final HengstCore core) throws Exception {
+        List<String> catalog = new ArrayList<String>();
+        for (KeySpec k : FeatureCatalog.keys(GameVersion.V1_8_9)) {
+            catalog.add(k.translationKey());
+        }
+        List<String> fromCore = new ArrayList<String>();
+        for (KeySpec k : core.keySpecs()) {
+            fromCore.add(k.translationKey());
+        }
+        List<String> registered = onClient(() -> {
+            List<String> names = new ArrayList<String>();
+            KeyBinding[] mine = LegacyKeys.bindings();
+            int i = 0;
+            for (KeyBinding k : MinecraftClient.getInstance().options.allKeys) {
+                if (LegacyKeys.CATEGORY.equals(k.getCategory())) {
+                    check(i < mine.length && mine[i] == k, "option binding " + k.getTranslationKey()
+                            + " is the mod's own binding " + i);
+                    names.add(k.getTranslationKey());
+                    i++;
+                }
+            }
+            return names;
+        });
+        check(catalog.equals(Arrays.asList(HENGST_KEYS)), "catalog keys " + catalog);
+        check(fromCore.equals(catalog), "core keys " + fromCore + " vs catalog " + catalog);
+        check(registered.equals(catalog), "registered key bindings " + registered + " vs catalog " + catalog);
+        pass("the game's key binding list holds exactly the catalog's bindings in catalog order " + registered);
+    }
+
+    /** The seven text modules one at a time: switched on through the core, checked by text and pixels, switched off. */
+    private static void infoModules(final HengstCore core) throws Exception {
+        final Platform platform = core.context().platform();
+
+        face(180f);
+        setEnabled(core, "direction", true);
+        waitText(core, "direction", equal("N 0\u00b0"), 2_000, "direction facing north (yaw 180)");
+        int[] rect = shownByPixels("direction", "hengst-40-direction");
+        invisibleNegativeControl(core, "direction");
+        offAndGone(core, "direction", rect, "hengst-41-direction-off");
+        pass("direction: 'N 0\u00b0' facing north, drawn (pixels), the pixel check fails for invisible text, gone when off");
+
+        setEnabled(core, "speed", true);
+        waitText(core, "speed", equal("0.0 m/s"), 5_000, "speed standing");
+        keyDown(Keyboard.KEY_W, 'w', true);
+        String walking;
+        try {
+            walking = waitText(core, "speed", new Predicate() {
+                @Override
+                public boolean test(String s) {
+                    return speed(s) >= 3.0;
+                }
+            }, 3_000, "speed while W is held");
+        } finally {
+            keyDown(Keyboard.KEY_W, 'w', false);
+        }
+        waitText(core, "speed", equal("0.0 m/s"), 5_000, "speed after W is released");
+        settle();
+        rect = shownByPixels("speed", "hengst-42-speed");
+        offAndGone(core, "speed", rect, "hengst-43-speed-off");
+        pass("speed: '0.0 m/s' standing, '" + walking + "' while walking, drawn (pixels), gone when off");
+
+        setEnabled(core, "clock", true);
+        String clock = waitText(core, "clock", matching("\\d\\d:\\d\\d"), 2_000, "clock in the 24-hour format");
+        checkClose(clockMinutes(clock), "24-hour clock " + clock);
+        rect = shownByPixels("clock", "hengst-44-clock");
+        setOption(core, "clock", "format", "12h");
+        final String am = i18n(core, "hengst.clock.am");
+        final String pm = i18n(core, "hengst.clock.pm");
+        String twelve = waitText(core, "clock", matching("\\d{1,2}:\\d\\d (" + am + "|" + pm + ")"), 2_000,
+                "clock in the 12-hour format");
+        checkClose(clockMinutes(twelve, pm), "12-hour clock " + twelve);
+        setOption(core, "clock", "format", "24h");
+        waitText(core, "clock", matching("\\d\\d:\\d\\d"), 2_000, "clock back in the 24-hour format");
+        offAndGone(core, "clock", rect, "hengst-45-clock-off");
+        pass("clock: '" + clock + "' and '" + twelve + "' match the system time to the minute, drawn (pixels), gone when off");
+
+        setEnabled(core, "memory", true);
+        long before = onClient(() -> {
+            core.applyConfigForTest();                     // the next tick reads the memory again
+            return usedBytes();
+        });
+        waitTicks(1);
+        long[] after = onClient(() -> new long[] {usedBytes(), Runtime.getRuntime().maxMemory()});
+        String memory = waitText(core, "memory", matching("RAM \\d+% \\d+/\\d+ MB"), 2_000, "memory format");
+        Matcher m = Pattern.compile("RAM (\\d+)% (\\d+)/(\\d+) MB").matcher(memory);
+        check(m.matches(), "memory text " + memory);
+        long percent = Long.parseLong(m.group(1));
+        long usedMb = Long.parseLong(m.group(2));
+        long maxMb = Long.parseLong(m.group(3));
+        check(maxMb == after[1] >> 20, "memory maximum " + maxMb + " MB vs Runtime " + (after[1] >> 20) + " MB");
+        long low = (Math.min(before, after[0]) >> 20) - MEMORY_SLACK_MB;
+        long high = (Math.max(before, after[0]) >> 20) + MEMORY_SLACK_MB;
+        check(usedMb >= low && usedMb <= high, "memory used " + usedMb + " MB outside Runtime's " + low + " to " + high);
+        check(Math.abs(percent - usedMb * 100 / maxMb) <= 1, "memory percent " + percent + " vs " + usedMb + "/" + maxMb);
+        rect = shownByPixels("memory", "hengst-46-memory");
+        offAndGone(core, "memory", rect, "hengst-47-memory-off");
+        pass("memory: '" + memory + "' matches Runtime (maximum exact, used within " + MEMORY_SLACK_MB
+                + " MB of the readings around it), drawn (pixels), gone when off");
+
+        check(onClient(() -> platform.game().serverAddress()) == null, "singleplayer has no server address");
+        for (final String id : new String[] {"ping", "server_address"}) {
+            setEnabled(core, id, true);
+            waitTicks(3);
+            String t = onClient(() -> module(core, id).text());
+            check(t.isEmpty(), id + " shows nothing in singleplayer, got '" + t + "'");
+            settle();
+            Layout l = layout();
+            check(!l.has(id), id + " has no box in singleplayer");
+            int[] place = defaultPlace(core, id, l);
+            BufferedImage img = shot("hengst-48-" + id + "-singleplayer");
+            BufferedImage hidden = f1Baseline("hengst-48-" + id + "-singleplayer-f1");
+            checkHidden(img, hidden, place, id + " at its default place in singleplayer");
+            setEnabled(core, id, false);
+        }
+        pass("ping and server address: empty in singleplayer, no box, their default place equals the F1 baseline");
+
+        stopwatch(core);
+    }
+
+    /** Both stopwatch keys bound to letters that vanilla leaves unbound, restored afterwards whatever happens. */
+    private static void stopwatch(final HengstCore core) throws Exception {
+        final KeyBinding toggle = onClient(() -> binding("key.hengst.stopwatch.toggle"));
+        final KeyBinding reset = onClient(() -> binding("key.hengst.stopwatch.reset"));
+        String taken = onClient(() -> {
+            for (KeyBinding other : MinecraftClient.getInstance().options.allKeys) {
+                if (other != toggle && other != reset
+                        && (other.getCode() == Keyboard.KEY_K || other.getCode() == Keyboard.KEY_J)) {
+                    return other.getTranslationKey() + " on " + other.getCode();
+                }
+            }
+            return null;
+        });
+        check(taken == null, "K and J are free in the 1.8.9 bindings, but " + taken);
+        setEnabled(core, "stopwatch", true);
+        try {
+            onClient(() -> {
+                toggle.setCode(Keyboard.KEY_K);
+                reset.setCode(Keyboard.KEY_J);
+                KeyBinding.updateKeysByCode();
+                return null;
+            });
+            waitText(core, "stopwatch", equal("0:00.0"), 2_000, "stopwatch at zero");
+            key(Keyboard.KEY_K, 'k');
+            final String first = waitText(core, "stopwatch", not("0:00.0"), 2_000, "the stopwatch runs after K");
+            waitText(core, "stopwatch", not(first), 1_000, "the running stopwatch advances");
+            waitRealTime(1_500);
+            key(Keyboard.KEY_K, 'k');
+            waitTicks(2);
+            final String stopped = onClient(() -> module(core, "stopwatch").text());
+            double seconds = stopwatchSeconds(stopped);
+            check(seconds >= 1.0 && seconds <= 2.5, "stopwatch stopped after about 1.5 s, shows " + stopped);
+            waitRealTime(500);
+            check(onClient(() -> module(core, "stopwatch").text()).equals(stopped), "a stopped stopwatch holds");
+            pass("stopwatch: K starts it, it advances, K stops it at " + stopped + " and it holds");
+
+            key(Keyboard.KEY_T, 't');
+            waitUntil(() -> MinecraftClient.getInstance().currentScreen instanceof ChatScreen, 3_000, "T opens the chat");
+            settle();
+            key(Keyboard.KEY_K, 'k');
+            waitTicks(2);
+            String typed = onClient(() -> {
+                Screen chat = MinecraftClient.getInstance().currentScreen;
+                Field f = ChatScreen.class.getDeclaredField("chatField");
+                f.setAccessible(true);
+                return ((TextFieldWidget) f.get(chat)).getText();
+            });
+            check(typed.contains("k"), "the letter reached the chat box, got '" + typed + "'");
+            key(Keyboard.KEY_ESCAPE, (char) 0);
+            waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the chat");
+            waitTicks(3);
+            check(onClient(() -> module(core, "stopwatch").text()).equals(stopped),
+                    "K typed in chat does not start the stopwatch");
+            key(Keyboard.KEY_K, 'k');
+            waitText(core, "stopwatch", not(stopped), 2_000, "K after closing the chat starts it");
+            key(Keyboard.KEY_K, 'k');
+            waitTicks(2);
+            pass("stopwatch: K typed in chat does nothing, K after the chat starts it");
+
+            final String held = onClient(() -> module(core, "stopwatch").text());
+            settle();
+            int[] rect = shownByPixels("stopwatch", "hengst-49-stopwatch");
+            check(onClient(() -> module(core, "stopwatch").text()).equals(held), "stopwatch held during the shot");
+            key(Keyboard.KEY_J, 'j');
+            waitText(core, "stopwatch", equal("0:00.0"), 1_000, "J resets the stopwatch");
+            offAndGone(core, "stopwatch", rect, "hengst-50-stopwatch-off");
+            pass("stopwatch: drawn at " + held + " (pixels), J resets it to 0:00.0, gone when off");
+        } finally {
+            onClient(() -> {
+                toggle.setCode(toggle.getDefaultCode());
+                reset.setCode(reset.getDefaultCode());
+                KeyBinding.updateKeysByCode();
+                return null;
+            });
+            setEnabled(core, "stopwatch", false);
+        }
+        check(onClient(() -> toggle.getCode() == Keyboard.KEY_NONE && reset.getCode() == Keyboard.KEY_NONE),
+                "stopwatch keys unbound again");
+    }
+
+    /**
+     * The settings with the real catalog: the overflowing list and its wheel step ({@link #settingsWheel}), the HUD
+     * heading, the scroll indicator, and for the stopwatch (group Comfort) its style rows, its muted hint above its
+     * options and option rows that react where they are drawn. Positions come from the screen's own lists.
+     */
+    private static void settingsWithTheFullCatalog(final HengstCore core) throws Exception {
+        openSettings();
+        final UiScreen ui = settingsUi();
+        ScrollList list = (ScrollList) field(ui, "featureList");
+        int[] lb = bounds(list);
+        Layout rec = record(ui);
+        BufferedImage top = shot("hengst-51-settings-full-catalog");
+        Text hud = rec.find(i18n(core, "hengst.group.hud"), GROUP_TEXT);
+        check(hud != null && hud.y >= lb[1] && hud.x >= lb[0] && hud.x < lb[0] + lb[2], "HUD heading in the list, texts "
+                + rec.texts);
+        int grey = greyTextPixels(top, hud.rect());
+        check(grey >= MIN_TEXT_PIXELS, "HUD heading drawn: grey text pixels " + grey);
+        int[] thumb = rec.fill(THUMB);
+        int[] track = rec.fill(TRACK);
+        check(thumb != null && track != null && thumb[1] == lb[1], "scroll indicator at the top");
+        double lumaThumb = meanLuma(top, thumb);
+        double lumaTrack = meanLuma(top, new int[] {track[0], thumb[3], track[2], track[3]});
+        check(lumaThumb > lumaTrack + 30, "scroll indicator drawn: thumb luma " + lumaThumb + ", track " + lumaTrack);
+        pass("settings: the full catalog overflows the list, the HUD heading and the scroll indicator are drawn (pixels)");
+
+        selectStopwatch(ui);
+        rec = record(ui);
+        check(rec.find(i18n(core, "hengst.group.comfort"), GROUP_TEXT) != null, "Comfort heading drawn at the end, texts "
+                + rec.texts);
+        check(rec.fill(THUMB)[3] == lb[1] + lb[3], "the thumb at the bottom at the end of the list");
+        ScrollList options = (ScrollList) field(ui, "optionList");
+        final List<?> optionRows = (List<?>) field(options, "widgets");
+        Feature stopwatch = core.registry().byId("stopwatch");
+        check(optionRows.size() == 3 + stopwatch.options().size(), "stopwatch options: background, shadow, colour and "
+                + stopwatch.options().size() + " own, got " + optionRows.size());
+        for (String key : new String[] {"hengst.option.background", "hengst.option.shadow", "hengst.option.text_color"}) {
+            String label = i18n(core, key);
+            check(rec.findStart(label) != null, "stopwatch style row '" + label + "' drawn, texts " + rec.texts);
+        }
+        settle();
+        checkHint(core, ui, rec, shot("hengst-53-settings-stopwatch"), false);
+        pass("settings: Comfort heading at the end of the list, the stopwatch shows its HUD style rows and its muted hint");
+
+        final OptionSpec tenths = stopwatch.options().get(0);
+        int[] ob = bounds(options);
+        for (final int index : new int[] {0, optionRows.size() - 1}) {
+            Widget w = (Widget) optionRows.get(index);
+            check(w.y >= ob[1] && w.y + w.h <= ob[1] + ob[3], "option row " + index + " inside the option list");
+            Callable<Boolean> value = new Callable<Boolean>() {
+                @Override
+                public Boolean call() {
+                    ModuleConfig c = core.activeProfile().module("stopwatch");
+                    return index == 0 ? c.background() : (Boolean) c.option(tenths);
+                }
+            };
+            boolean was = onClient(value);
+            for (int n = 0; n < 2; n++) {
+                click(0, w.x + w.w - 6, w.y + w.h / 2);
+                waitTicks(1);
+                boolean now = onClient(value);
+                check(now == (n == 0 ? !was : was), "click " + (n + 1) + " on option row " + index + ": " + now);
+            }
+        }
+        pass("settings: the stopwatch's option rows below the hint react to clicks where they are drawn");
+
+        // A narrower screen (the host laid out at 320 GUI pixels, drawn in the real frame): the hint wraps.
+        final int[] size = onClient(() -> {
+            Screen s = MinecraftClient.getInstance().currentScreen;
+            return new int[] {s.width, s.height};
+        });
+        onClient(() -> {
+            MinecraftClient.getInstance().currentScreen.init(MinecraftClient.getInstance(), 320, size[1]);
+            return null;
+        });
+        try {
+            settle();
+            Layout narrow = record(ui);
+            BufferedImage wrapped = shot("hengst-54-settings-hint-wrapped");
+            checkHint(core, ui, narrow, wrapped, true);
+        } finally {
+            onClient(() -> {
+                MinecraftClient.getInstance().currentScreen.init(MinecraftClient.getInstance(), size[0], size[1]);
+                return null;
+            });
+            settle();
+        }
+        pass("settings: laid out 320 GUI pixels wide the hint wraps to the option panel (muted, pixels)");
+
+        key(Keyboard.KEY_ESCAPE, (char) 0);
+        waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the settings");
+        settle();
+    }
+
+    private static void openSettings() throws Exception {
+        key(Keyboard.KEY_RSHIFT, (char) 0);
+        waitUntil(() -> MinecraftClient.getInstance().currentScreen instanceof LegacyScreenHost, 3_000,
+                "settings key opens the mod's screen");
+        settle();
+    }
+
+    /** Scrolls the feature list to its end with the wheel and clicks the stopwatch's row (beside its switch). */
+    private static void selectStopwatch(final UiScreen ui) throws Exception {
+        final ScrollList list = (ScrollList) field(ui, "featureList");
+        int[] lb = bounds(list);
+        int rowH = (Integer) field(list, "rowHeight");
+        List<?> rows = (List<?>) field(list, "widgets");
+        int gx = lb[0] + lb[2] / 2;
+        int gy = lb[1] + lb[3] / 2;
+        for (int i = 0; i < rows.size(); i++) {
+            wheel(gx, gy, -120);
+        }
+        waitTicks(2);
+        int expected = (rows.size() - lb[3] / rowH) * rowH;
+        int offset = onClient(list::offset);
+        check(offset == expected, "wheel to the end of the list: offset " + offset + ", expected " + expected);
+        record(ui);                                            // places the rows as drawn
+        Widget row = featureRow(rows, "stopwatch");
+        check(row.y >= lb[1] && row.y + row.h <= lb[1] + lb[3], "stopwatch row inside the list at the end");
+        click(0, row.x + row.w * 2 / 3, row.y + row.h / 2);
+        waitTicks(1);
+        final SettingsModel model = (SettingsModel) field(ui, "model");
+        String selected = onClient(() -> model.selected() == null ? null : model.selected().id());
+        check("stopwatch".equals(selected), "a click on the stopwatch row selects it, got " + selected);
+    }
+
+    /**
+     * The selected feature's hint: muted grey, at the option panel's left edge from the list top, every line within
+     * the panel width, together the whole hint, and the option list starting below it; grey text pixels on screen.
+     */
+    private static void checkHint(HengstCore core, UiScreen ui, Layout rec, BufferedImage img, boolean mustWrap)
+            throws Exception {
+        String hint = i18n(core, "hengst.hint.stopwatch");
+        String[] lines = (String[]) field(ui, "hintLines");
+        int optX = (Integer) field(ui, "optX");
+        int optW = (Integer) field(ui, "optW");
+        int lineHeight = (Integer) field(ui, "lineHeight");
+        int listY = staticInt(ui, "LIST_Y");
+        int gap = staticInt(ui, "GAP");
+        check(join(lines).equals(hint), "hint lines " + Arrays.toString(lines) + " vs '" + hint + "'");
+        check(!mustWrap || lines.length >= 2, "the hint wraps in a narrow panel (" + optW + " px): "
+                + Arrays.toString(lines));
+        List<Text> drawn = new ArrayList<Text>();
+        for (Text t : rec.texts) {
+            if (t.argb == NOTICE && t.x == optX && t.y >= listY && t.y < listY + lines.length * lineHeight) {
+                drawn.add(t);
+            }
+        }
+        check(drawn.size() == lines.length, "hint drawn as " + lines.length + " muted lines, got " + drawn);
+        for (int i = 0; i < lines.length; i++) {
+            Text t = drawn.get(i);
+            check(t.text.equals(lines[i]) && t.w <= optW, "hint line " + i + " '" + t.text + "' width " + t.w
+                    + " within " + optW);
+            int grey = greyTextPixels(img, t.rect());
+            check(grey >= MIN_TEXT_PIXELS, "hint line " + i + " drawn: grey text pixels " + grey);
+            check(textPixels(img, t.rect()) < grey, "hint line " + i + " is muted, not white");
+        }
+        int optionsY = bounds((ScrollList) field(ui, "optionList"))[1];
+        check(optionsY == listY + lines.length * lineHeight + gap, "option list starts below the hint at " + optionsY);
+    }
+
+    /**
+     * The game language switched to German and back in a running world, as the language screen does: the direction
+     * letter for east, the group heading and the stopwatch hint in the settings, and the key binding names in the
+     * controls screen follow without a restart.
+     */
+    private static void languageSwitch(final HengstCore core) throws Exception {
+        face(-90f);
+        setEnabled(core, "direction", true);
+        waitText(core, "direction", equal("E 90\u00b0"), 2_000, "direction facing east in English");
+        controls("en_US");
+        try {
+            setLanguage(core, "de_DE", "Komfort");
+            waitText(core, "direction", equal("O 90\u00b0"), 2_000, "direction facing east in German");
+            settle();
+            shownByPixels("direction", "hengst-55-direction-german");
+            pass("language: German switched in a running world, direction shows 'O 90\u00b0' (pixels)");
+
+            openSettings();
+            UiScreen ui = settingsUi();
+            selectStopwatch(ui);
+            Layout rec = record(ui);
+            check(rec.find("Komfort", GROUP_TEXT) != null, "German group heading 'Komfort', texts " + rec.texts);
+            check(i18n(core, "hengst.hint.stopwatch").startsWith("Tasten"), "German hint loaded");
+            settle();
+            checkHint(core, ui, rec, shot("hengst-56-settings-german"), false);
+            key(Keyboard.KEY_ESCAPE, (char) 0);
+            waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the settings");
+            settle();
+            pass("language: the settings show the German heading 'Komfort' and the German stopwatch hint");
+
+            controls("de_DE");
+        } finally {
+            setLanguage(core, "en_US", "Comfort");
+        }
+        waitText(core, "direction", equal("E 90\u00b0"), 2_000, "direction facing east in English again");
+        setEnabled(core, "direction", false);
+        pass("language: back to English without a restart, direction shows 'E 90\u00b0' again");
+    }
+
+    /** What LanguageOptionsScreen does on a selection: language, resources, font flags, options saved. */
+    private static void setLanguage(final HengstCore core, final String code, final String comfort) throws Exception {
+        long start = System.nanoTime();
+        onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            LanguageManager languages = mc.getLanguageManager();
+            LanguageDefinition definition = null;
+            for (LanguageDefinition d : languages.getAllLanguages()) {
+                if (d.getCode().equals(code)) {
+                    definition = d;
+                }
+            }
+            check(definition != null, "language " + code + " known to the game");
+            languages.setLanguage(definition);
+            mc.options.language = code;
+            mc.reloadResources();
+            mc.textRenderer.setUnicode(languages.forcesUnicodeFont() || mc.options.forcesUnicodeFont);
+            mc.textRenderer.setRightToLeft(languages.isRightToLeft());
+            mc.options.save();
+            return null;
+        });
+        // The reload runs on the client thread and blocks it; the core's once-a-second check runs after it.
+        long reloaded = System.nanoTime();
+        waitUntil(() -> comfort.equals(core.context().i18n().get("hengst.group.comfort")), 3_000,
+                "the core loads " + code + " after the switch");
+        long picked = (System.nanoTime() - reloaded) / 1_000_000;
+        check(picked <= LANGUAGE_BOUND_MS, "the core picked up " + code + " " + picked + " ms after the reload");
+        settle();
+        pass("language " + code + " picked up by the core " + picked + " ms after the resource reload (bound "
+                + LANGUAGE_BOUND_MS + " ms; the reload blocked the client for " + (reloaded - start) / 1_000_000 + " ms)");
+    }
+
+    /**
+     * The stopwatch's two bindings and the mod's category in the controls screen with translated names: through the
+     * game's own translation call (the one ControlsListWidget uses) and on the screen's entries.
+     */
+    private static void controls(final String lang) throws Exception {
+        Map<String, String> names = langFile(lang);
+        Set<String> expected = new HashSet<String>();
+        for (final String key : HENGST_KEYS) {
+            String shown = onClient(() -> I18n.translate(key));
+            check(shown.equals(names.get(key)) && !shown.equals(key), lang + ": " + key + " shown as '" + shown + "'");
+            expected.add(key + "=" + shown);
+        }
+        final String category = onClient(() -> I18n.translate(LegacyKeys.CATEGORY));
+        check(category.equals(names.get(LegacyKeys.CATEGORY)), lang + ": category shown as '" + category + "'");
+
+        onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            mc.setScreen(new ControlsOptionsScreen(null, mc.options));
+            return null;
+        });
+        settle();
+        List<String> entries = onClient(() -> {
+            Object list = field(MinecraftClient.getInstance().currentScreen, "keyBindingListWidget");
+            List<String> out = new ArrayList<String>();
+            for (Object e : (Object[]) field(list, "entries")) {
+                if (e instanceof ControlsListWidget.CategoryEntry) {
+                    out.add("C:" + field(e, "name"));
+                } else if (e instanceof ControlsListWidget.KeyBindingEntry) {
+                    out.add("K:" + ((KeyBinding) field(e, "keyBinding")).getTranslationKey() + "=" + field(e, "name"));
+                }
+            }
+            return out;
+        });
+        int at = entries.indexOf("C:" + category);
+        check(at >= 0, lang + ": controls screen has the category '" + category + "': " + entries);
+        Set<String> listed = new HashSet<String>();
+        for (int i = at + 1; i < entries.size() && entries.get(i).startsWith("K:"); i++) {
+            listed.add(entries.get(i).substring(2));
+        }
+        check(listed.equals(expected), lang + ": controls entries under '" + category + "' " + listed + ", expected "
+                + expected);
+        shot("hengst-57-controls-" + lang);
+        onClient(() -> {
+            MinecraftClient.getInstance().setScreen(null);
+            return null;
+        });
+        settle();
+        pass(lang + ": the controls screen lists the mod's category and its four bindings translated " + listed);
+    }
+
+    /**
+     * The per-tick key dispatch with the window check ({@code LegacyKeys.dispatch(MinecraftClient)}) in steady state,
+     * called once more per tick from the harness's tick listener and measured around the call only (the game
+     * allocates on this thread). The measuring call is {@code getThreadAllocatedBytes(id)} (release 8 API); a pair of
+     * calls without anything between them is measured too and subtracted per call, so the measurement's own cost does
+     * not count. Tolerance: at most {@link #ALLOCATING_CALLS} of the 300 calls may allocate, {@link #DISPATCH_TOLERANCE}
+     * bytes in all; a per-call allocation shows in every call and fails.
+     */
+    private static void dispatchAllocation() throws Exception {
+        for (int round = 0; round < 2; round++) {                 // round 0: 100 calls to warm up
+            final int calls = round == 0 ? 100 : 300;
+            onClient(() -> {
+                dispatchBytes = 0;
+                allocatingCalls = 0;
+                maxCallBytes = 0;
+                measured = 0;
+                measureLeft = calls;
+                return null;
+            });
+            waitUntil(() -> measureLeft == 0, 60_000, "measured dispatch calls (error " + measureError + ")");
+        }
+        long[] r = onClient(() -> new long[] {dispatchBytes, measured, allocatingCalls, maxCallBytes});
+        check(measureError == null, "dispatch threw " + measureError);
+        check(r[1] == 300, "measured calls " + r[1]);
+        check(r[2] <= ALLOCATING_CALLS && r[0] <= DISPATCH_TOLERANCE, "LegacyKeys.dispatch(MinecraftClient) allocated "
+                + r[0] + " bytes in 300 ticks, in " + r[2] + " calls (largest " + r[3] + ")");
+        pass("the per-tick key dispatch with the window check allocates " + r[0] + " bytes in 300 ticks, in " + r[2]
+                + " calls (largest " + r[3] + " bytes, measurement cost subtracted)");
+    }
+
+    // Written and read on the client thread.
+    private static int measureLeft;
+    private static int measured;
+    private static long dispatchBytes;
+    private static long allocatingCalls;
+    private static long maxCallBytes;
+    private static volatile Throwable measureError;
+    private static final com.sun.management.ThreadMXBean THREADS =
+            (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
+
+    /** From the harness's end-of-tick listener: the measured extra dispatch call. */
+    private static void measureDispatch(MinecraftClient mc) {
+        if (measureLeft <= 0) {
+            return;
+        }
+        long id = Thread.currentThread().getId();
+        long a = THREADS.getThreadAllocatedBytes(id);
+        long b = THREADS.getThreadAllocatedBytes(id);
+        try {
+            LegacyKeys.dispatch(mc);
+        } catch (Throwable e) {
+            measureError = e;
+            measureLeft = 0;
+            return;
+        }
+        long c = THREADS.getThreadAllocatedBytes(id);
+        long net = (c - b) - (b - a);
+        dispatchBytes += Math.max(0, net);
+        if (net > 0) {
+            allocatingCalls++;
+            maxCallBytes = Math.max(maxCallBytes, net);
+        }
+        measured++;
+        measureLeft--;
+    }
+
+    /** The game's options.txt, written by the earlier run, keeps one line per binding of the mod. */
+    private static void optionsKeepTheKeyLines() throws Exception {
+        File options = onClient(() -> new File(MinecraftClient.getInstance().runDirectory, "options.txt"));
+        List<String> lines = Files.readAllLines(options.toPath(), StandardCharsets.UTF_8);
+        List<String> found = new ArrayList<String>();
+        for (String key : HENGST_KEYS) {
+            for (String line : lines) {
+                if (line.startsWith("key_" + key + ":")) {
+                    found.add(line);
+                }
+            }
+        }
+        check(found.size() == HENGST_KEYS.length, "options.txt has one line per mod binding, got " + found);
+        check(found.get(0).endsWith(":" + Keyboard.KEY_RSHIFT), "settings key line " + found.get(0));
+        for (int i = 1; i < found.size(); i++) {
+            check(found.get(i).endsWith(":" + Keyboard.KEY_NONE), "unbound key line " + found.get(i));
+        }
+        pass("restart: options.txt keeps the lines of all four bindings " + found);
+    }
+
+    // ---- M1a helpers ----
+
+    private interface Predicate {
+        boolean test(String s);
+    }
+
+    private static Predicate equal(final String expected) {
+        return new Predicate() {
+            @Override
+            public boolean test(String s) {
+                return expected.equals(s);
+            }
+        };
+    }
+
+    private static Predicate not(final String other) {
+        return new Predicate() {
+            @Override
+            public boolean test(String s) {
+                return !other.equals(s);
+            }
+        };
+    }
+
+    private static Predicate matching(final String regex) {
+        return new Predicate() {
+            @Override
+            public boolean test(String s) {
+                return s.matches(regex);
+            }
+        };
+    }
+
+    /** Client thread only. */
+    private static TextHudModule module(HengstCore core, String id) {
+        return (TextHudModule) core.registry().byId(id);
+    }
+
+    private static void setEnabled(final HengstCore core, final String id, final boolean on) throws Exception {
+        final int nr = core.registry().byId(id).number();
+        onClient(() -> {
+            core.activeProfile().module(id).setEnabled(on);
+            core.applyConfigForTest();
+            return null;
+        });
+        check(onClient(() -> FeatureState.on(nr)) == on, id + (on ? " on" : " off") + " in the feature state");
+    }
+
+    private static void setOption(final HengstCore core, final String id, final String key, final Object value)
+            throws Exception {
+        onClient(() -> {
+            core.activeProfile().module(id).setOption(key, value);
+            core.applyConfigForTest();
+            return null;
+        });
+    }
+
+    /** Waits until the module's text passes; returns it. */
+    private static String waitText(final HengstCore core, final String id, final Predicate ok, long maxMillis,
+            String what) throws Exception {
+        long deadline = System.nanoTime() + maxMillis * 1_000_000L;
+        while (true) {
+            String t = onClient(() -> module(core, id).text());
+            if (ok.test(t)) {
+                return t;
+            }
+            check(System.nanoTime() <= deadline, what + " within " + maxMillis + " ms: text '" + t + "'");
+            Thread.sleep(20);
+        }
+    }
+
+    /** The module's box, shown against a fresh F1 baseline of the same view; returns the box. */
+    private static int[] shownByPixels(String id, String name) throws Exception {
+        settle();
+        Layout layout = layout();
+        BufferedImage shown = shot(name);
+        BufferedImage hidden = f1Baseline(name + "-f1");
+        checkShown(shown, hidden, layout, id, id + " drawn");
+        return layout.rect(id);
+    }
+
+    /** Switched off: not laid out, and where its box was the frame equals a fresh F1 baseline. */
+    private static void offAndGone(HengstCore core, String id, int[] rect, String name) throws Exception {
+        setEnabled(core, id, false);
+        settle();
+        check(!layout().has(id), id + " not laid out after switching it off");
+        BufferedImage img = shot(name);
+        BufferedImage hidden = f1Baseline(name + "-f1");
+        checkHidden(img, hidden, rect, id + " gone after switching it off");
+    }
+
+    /**
+     * Negative control of the pixel check: the module drawn without background and shadow in the colour of the sky
+     * behind it must fail the shown-check (no white text and no difference from the F1 baseline). Restores the style.
+     */
+    private static void invisibleNegativeControl(final HengstCore core, final String id) throws Exception {
+        int[] r = layout().rect(id);
+        BufferedImage base = f1Baseline("hengst-40-" + id + "-control-f1");
+        final int sky = meanColour(base, r);
+        onClient(() -> {
+            ModuleConfig c = core.activeProfile().module(id);
+            c.setBackground(false);
+            c.setShadow(false);
+            c.setTextColor(0xFF000000 | sky);
+            core.applyConfigForTest();
+            return null;
+        });
+        try {
+            settle();
+            Layout layout = layout();
+            BufferedImage img = shot("hengst-40-" + id + "-invisible");
+            boolean failed;
+            try {
+                checkShown(img, base, layout, id, "negative control");
+                failed = false;
+            } catch (AssertionError expected) {
+                failed = true;
+            }
+            double diff = diffFraction(img, base, r);
+            check(failed && diff < 0.2, "negative control: an invisible " + id + " fails the pixel check (differing "
+                    + diff + ")");
+        } finally {
+            onClient(() -> {
+                ModuleConfig c = core.activeProfile().module(id);
+                c.setBackground(true);
+                c.setShadow(true);
+                c.setTextColor(0xFFFFFFFF);
+                core.applyConfigForTest();
+                return null;
+            });
+        }
+    }
+
+    /** Where a module with no box would be drawn: its default anchor and offsets, one text line high. */
+    private static int[] defaultPlace(HengstCore core, String id, Layout l) throws Exception {
+        HudModule m = (HudModule) core.registry().byId(id);
+        check(m.defaultAnchor() == Anchor.TOP_RIGHT, id + " default anchor " + m.defaultAnchor());
+        int w = l.w / 3;
+        int h = onClient(() -> MinecraftClient.getInstance().textRenderer.fontHeight) + 4;
+        int x2 = l.w + m.defaultOffsetX();
+        int y1 = m.defaultOffsetY();
+        return new int[] {x2 - w, y1, x2, y1 + h};
+    }
+
+    private static void face(final float yaw) throws Exception {
+        onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            mc.player.yaw = yaw;
+            mc.player.prevYaw = yaw;
+            return null;
+        });
+        waitTicks(2);
+    }
+
+    private static long usedBytes() {
+        Runtime rt = Runtime.getRuntime();
+        return rt.totalMemory() - rt.freeMemory();
+    }
+
+    /** The number of "4.3 m/s", or -1. */
+    private static double speed(String text) {
+        int end = text.indexOf(" m/s");
+        return end < 0 ? -1 : Double.parseDouble(text.substring(0, end));
+    }
+
+    private static int clockMinutes(String hhmm) {
+        return Integer.parseInt(hhmm.substring(0, 2)) * 60 + Integer.parseInt(hhmm.substring(3, 5));
+    }
+
+    private static int clockMinutes(String twelve, String pm) {
+        int colon = twelve.indexOf(':');
+        int hour = Integer.parseInt(twelve.substring(0, colon)) % 12;
+        int minute = Integer.parseInt(twelve.substring(colon + 1, colon + 3));
+        return (twelve.endsWith(pm) ? hour + 12 : hour) * 60 + minute;
+    }
+
+    /** Within one minute of the system time, across midnight too. */
+    private static void checkClose(int shownMinutes, String what) {
+        Calendar now = Calendar.getInstance();
+        int d = Math.abs(now.get(Calendar.HOUR_OF_DAY) * 60 + now.get(Calendar.MINUTE) - shownMinutes);
+        d = Math.min(d, 1440 - d);
+        check(d <= 1, what + " vs system time " + now.getTime());
+    }
+
+    /** "m:ss.t" or "h:mm:ss.t" in seconds. */
+    private static double stopwatchSeconds(String text) {
+        String[] parts = text.split(":");
+        double s = Double.parseDouble(parts[parts.length - 1]);
+        int f = 60;
+        for (int i = parts.length - 2; i >= 0; i--, f *= 60) {
+            s += Integer.parseInt(parts[i]) * (double) f;
+        }
+        return s;
+    }
+
+    /** Client thread only. */
+    private static KeyBinding binding(String name) {
+        for (KeyBinding k : MinecraftClient.getInstance().options.allKeys) {
+            if (k.getTranslationKey().equals(name)) {
+                return k;
+            }
+        }
+        throw new AssertionError("[hengst-gametest] FAIL key binding " + name + " not registered");
+    }
+
+    private static String i18n(final HengstCore core, final String key) throws Exception {
+        return onClient(() -> core.context().i18n().get(key));
+    }
+
+    /** The mod's .lang file (key=value, UTF-8). */
+    private static Map<String, String> langFile(String lang) throws Exception {
+        InputStream in = LegacyGameTest.class.getResourceAsStream("/assets/hengst/lang/" + lang + ".lang");
+        check(in != null, "language file " + lang);
+        Map<String, String> out = new HashMap<String, String>();
+        BufferedReader r = new BufferedReader(new InputStreamReader(in, StandardCharsets.UTF_8));
+        try {
+            String line;
+            while ((line = r.readLine()) != null) {
+                int eq = line.indexOf('=');
+                if (eq > 0) {
+                    out.put(line.substring(0, eq), line.substring(eq + 1));
+                }
+            }
+        } finally {
+            r.close();
+        }
+        return out;
+    }
+
+    private static String join(String[] lines) {
+        StringBuilder b = new StringBuilder();
+        for (int i = 0; i < lines.length; i++) {
+            if (i > 0) {
+                b.append(' ');
+            }
+            b.append(lines[i]);
+        }
+        return b.toString();
+    }
+
+    /** The core's screen behind the host and the core's SafeScreen wrapper. */
+    private static UiScreen settingsUi() throws Exception {
+        return onClient(() -> {
+            Screen host = MinecraftClient.getInstance().currentScreen;
+            check(host instanceof LegacyScreenHost, "a mod screen is open, got " + host);
+            UiScreen ui = unwrap(((LegacyScreenHost) host).ui());
+            check(ui instanceof SettingsScreen, "the settings are open, got " + ui);
+            return ui;
+        });
+    }
+
+    /** What the core's screen draws, through a recording canvas of the host's current size. */
+    private static Layout record(final UiScreen ui) throws Exception {
+        return onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            Layout c = new Layout(mc);
+            Screen host = mc.currentScreen;
+            c.resize(host.width, host.height);
+            ui.render(c, -1, -1, 0.0F);
+            return c;
+        });
+    }
+
+    private static Widget featureRow(List<?> rows, String id) throws Exception {
+        for (Object row : rows) {
+            Field f;
+            try {
+                f = row.getClass().getDeclaredField("feature");
+            } catch (NoSuchFieldException groupHeading) {
+                continue;
+            }
+            f.setAccessible(true);
+            if (id.equals(((Feature) f.get(row)).id())) {
+                return (Widget) row;
+            }
+        }
+        throw new AssertionError("[hengst-gametest] FAIL no settings row for " + id);
+    }
+
+    /** {x, y, w, h} of a scroll list. */
+    private static int[] bounds(ScrollList list) throws Exception {
+        return new int[] {(Integer) field(list, "x"), (Integer) field(list, "y"), (Integer) field(list, "w"),
+            (Integer) field(list, "h")};
+    }
+
+    private static int staticInt(Object owner, String name) throws Exception {
+        Field f = owner.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.getInt(null);
+    }
+
+    /** Mean RGB of the region, as 0xRRGGBB. */
+    private static int meanColour(BufferedImage img, int[] r) {
+        int[] p = pixels(img, r);
+        long red = 0;
+        long green = 0;
+        long blue = 0;
+        int total = 0;
+        for (int y = p[1]; y < p[3]; y++) {
+            for (int x = p[0]; x < p[2]; x++) {
+                int c = img.getRGB(x, y);
+                red += (c >> 16) & 255;
+                green += (c >> 8) & 255;
+                blue += c & 255;
+                total++;
+            }
+        }
+        check(total > 0, "empty pixel region " + Arrays.toString(r));
+        return (int) (red / total) << 16 | (int) (green / total) << 8 | (int) (blue / total);
+    }
+
 
     /**
      * A fill with alpha 25 drawn after the mod's text, where the font renderer has left the alpha test on with its
@@ -586,7 +1515,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         pass("input queued after the closing event of a tick does not reach the closed screen; raw clicks still seen");
     }
 
-    /** Wheel over the settings' feature list: one notch moves it by one row (20 px, SettingsScreen.ROW). */
+    /** Wheel over the settings' feature list (the full catalog overflows it): one notch moves it by one row. */
     private static void settingsWheel() throws Exception {
         final ScrollList list = onClient(() -> {
             UiScreen settings = unwrap(((LegacyScreenHost) MinecraftClient.getInstance().currentScreen).ui());
@@ -594,6 +1523,10 @@ public final class LegacyGameTest implements ClientModInitializer {
         });
         int[] bounds = onClient(() -> new int[] {(Integer) field(list, "x"), (Integer) field(list, "y"),
                 (Integer) field(list, "w"), (Integer) field(list, "h")});
+        final int rowH = onClient(() -> (Integer) field(list, "rowHeight"));
+        int rows = onClient(() -> ((List<?>) field(list, "widgets")).size());
+        check(onClient(list::overflows) && rows * rowH > bounds[3], "the full catalog overflows the list: " + rows
+                + " rows of " + rowH + " px in " + bounds[3] + " px");
         int gx = bounds[0] + bounds[2] / 2;
         int gy = bounds[1] + bounds[3] / 2;
         int start = onClient(list::offset);
@@ -602,19 +1535,21 @@ public final class LegacyGameTest implements ClientModInitializer {
         wheel(gx, gy, -120);
         waitTicks(2);
         int down = onClient(list::offset);
-        check(down == 20, "one notch towards the user scrolls the feature list down by one row, offset " + down);
+        check(down == rowH, "one notch towards the user scrolls the feature list down by one row (" + rowH
+                + "), offset " + down);
         settle();
         BufferedImage scrolled = shot("hengst-11-settings-list-scrolled");
         int[] listRect = {bounds[0], bounds[1], bounds[0] + bounds[2], bounds[1] + bounds[3]};
         check(diffFraction(top, scrolled, listRect) > 0.01, "the scrolled list is drawn differently");
         wheel(gx, gy, 60);
         waitTicks(2);
-        check(onClient(list::offset) == 20, "half a notch does nothing yet");
+        check(onClient(list::offset) == rowH, "half a notch does nothing yet");
         wheel(gx, gy, 60);
         waitTicks(2);
         int back = onClient(list::offset);
         check(back == 0, "two half notches away from the user scroll back up by one step, offset " + back);
-        pass("wheel over the settings list: one row (20 px) per notch, half notches accumulate");
+        pass("wheel over the settings list (full catalog, " + rows + " rows): one row (" + rowH
+                + " px) per notch, half notches accumulate");
     }
 
     /** Scroll notches, key repeat and the removal rule on a probe screen hosted by the adapter. */
@@ -733,6 +1668,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         check(anchor == Anchor.BOTTOM_RIGHT, "restart: loaded FPS anchor (run runGameTest first), got " + anchor);
         checkFpsBottomRight("hengst-24-restart-fps-bottom-right", "hengst-25-restart-f1");
         pass("restart: the FPS module is drawn at the saved position (pixels)");
+        optionsKeepTheKeyLines();
     }
 
     // ---- checks ----
@@ -1127,18 +2063,6 @@ public final class LegacyGameTest implements ClientModInitializer {
         return sb.toString();
     }
 
-    /** Enough extra rows that the settings' feature list can scroll on a 240 px high GUI. */
-    private static void registerDummyFeatures(final HengstCore core) throws Exception {
-        onClient(() -> {
-            for (int i = 0; i < 16; i++) {
-                core.registerForTest(new Feature("gametest_row_" + i, 900 + i, FeatureGroup.COMFORT,
-                        EnumSet.of(GameVersion.V1_8_9)) {
-                });
-            }
-            return null;
-        });
-    }
-
     /** The core's screen behind its SafeScreen wrapper (HengstCore's private inner class, field "screen"). */
     private static UiScreen unwrap(UiScreen safe) throws Exception {
         return (UiScreen) field(safe, "screen");
@@ -1151,7 +2075,9 @@ public final class LegacyGameTest implements ClientModInitializer {
     }
 
     /**
-     * A second {@code onHudRender} on the client thread, outside the frame, into a recording canvas. It cannot change
+     * A second {@code onHudRender} on the client thread, outside the frame, into a recording canvas. A box belongs to
+     * the n-th active module the renderer does not skip (like HudRenderer: a module whose scaled width or height is 0,
+     * an empty text, gets no box). It cannot change
      * core state the checks read: HudRenderer.render only reads the profile and the game, and the only fields the
      * modules write while rendering are their text and label width caches, which the recording canvas fills with the
      * same font renderer metrics the HUD canvas uses.
@@ -1160,12 +2086,20 @@ public final class LegacyGameTest implements ClientModInitializer {
         return onClient(() -> {
             MinecraftClient mc = MinecraftClient.getInstance();
             Layout c = new Layout(mc);
-            HengstLegacyMod.core().onHudRender(c, 0.0F);
+            HengstCore core = HengstLegacyMod.core();
+            core.onHudRender(c, 0.0F);
             c.ids = new String[c.boxes.size()];
-            HudModule[] modules = HengstLegacyMod.core().renderer().activeModules();
-            for (int i = 0; i < c.ids.length && i < modules.length; i++) {
-                c.ids[i] = modules[i].id();
+            HudModule[] modules = core.renderer().activeModules();
+            ModuleConfig[] configs = core.renderer().activeConfigs();
+            int n = 0;
+            for (int i = 0; i < modules.length && n < c.ids.length; i++) {
+                float scale = configs[i].scale();
+                if (Math.round(modules[i].width(c, configs[i]) * scale) > 0
+                        && Math.round(modules[i].height(c, configs[i]) * scale) > 0) {
+                    c.ids[n++] = modules[i].id();
+                }
             }
+            check(n == c.ids.length, "every box belongs to a drawn module: " + n + " of " + c.ids.length);
             guiWidth = c.w;
             return c;
         });
@@ -1303,13 +2237,15 @@ public final class LegacyGameTest implements ClientModInitializer {
         final int y;
         final int w;
         final int h;
+        final int argb;
 
-        Text(String text, int x, int y, int w, int h) {
+        Text(String text, int x, int y, int w, int h, int argb) {
             this.text = text;
             this.x = x;
             this.y = y;
             this.w = w;
             this.h = h;
+            this.argb = argb;
         }
 
         int[] rect() {
@@ -1328,8 +2264,8 @@ public final class LegacyGameTest implements ClientModInitializer {
      * the screenshots do.
      */
     private static final class Layout implements Canvas {
-        final int w;
-        final int h;
+        int w;
+        int h;
         private final net.minecraft.client.font.TextRenderer font;
         final List<int[]> boxes = new ArrayList<int[]>();
         final List<int[]> fills = new ArrayList<int[]>();
@@ -1365,6 +2301,40 @@ public final class LegacyGameTest implements ClientModInitializer {
         /** Open sky at the top centre: no vanilla HUD, no mod module, no hand, no crosshair. */
         int[] control() {
             return new int[] {w * 2 / 5, h / 12, w * 3 / 5, h / 6};
+        }
+
+        /** A screen's size (the host may be laid out narrower than the GUI). */
+        void resize(int width, int height) {
+            w = width;
+            h = height;
+        }
+
+        boolean has(String id) {
+            return Arrays.asList(ids).contains(id);
+        }
+
+        /** The first text drawn exactly so, in this colour, or null. */
+        Text find(String text, int argb) {
+            for (Text t : texts) {
+                if (t.text.equals(text) && t.argb == argb) {
+                    return t;
+                }
+            }
+            return null;
+        }
+
+        /** The first text that starts with this label (option rows draw "label: value"), or null. */
+        Text findStart(String label) {
+            for (Text t : texts) {
+                if (t.text.startsWith(label)) {
+                    return t;
+                }
+            }
+            return null;
+        }
+
+        int[] fill(int argb) {
+            return fillWithColour(argb);
         }
 
         /** The first fill drawn with exactly this colour, in GUI pixels. */
@@ -1419,7 +2389,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         @Override
         public void text(String text, int x, int y, int argb, boolean shadow) {
             int[] r = extend(x, y, x + font.getStringWidth(text), y + font.fontHeight);
-            texts.add(new Text(text, r[0], r[1], r[2] - r[0], r[3] - r[1]));
+            texts.add(new Text(text, r[0], r[1], r[2] - r[0], r[3] - r[1], argb));
         }
 
         @Override

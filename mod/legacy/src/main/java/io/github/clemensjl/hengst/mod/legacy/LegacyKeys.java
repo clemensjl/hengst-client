@@ -6,6 +6,7 @@ import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import java.util.List;
 import java.util.function.ToIntFunction;
+import java.util.function.UnaryOperator;
 import net.legacyfabric.fabric.api.client.keybinding.v1.KeyBindingHelper;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.option.KeyBinding;
@@ -43,16 +44,33 @@ final class LegacyKeys {
      * keeps the mod inert then.
      */
     static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes) {
+        register(keys, codes, REGISTRAR);
+    }
+
+    /** The API mod's helper; replaceable through the overload below, for the adapter tests. */
+    static final UnaryOperator<KeyBinding> REGISTRAR = new UnaryOperator<KeyBinding>() {
+        @Override
+        public KeyBinding apply(KeyBinding binding) {
+            return KeyBindingHelper.registerKeyBinding(binding);
+        }
+    };
+
+    /** {@link #register(List, ToIntFunction)} with the registration step given. */
+    static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes, UnaryOperator<KeyBinding> registrar) {
         int[] keyCodes = new int[keys.size()];
         for (int i = 0; i < keyCodes.length; i++) {
             keyCodes[i] = codes.applyAsInt(keys.get(i).defaultKey());
         }
         KeyBinding[] built = new KeyBinding[keyCodes.length];
         for (int i = 0; i < built.length; i++) {
-            built[i] = KeyBindingHelper.registerKeyBinding(
-                    new KeyBinding(keys.get(i).translationKey(), keyCodes[i], CATEGORY));
+            built[i] = registrar.apply(new KeyBinding(keys.get(i).translationKey(), keyCodes[i], CATEGORY));
         }
         bindings = built;
+    }
+
+    /** The registered bindings in index order; empty until {@link #register} succeeded. For tests. */
+    static KeyBinding[] bindings() {
+        return bindings;
     }
 
     /** The LWJGL 2 key code for a default key. */
