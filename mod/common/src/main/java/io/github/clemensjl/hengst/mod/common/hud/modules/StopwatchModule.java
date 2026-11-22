@@ -25,7 +25,8 @@ import java.util.List;
  * not stop a running stopwatch. The module is ticked at 20 Hz while on, also outside a world.
  *
  * <p>Both keys on the same physical key: on the modern versions both bindings fire in the same tick in catalog order
- * (toggle, then reset), so the stopwatch ends stopped at zero; the settings hint asks for two different keys.
+ * (toggle, then reset), so the stopwatch ends stopped at zero. Binding them to two different keys is the player's
+ * choice; the settings hint only says where to bind them (Options > Controls).
  *
  * <p>Text: under one hour {@code m:ss.t} ("0:00.0", "1:05.3", "59:59.9"), from one hour {@code h:mm:ss.t}
  * ("1:00:00.0", "24:00:00.0", "10000:00:00.0"; the hours are not capped and are computed in {@code long}, so a run

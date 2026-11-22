@@ -72,8 +72,8 @@ final class ModernKeys {
     }
 
     /**
-     * The registered mappings in index order; empty until {@link #register} succeeded. The live array, for identity
-     * checks in tests only; nothing may write to it.
+     * The registered mappings in index order; empty until {@link #register} succeeded. The live array, for tests
+     * only: they compare it with the game's binding list and pass it to {@link #tick}; nothing may write to it.
      */
     static KeyMapping[] mappings() {
         return mappings;

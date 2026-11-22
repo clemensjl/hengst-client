@@ -1025,6 +1025,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
     private static long allocMod;
     private static long allocCanvas;
     private static int allocFramesWithBytes;
+    private static int allocFramesWithBytesNoNewText;
     private static int allocTick0;
     private static final StringBuilder ALLOC_DIAG = new StringBuilder();
     private static final int[] TEXT_CHANGES = new int[MAX_MODULES];
@@ -1257,6 +1258,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             allocMod = 0;
             allocCanvas = 0;
             allocFramesWithBytes = 0;
+            allocFramesWithBytesNoNewText = 0;
             Arrays.fill(TEXT_CHANGES, 0);
             Arrays.fill(LAST_TEXT, null);
             ALLOC_DIAG.setLength(0);
@@ -1266,7 +1268,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         long deadline2 = System.nanoTime() + 120_000_000_000L;
         ctx.waitFor(mc -> allocLeft == 0 || System.nanoTime() > deadline2, ClientGameTestContext.NO_TIMEOUT);
         long[] r = ctx.computeOnClient(mc -> new long[] {allocLeft, allocHook, allocMod, allocCanvas,
-            allocFramesWithBytes});
+            allocFramesWithBytes, allocFramesWithBytesNoNewText});
         check(r[0] == 0, "allocation window: " + ALLOC_FRAMES + " frames within 120 s");
         int[] changes = ctx.computeOnClient(mc -> TEXT_CHANGES.clone());
         String diag = ctx.computeOnClient(mc -> ALLOC_DIAG.toString());
@@ -1280,6 +1282,11 @@ public final class HengstClientGameTest implements FabricClientGameTest {
                 + " bytes), the game's drawing calls inside it {} bytes; the mod's HUD element in the real pass {} bytes;"
                 + " text changes in the window: {}; frames with bytes:{}", ALLOC_FRAMES, r[2], r[4], r[3], r[1],
                 changed.length() == 0 ? "none" : changed.toString(), diag.isEmpty() ? " none" : diag);
+        // Steady state: a frame in which no module shows a new text allocates nothing in the core's frame call (a new
+        // text may build its fitted form once; that frame is listed above and not asserted).
+        check(r[5] == 0, "the core's frame call allocated in " + r[5] + " frames without a new text: " + diag);
+        pass("the core's frame call allocates nothing in frames without a new text (" + ALLOC_FRAMES + " frames, all"
+                + " eleven on; " + r[2] + " bytes in " + r[4] + " frames with a new text)");
     }
 
     private static final int PROFILE_FRAMES = 1000;
@@ -1399,6 +1406,9 @@ public final class HengstClientGameTest implements FabricClientGameTest {
                     LAST_TEXT[i] = t;
                 }
             }
+        }
+        if (mod != 0 && changed == 0) {
+            allocFramesWithBytesNoNewText++;
         }
         if (mod != 0 && ALLOC_DIAG.length() < 2000) {
             // Cold path, after the measurement: which modules showed a new text in this frame, ticks since the window
@@ -1778,7 +1788,9 @@ public final class HengstClientGameTest implements FabricClientGameTest {
     }
 
     // The core checks the language once a second, in a tick; the wait observes once per tick (50 ms): one second plus
-    // that one tick of observation.
+    // that one tick of observation. The check runs during the reload too, so the core usually has the new language
+    // before the reload ends and this measures 0 ms (every run so far): the assertion only catches a pick-up that
+    // comes later than one second after the reload, not a slow check that still finishes within the reload.
     private static final long LANGUAGE_BOUND_MS = 1_050;
 
     private static boolean noOverlay(Minecraft mc) {

@@ -60,8 +60,8 @@ final class LegacyKeys {
     static final UnaryOperator<KeyBinding> REGISTRAR = KeyBindingHelper::registerKeyBinding;
 
     /**
-     * The registered bindings in index order; empty until {@link #register} succeeded. The live array, for identity
-     * checks in tests only; nothing may write to it.
+     * The registered bindings in index order; empty until {@link #register} succeeded. The live array, for tests
+     * only: they compare it with the game's binding list and pass it to {@link #tick}; nothing may write to it.
      */
     static KeyBinding[] bindings() {
         return bindings;

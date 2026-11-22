@@ -14,7 +14,8 @@ tasks.register('buildAll', Sync) {
 
     // No game-test, harness or test-helper class in a shipped jar, nested jars (jar-in-jar) included.
     doLast {
-        def forbidden = ~/(?i)(gametest|testutil)|(^|\/)Test[A-Z][^\/]*\.class$|Test\.class$/
+        // Case-insensitive only for the package names; class names are matched as written (Latest.class passes).
+        def forbidden = ~/(?i:gametest|testutil)|(^|\/)Test[A-Z][^\/]*\.class$|Test\.class$/
         def jars = ['1.8.9', '1.21.11', '26.3'].collect { file("dist/hengst-mod-${mod_version}+${it}.jar") }
         jars.each { if (!it.isFile()) throw new GradleException("missing ${it}") }
         jars.each { File jar ->

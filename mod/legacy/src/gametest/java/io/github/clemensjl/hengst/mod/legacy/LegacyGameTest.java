@@ -144,15 +144,27 @@ public final class LegacyGameTest implements ClientModInitializer {
         test.start();
         Thread watchdog = new Thread(() -> {
             try {
-                Thread.sleep(TimeUnit.MINUTES.toMillis(12));
+                Thread.sleep(watchdogMillis());
             } catch (InterruptedException e) {
                 return;
             }
-            LOGGER.error("[hengst-gametest] FAIL watchdog: the test did not finish within 12 minutes");
+            LOGGER.error("[hengst-gametest] FAIL watchdog: the test did not finish within " + watchdogMillis() / 60_000
+                    + " minutes");
             System.exit(2);
         }, "hengst-gametest-watchdog");
         watchdog.setDaemon(true);
         watchdog.start();
+    }
+
+    /**
+     * Watchdog limit: 8 minutes for everything but the cost section (the limit before Task 16), plus the cost
+     * section's frames at 30 frames per second (a quarter of the 120 the harness normally reaches; the slowest window
+     * seen was 72). A hang still ends the run; a slow, loaded machine does not.
+     */
+    private static long watchdogMillis() {
+        long cases = 1 + 2L * NEW_IDS.length + 2;                                  // m0, alone, marginal, all, off
+        long frames = cases * (COST_WARMUP + COST_FRAMES) + COST_WARMUP + ALLOC_SETTLE + ALLOC_FRAMES;
+        return TimeUnit.MINUTES.toMillis(8) + frames * 1000 / 30;
     }
 
     // ---- probes (client thread) ----
@@ -221,7 +233,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             mc.player.sendChatMessage("/time set 6000");
             mc.player.sendChatMessage("/gamerule doDaylightCycle false");
-            // No hostile mobs: the cost measurement keeps the player standing for minutes (a slime killed it once).
+            // No hostile mobs: the cost measurement keeps the player standing for minutes; before this, a slime killed
+            // the player in every run, right after the first cost case.
             mc.player.sendChatMessage("/difficulty peaceful");
             // The "Press E to open your inventory" hint would cover the top right (the settings' buttons).
             mc.player.sendChatMessage("/achievement give achievement.openInventory");
@@ -536,7 +549,9 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static final String[] HENGST_KEYS = {"key.hengst.settings", "key.hengst.hud_editor",
         "key.hengst.stopwatch.toggle", "key.hengst.stopwatch.reset"};
     private static final long MEMORY_SLACK_MB = 64;
-    private static final long LANGUAGE_BOUND_MS = 1_500;
+    // The core checks the language once a second, in a tick; measured from the end of the blocking reload. One
+    // second plus one tick (50 ms) plus the 20 ms poll of waitUntil and the frame its client call waits for.
+    private static final long LANGUAGE_BOUND_MS = 1_100;
     // The core's own colours, read from its constants (private there).
     private static final int GROUP_TEXT = constant(SettingsScreen.class, "GROUP_TEXT");
     private static final int NOTICE = constant(SettingsScreen.class, "NOTICE");
@@ -1058,16 +1073,19 @@ public final class LegacyGameTest implements ClientModInitializer {
                 allocatingCalls = 0;
                 allocLog.setLength(0);
                 focusFlips = 0;
+                readingCostMax = 0;
                 measured = 0;
                 measureLeft = calls;
                 return null;
             });
             waitUntil(() -> measureLeft == 0, 60_000, "measured dispatch calls (error " + measureError + ")");
             String log = onClient(() -> allocLog.toString());
-            long[] r = onClient(() -> new long[] {dispatchBytes, gameBytes, allocatingCalls, measured, focusFlips});
+            long[] r = onClient(() -> new long[] {dispatchBytes, gameBytes, allocatingCalls, measured, focusFlips,
+                readingCostMax});
             LOGGER.info("[hengst-gametest] dispatch window " + round + " (" + r[3] + " calls, " + r[4]
                     + " focus changes): mod " + r[0] + " bytes in "
-                    + r[2] + " calls, game window query " + r[1] + " bytes; allocating calls [index focused mod/game"
+                    + r[2] + " calls, game window query " + r[1] + " bytes, reading cost subtracted per reading up to "
+                    + r[5] + " bytes; allocating calls [index focused mod/game"
                     + " bytes, call time, collections during the call, JVM uptime]:" + (log.isEmpty() ? " none" : log));
             if (round > 0) {
                 windows[round - 1] = r;
@@ -1111,6 +1129,7 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static long allocatingCalls;
     private static final StringBuilder allocLog = new StringBuilder();
     private static int focusFlips;
+    private static long readingCostMax;
     // The collectors, read around each measured call: a collection in the call is logged with an allocating call.
     private static final java.lang.management.GarbageCollectorMXBean[] GCS =
             ManagementFactory.getGarbageCollectorMXBeans().toArray(new java.lang.management.GarbageCollectorMXBean[0]);
@@ -1156,6 +1175,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         long micros = (System.nanoTime() - t0) / 1000;
         long gcs = collections() - gc0;
         long cost = b - a;
+        readingCostMax = Math.max(readingCostMax, cost);
         long game = Math.max(0, (c - b) - cost);
         long net = Math.max(0, (d - c) - cost);
         gameBytes += game;
@@ -1231,6 +1251,8 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static long allocMod;
     private static long allocCanvas;
     private static int allocFramesWithBytes;
+    private static int allocFramesWithBytesNoNewText;
+    private static long allocReadingCostMax;
     private static int allocTick0;
     private static final StringBuilder ALLOC_DIAG = new StringBuilder();
     private static final int[] TEXT_CHANGES = new int[MAX_MODULES];
@@ -1454,6 +1476,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             allocMod = 0;
             allocCanvas = 0;
             allocFramesWithBytes = 0;
+            allocFramesWithBytesNoNewText = 0;
+            allocReadingCostMax = 0;
             Arrays.fill(TEXT_CHANGES, 0);
             Arrays.fill(LAST_TEXT, null);
             ALLOC_DIAG.setLength(0);
@@ -1462,7 +1486,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             return null;
         });
         waitUntil(() -> allocLeft == 0, 120_000, "allocation window: " + ALLOC_FRAMES + " frames");
-        long[] r = onClient(() -> new long[] {allocHook, allocMod, allocCanvas, allocFramesWithBytes});
+        long[] r = onClient(() -> new long[] {allocHook, allocMod, allocCanvas, allocFramesWithBytes,
+            allocFramesWithBytesNoNewText, allocReadingCostMax});
         int[] changes = onClient(() -> TEXT_CHANGES.clone());
         String diag = onClient(() -> ALLOC_DIAG.toString());
         StringBuilder changed = new StringBuilder();
@@ -1474,8 +1499,13 @@ public final class LegacyGameTest implements ClientModInitializer {
         LOGGER.info("[hengst-gametest] COST alloc " + ALLOC_FRAMES + " frames, all eleven on: the core's frame call "
                 + r[1] + " bytes (" + r[3] + " frames with bytes), the game's drawing calls inside it " + r[2]
                 + " bytes; the mod's HUD hook in the real pass " + r[0] + " bytes; text changes in the window: "
-                + (changed.length() == 0 ? "none" : changed.toString()) + " (measurement cost subtracted); frames with"
-                + " bytes:" + (diag.isEmpty() ? " none" : diag));
+                + (changed.length() == 0 ? "none" : changed.toString()) + " (reading cost subtracted, up to " + r[5]
+                + " bytes per reading); frames with bytes:" + (diag.isEmpty() ? " none" : diag));
+        // Steady state: a frame in which no module shows a new text allocates nothing in the core's frame call (a new
+        // text may build its fitted form once; that frame is listed above and not asserted).
+        check(r[4] == 0, "the core's frame call allocated in " + r[4] + " frames without a new text: " + diag);
+        pass("the core's frame call allocates nothing in frames without a new text (" + ALLOC_FRAMES + " frames, all"
+                + " eleven on; " + r[1] + " bytes in " + r[3] + " frames with a new text)");
     }
 
     // HUD probe state for the two windows (client thread).
@@ -1504,6 +1534,7 @@ public final class LegacyGameTest implements ClientModInitializer {
             long a0 = allocated();
             long a1 = allocated();
             readingCost = a1 - a0;
+            allocReadingCostMax = Math.max(allocReadingCostMax, readingCost);
             allocStart = allocated();
         }
     }
@@ -1567,6 +1598,9 @@ public final class LegacyGameTest implements ClientModInitializer {
                         LAST_TEXT[i] = t;
                     }
                 }
+            }
+            if (mod != 0 && changed == 0) {
+                allocFramesWithBytesNoNewText++;
             }
             if (mod != 0 && ALLOC_DIAG.length() < 2000) {
                 // Cold path, after the measurement: which modules showed a new text in this frame, ticks since the window
