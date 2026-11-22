@@ -15,15 +15,7 @@ fn tree(package: &str, features: &str) -> String {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.toml");
     let mut cmd = Command::new(env!("CARGO"));
     cmd.args([
-        "tree",
-        "--locked",
-        "--offline",
-        "-e",
-        "normal",
-        "--prefix",
-        "none",
-        "--format",
-        "{p}",
+        "tree", "--locked", "-e", "normal", "--prefix", "none", "--format", "{p}",
     ])
     .arg("--manifest-path")
     .arg(&manifest)

@@ -900,7 +900,7 @@ async fn device_codes_are_bound_to_their_client_single_use_and_expire() {
     let again = poll_device(&s, "e2e-client", &dc).await;
     assert_eq!((again.status, again.error()), (400, "invalid_grant"));
 
-    s.auth.set_code_lifetime(Duration::from_millis(150));
+    s.auth.set_device_lifetime(Duration::from_millis(150));
     let dc = start_device(&s).await;
     tokio::time::sleep(Duration::from_millis(400)).await;
     let r = poll_device(&s, "e2e-client", &dc).await;
@@ -1080,4 +1080,45 @@ async fn failure_scenarios_answer_with_the_shapes_the_core_reads() {
     )
     .await;
     assert!(x.body["Token"].is_string() && x.body["DisplayClaims"]["xui"][0]["uhs"].is_string());
+}
+
+#[tokio::test]
+async fn issued_secrets_skips_values_shorter_than_eight_characters() {
+    let s = Services::start(AuthScenario::Ok).await;
+    let params = changed(&good_authorize(&challenge(VERIFIER)), "state", Some("abc"));
+    assert_eq!(authorize(&s, &params).await.status, 302);
+    let secrets = s.auth.issued_secrets();
+    assert!(secrets.iter().all(|v| v.len() >= 8), "{secrets:?}");
+    assert!(!secrets.contains(&"abc".to_string()));
+    assert!(secrets.contains(&PLAYER_A.minecraft_token.to_string()));
+}
+
+#[tokio::test]
+async fn device_code_lifetime_is_independent_of_the_authorization_code_lifetime() {
+    let s = Services::start(AuthScenario::Ok).await;
+    s.auth.set_code_lifetime(Duration::from_millis(100));
+    let r = reply(
+        http()
+            .post(format!("{}{MSA}/devicecode", s.uri()))
+            .form(&[("client_id", "e2e-client"), ("scope", SCOPE)])
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(r.body["expires_in"], 900);
+    let dc = r.body["device_code"].as_str().unwrap().to_string();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(poll_device(&s, "e2e-client", &dc).await.status, 200);
+    s.auth.set_device_lifetime(Duration::from_secs(5));
+    let r = reply(
+        http()
+            .post(format!("{}{MSA}/devicecode", s.uri()))
+            .form(&[("client_id", "e2e-client"), ("scope", SCOPE)])
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(r.body["expires_in"], 5);
 }

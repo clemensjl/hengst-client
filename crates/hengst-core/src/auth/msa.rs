@@ -1,6 +1,6 @@
 //! Microsoft identity platform: device code flow and token refresh.
 
-use super::{http_error, AuthError, MicrosoftAuth, SCOPE};
+use super::{AuthError, MicrosoftAuth, SCOPE};
 use crate::download::read_limited;
 use crate::secret::Secret;
 use crate::{Error, Result};
@@ -90,7 +90,10 @@ impl MicrosoftAuth {
             let code = error_code(resp, &url).await?;
             return Err(map_client_error(code, Error::Status { url, status }));
         }
-        resp.json().await.map_err(http_error(&url))
+        let body = read_limited(resp, &url, MAX_TOKEN_RESPONSE_BYTES).await?;
+        // serde's message can quote a value of the body; the error names the endpoint only.
+        serde_json::from_slice(&body)
+            .map_err(|_| AuthError::BadResponse("the Microsoft device code endpoint").into())
     }
 
     pub async fn poll_device_login(&self, code: &DeviceCode) -> Result<MsaTokens> {
@@ -222,6 +225,33 @@ mod tests {
         assert_eq!(dc.user_code, "ABCD-EFGH");
         assert_eq!(dc.verification_uri, "https://microsoft.com/link");
         assert_eq!(dc.device_code.expose(), "dc-1");
+    }
+
+    #[tokio::test]
+    async fn device_code_answer_is_size_capped_and_malformed_bodies_do_not_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/devicecode"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("x".repeat(MAX_TOKEN_RESPONSE_BYTES + 1)),
+            )
+            .mount(&server)
+            .await;
+        let err = auth(&server).start_device_login().await.unwrap_err();
+        assert!(matches!(err, Error::TooLarge { .. }), "{err}");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/devicecode"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"device_code\": 5}"))
+            .mount(&server)
+            .await;
+        let err = auth(&server).start_device_login().await.unwrap_err();
+        assert!(
+            matches!(err, Error::Auth(AuthError::BadResponse(_))),
+            "{err}"
+        );
     }
 
     #[tokio::test]

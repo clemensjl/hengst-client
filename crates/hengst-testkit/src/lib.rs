@@ -29,7 +29,10 @@ use wiremock::MockServer;
 /// listener requires) and returns the page the launcher answered with. Call it concurrently with
 /// `finish_browser_login`: the page only arrives after the token exchange.
 pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error> {
-    reqwest::Client::new()
+    // No proxy: the loopback listener must be reached directly, whatever the machine configures.
+    reqwest::Client::builder()
+        .no_proxy()
+        .build()?
         .get(authorize_url)
         .send()
         .await?

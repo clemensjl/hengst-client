@@ -34,6 +34,9 @@ const XSTS_RELYING_PARTY: &str = "rp://api.minecraftservices.com/";
 /// The user hash (`uhs`) every mock Xbox token carries.
 pub const UHS: &str = "test-uhs";
 
+/// `issued_secrets` leaves out values shorter than this.
+const MIN_SECRET_LEN: usize = 8;
+
 /// Lifetime of the Minecraft token the mock hands out, as the real service does.
 const MINECRAFT_EXPIRES_IN: u64 = 86_400;
 
@@ -200,6 +203,8 @@ struct State {
     expected_client_id: Option<String>,
     accounts: Vec<MockAccount>,
     code_lifetime: Duration,
+    /// Lifetime of device codes; independent of `code_lifetime`.
+    device_lifetime: Duration,
     next_code: usize,
     codes: HashMap<String, CodeGrant>,
     next_device: usize,
@@ -232,15 +237,22 @@ pub struct AuthHandle {
 }
 
 impl AuthHandle {
-    /// How long authorization codes and device codes stay valid (default two minutes).
+    /// How long authorization codes stay valid (default two minutes). Device codes are not
+    /// affected: see [`AuthHandle::set_device_lifetime`].
     pub fn set_code_lifetime(&self, lifetime: Duration) {
         self.shared.lock().code_lifetime = lifetime;
+    }
+
+    /// How long device codes stay valid (default 15 minutes), also the `expires_in` the device
+    /// code endpoint reports.
+    pub fn set_device_lifetime(&self, lifetime: Duration) {
+        self.shared.lock().device_lifetime = lifetime;
     }
 
     /// Every secret value the mock has issued or seen so far, sorted: the players' Minecraft and
     /// refresh tokens, the derived Microsoft, Xbox and XSTS tokens, rotated and later sign-in
     /// refresh tokens, authorization codes, device codes, and the `state` and `code_verifier`
-    /// values clients sent. Meant for assertions that none of them leaks into an output; the
+    /// values clients sent. Values shorter than 8 characters are left out. Meant for assertions that none of them leaks into an output; the
     /// values are fake.
     pub fn issued_secrets(&self) -> Vec<String> {
         let st = self.shared.lock();
@@ -257,7 +269,10 @@ impl AuthHandle {
         all.extend(st.refresh.keys().cloned());
         all.extend(st.codes.keys().cloned());
         all.extend(st.devices.keys().cloned());
-        all.into_iter().collect()
+        // A short value (a client's short `state`) would match unrelated text in an assertion.
+        all.into_iter()
+            .filter(|s| s.len() >= MIN_SECRET_LEN)
+            .collect()
     }
 
     /// Changes the scenario for all following requests.
@@ -405,6 +420,7 @@ pub async fn mount_auth(
             expected_client_id: None,
             accounts: accounts.to_vec(),
             code_lifetime: Duration::from_secs(120),
+            device_lifetime: Duration::from_secs(900),
             next_code: 1,
             codes: HashMap::new(),
             next_device: 1,
@@ -762,14 +778,14 @@ fn device_code(st: &mut State, form: &HashMap<String, String>) -> ResponseTempla
         "user_code": format!("TEST-{n:04}"),
         // The reserved .invalid domain never resolves: nothing can open a real page by accident.
         "verification_uri": "https://example.invalid/link",
-        "expires_in": st.code_lifetime.as_secs(),
+        "expires_in": st.device_lifetime.as_secs(),
         "interval": 0,
     }))
 }
 
 fn device_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTemplate {
     let get = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
-    let lifetime = st.code_lifetime;
+    let lifetime = st.device_lifetime;
     let scenario = st.scenario;
     let code = get("device_code");
     let Some(grant) = st.devices.get_mut(code) else {
