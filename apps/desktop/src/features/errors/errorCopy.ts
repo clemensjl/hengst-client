@@ -46,6 +46,10 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   cancelled: keys("cancelled"),
   fileSystem: keys("fileSystem"),
   openFailed: keys("openFailed"),
+  instanceNotFound: keys("instanceNotFound"),
+  instanceExists: keys("instanceExists"),
+  instanceFormatTooNew: keys("instanceFormatTooNew"),
+  invalidInstanceName: keys("invalidInstanceName"),
 };
 
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */

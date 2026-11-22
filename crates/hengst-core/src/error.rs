@@ -80,6 +80,16 @@ pub enum Error {
         waited_secs: u64,
         lock: PathBuf,
     },
+    #[error("instance {id} does not exist")]
+    InstanceNotFound { id: String },
+    #[error("instance folder {id} already exists")]
+    InstanceExists { id: String },
+    #[error("instance {id} was saved by a newer Hengst Client (format {format})")]
+    InstanceFormatTooNew { id: String, format: u32 },
+    #[error("invalid instance name: {0}")]
+    InvalidInstanceName(String),
+    #[error("instance {id} cannot be read: {reason}")]
+    InstanceUnreadable { id: String, reason: String },
     #[error("the operation was cancelled")]
     Cancelled,
     #[error("Windows Credential Manager error: {0}")]

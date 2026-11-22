@@ -195,7 +195,7 @@ pub fn remove_stale_temps(dest: &Path) {
 
 /// Components Windows strips or maps to something else: trailing dots and spaces, and device
 /// names (with or without an extension, any case).
-fn is_windows_reserved(name: &str) -> bool {
+pub(crate) fn is_windows_reserved(name: &str) -> bool {
     if name.ends_with('.') || name.ends_with(' ') {
         return true;
     }

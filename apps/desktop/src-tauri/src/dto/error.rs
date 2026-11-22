@@ -54,6 +54,13 @@ pub enum ErrorCode {
     FileSystem,
     /// The system refused to open a link in the browser (`open_url`).
     OpenFailed,
+    /// No instance with this id (also: its file cannot be read); `params.id`.
+    InstanceNotFound,
+    /// Every folder name for this version is taken; `params.id` is the first one.
+    InstanceExists,
+    /// Saved by a newer build; `params.id` and `params.format`.
+    InstanceFormatTooNew,
+    InvalidInstanceName,
 }
 
 /// A page the web view may ask the app to open. The addresses are fixed in Rust (`open::resolve_url`);

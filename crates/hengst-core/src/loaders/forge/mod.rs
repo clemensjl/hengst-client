@@ -346,9 +346,9 @@ fn work_dir(paths: &Paths, kind: LoaderKind, id: &str) -> Result<PathBuf> {
 
 /// How long `lock_file` waits before saying so, and at most.
 #[derive(Clone, Copy)]
-struct LockTiming {
-    notice_after: std::time::Duration,
-    limit: std::time::Duration,
+pub(crate) struct LockTiming {
+    pub(crate) notice_after: std::time::Duration,
+    pub(crate) limit: std::time::Duration,
 }
 
 impl LockTiming {
@@ -361,7 +361,7 @@ impl LockTiming {
 /// An exclusive lock on `path`, held until the file is dropped; the OS releases it if the process
 /// dies. While another launch holds it, waits: after `notice_after` it tells the user once through
 /// `notice`, after `limit` it gives up with an error.
-fn lock_file(
+pub(crate) fn lock_file(
     path: &Path,
     label: &str,
     timing: LockTiming,

@@ -14,12 +14,18 @@ use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Serialized as its `slug()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoaderKind {
+    #[serde(rename = "fabric")]
     Fabric,
+    #[serde(rename = "quilt")]
     Quilt,
+    #[serde(rename = "legacy-fabric")]
     LegacyFabric,
+    #[serde(rename = "neoforge")]
     NeoForge,
+    #[serde(rename = "forge")]
     Forge,
 }
 

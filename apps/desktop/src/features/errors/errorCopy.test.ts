@@ -111,6 +111,10 @@ const ALL_CODES = [
   "cancelled",
   "fileSystem",
   "openFailed",
+  "instanceNotFound",
+  "instanceExists",
+  "instanceFormatTooNew",
+  "invalidInstanceName",
 ];
 
 describe("wire codes and copy groups", () => {

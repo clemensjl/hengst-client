@@ -68,6 +68,20 @@ pub fn error_dto(e: &Error) -> ErrorDto {
         }
         Error::NativesInUse { .. } => (ErrorCode::NativesInUse, None),
         Error::LockTimeout { .. } => (ErrorCode::LockTimeout, Some(Retry)),
+        Error::InstanceNotFound { id } | Error::InstanceUnreadable { id, .. } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceNotFound, None)
+        }
+        Error::InstanceExists { id } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceExists, None)
+        }
+        Error::InstanceFormatTooNew { id, format } => {
+            put("id", id.clone());
+            put("format", format.to_string());
+            (ErrorCode::InstanceFormatTooNew, None)
+        }
+        Error::InvalidInstanceName(_) => (ErrorCode::InvalidInstanceName, None),
         Error::Cancelled => (ErrorCode::Cancelled, None),
         Error::CredentialStore(_) => (ErrorCode::CredentialStore, None),
         Error::Io(_) => (ErrorCode::FileSystem, None),
@@ -675,6 +689,42 @@ mod mapping_tests {
                 ErrorCode::ServerError,
                 Some(Retry),
             ),
+            row(
+                Error::InstanceNotFound { id: "9.9".into() },
+                ErrorCode::InstanceNotFound,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceUnreadable {
+                    id: "9.9".into(),
+                    reason: "x".into(),
+                },
+                ErrorCode::InstanceNotFound,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceExists { id: "9.9".into() },
+                ErrorCode::InstanceExists,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceFormatTooNew {
+                    id: "9.9".into(),
+                    format: 2,
+                },
+                ErrorCode::InstanceFormatTooNew,
+                None,
+                &[("format", "2"), ("id", "9.9")],
+            ),
+            row(
+                Error::InvalidInstanceName("the name is empty".into()),
+                ErrorCode::InvalidInstanceName,
+                None,
+                &[],
+            ),
         ]
     }
 
@@ -858,10 +908,14 @@ mod mapping_tests {
             ErrorCode::Cancelled => "cancelled",
             ErrorCode::FileSystem => "fileSystem",
             ErrorCode::OpenFailed => "openFailed",
+            ErrorCode::InstanceNotFound => "instanceNotFound",
+            ErrorCode::InstanceExists => "instanceExists",
+            ErrorCode::InstanceFormatTooNew => "instanceFormatTooNew",
+            ErrorCode::InvalidInstanceName => "invalidInstanceName",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 40] = [
+    const ALL_CODES: [ErrorCode; 44] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -902,6 +956,10 @@ mod mapping_tests {
         ErrorCode::Cancelled,
         ErrorCode::FileSystem,
         ErrorCode::OpenFailed,
+        ErrorCode::InstanceNotFound,
+        ErrorCode::InstanceExists,
+        ErrorCode::InstanceFormatTooNew,
+        ErrorCode::InvalidInstanceName,
     ];
 
     #[test]
