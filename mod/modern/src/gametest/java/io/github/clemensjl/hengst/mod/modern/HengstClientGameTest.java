@@ -1131,6 +1131,10 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             profileCase(ctx, core, "direction", new String[] {"direction"});
             profileCase(ctx, core, "all", all);
             allocationWindow(ctx, core, all);
+            ctx.runOnClient(mc -> core.renderer().setRenderTimes(null));
+            for (int i : cheapestAndDearest(marginal)) {
+                pairedCheck(ctx, core, all, NEW_IDS[i], marginal[i]);
+            }
         } finally {
             ctx.runOnClient(mc -> {
                 mc.options.inactivityFpsLimit().set(inactivity);
@@ -1213,6 +1217,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             EMPTY_SAMPLES.clone(), {costLeft, costUndrawn, costLast - costFirst}});
         check(data[3][0] == 0, name + ": " + COST_FRAMES + " measured frames within 120 s, " + data[3][0] + " left");
         check(data[3][1] == 0, name + ": the core drew in every measured frame, " + data[3][1] + " frames without");
+        checkPlayerAlive(ctx, name);
         long[] hook = stats(data[1]);
         long[] pair = stats(data[2]);
         res[0] = resolution(data[2], resolution(data[1], res[0]));
@@ -1241,6 +1246,83 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         }
         long own = marginal == null ? -1 : stats(column(data[0], indexesOf(order, new String[] {marginal})[0]))[0];
         return new long[] {sum[0], own};
+    }
+
+    /** A measured case is valid only with a living player (a dead player's screen is not the HUD being measured). */
+    private static void checkPlayerAlive(ClientGameTestContext ctx, String name) {
+        float health = ctx.computeOnClient(mc -> mc.player != null && mc.player.isAlive() ? mc.player.getHealth() : -1F);
+        check(health > 0, name + ": player alive after the window, health " + health);
+        LOGGER.info("[hengst-gametest] COST {} player alive, health {}", name, health);
+    }
+
+    // Cross-check of the marginal cost without the per-module timer (render times off): windows A (the four M0
+    // modules) and B (A plus one module) alternate, each 60 frames to settle and 120 measured; per window the median of
+    // the hook time; per pair B minus A.
+    private static final int PAIRS = 24;
+    private static final int PAIR_SETTLE = 60;
+    private static final int PAIR_FRAMES = 120;
+    private static final long[] PAIR_SAMPLES = new long[PAIR_FRAMES];
+    private static int pairLeft;
+    private static int pairFrame;
+
+    /** Indexes of the drawn module (own time above 0) with the smallest and with the largest marginal cost. */
+    private static int[] cheapestAndDearest(long[] marginal) {
+        int lo = -1;
+        int hi = -1;
+        for (int i = 0; i < marginal.length; i++) {
+            if (marginal[i] <= 0) {
+                continue;                                         // ping and server address draw nothing here
+            }
+            if (lo < 0 || marginal[i] < marginal[lo]) {
+                lo = i;
+            }
+            if (hi < 0 || marginal[i] > marginal[hi]) {
+                hi = i;
+            }
+        }
+        check(lo >= 0, "a drawn module for the paired check");
+        return lo == hi ? new int[] {lo} : new int[] {lo, hi};
+    }
+
+    private static long pairWindow(ClientGameTestContext ctx, HengstCore core, String[] all, String[] on) {
+        String[] order = enableOnly(ctx, core, all, on);
+        check(order.length == on.length, "paired window: active " + Arrays.toString(order));
+        int start = ctx.computeOnClient(mc -> hudCalls);
+        long deadline = System.nanoTime() + 60_000_000_000L;
+        ctx.waitFor(mc -> hudCalls >= start + PAIR_SETTLE || System.nanoTime() > deadline, ClientGameTestContext.NO_TIMEOUT);
+        ctx.runOnClient(mc -> {
+            pairFrame = 0;
+            pairLeft = PAIR_FRAMES;
+        });
+        long deadline2 = System.nanoTime() + 60_000_000_000L;
+        ctx.waitFor(mc -> pairLeft == 0 || System.nanoTime() > deadline2, ClientGameTestContext.NO_TIMEOUT);
+        check(ctx.computeOnClient(mc -> pairLeft) == 0, "paired window: " + PAIR_FRAMES + " frames within 60 s");
+        return stats(ctx.computeOnClient(mc -> PAIR_SAMPLES.clone()))[0];
+    }
+
+    /**
+     * Paired alternating windows A, B, A, B, ... (logged, not asserted): the median over the pairs of B minus A, next
+     * to the module's own time from the per-module timer.
+     */
+    private static void pairedCheck(ClientGameTestContext ctx, HengstCore core, String[] all, String module,
+            long ownMedian) {
+        String[] b = Arrays.copyOf(M0_IDS, M0_IDS.length + 1);
+        b[M0_IDS.length] = module;
+        long[] a = new long[PAIRS];
+        long[] bb = new long[PAIRS];
+        long[] d = new long[PAIRS];
+        for (int p = 0; p < PAIRS; p++) {
+            a[p] = pairWindow(ctx, core, all, M0_IDS);
+            bb[p] = pairWindow(ctx, core, all, b);
+            d[p] = bb[p] - a[p];
+        }
+        checkPlayerAlive(ctx, "paired " + module);
+        long[] ds = d.clone();
+        Arrays.sort(ds);
+        LOGGER.info("[hengst-gametest] COST paired {}: median of {} paired differences (B minus A, hook time, render"
+                + " times off) {} ns, quartiles {} / {} ns, min {} max {} ns; window medians A {} ns, B {} ns; own time"
+                + " from the per-module timer {} ns; differences {}", module, PAIRS, stats(d)[0], ds[PAIRS / 4],
+                ds[(3 * PAIRS) / 4], ds[0], ds[PAIRS - 1], stats(a)[0], stats(bb)[0], ownMedian, Arrays.toString(d));
     }
 
     /**
@@ -1348,6 +1430,13 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             PROFILE_COUNT[profileFrame] = TIMING_WRAP.n;
             profileFrame++;
             profileLeft--;
+            return;
+        }
+        if (pairLeft > 0) {
+            long t0 = System.nanoTime();
+            inner.run();
+            PAIR_SAMPLES[pairFrame++] = System.nanoTime() - t0;
+            pairLeft--;
             return;
         }
         if (costLeft > 0) {
@@ -2315,7 +2404,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         @Override
         public void extractRenderState(GuiGraphicsExtractor graphics, DeltaTracker delta) {
             stamp();
-            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0)) {
+            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0 || pairLeft > 0)) {
                 measuredHud(() -> inner.extractRenderState(graphics, delta), () -> ALLOC_CANVAS.begin(graphics));
                 return;
             }
@@ -2325,7 +2414,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         /*@Override
         public void render(GuiGraphics graphics, DeltaTracker delta) {
             stamp();
-            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0)) {
+            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0 || pairLeft > 0)) {
                 measuredHud(() -> inner.render(graphics, delta), () -> ALLOC_CANVAS.begin(graphics));
                 return;
             }

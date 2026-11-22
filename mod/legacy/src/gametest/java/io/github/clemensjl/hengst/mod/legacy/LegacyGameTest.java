@@ -158,12 +158,13 @@ public final class LegacyGameTest implements ClientModInitializer {
 
     /**
      * Watchdog limit: 8 minutes for everything but the cost section (the limit before Task 16), plus the cost
-     * section's frames at 30 frames per second (a quarter of the 120 the harness normally reaches; the slowest window
+     * section's frames (the paired windows included) at 30 frames per second (a quarter of the 120 the harness normally reaches; the slowest window
      * seen was 72). A hang still ends the run; a slow, loaded machine does not.
      */
     private static long watchdogMillis() {
         long cases = 1 + 2L * NEW_IDS.length + 2;                                  // m0, alone, marginal, all, off
-        long frames = cases * (COST_WARMUP + COST_FRAMES) + COST_WARMUP + ALLOC_SETTLE + ALLOC_FRAMES;
+        long frames = cases * (COST_WARMUP + COST_FRAMES) + COST_WARMUP + ALLOC_SETTLE + ALLOC_FRAMES
+                + 2L * PAIRS * 2 * (PAIR_SETTLE + PAIR_FRAMES);                 // two modules in paired windows
         return TimeUnit.MINUTES.toMillis(8) + frames * 1000 / 30;
     }
 
@@ -1353,6 +1354,13 @@ public final class LegacyGameTest implements ClientModInitializer {
             allMedian = costCase(core, all, "all", all, all, null, res)[0];
             costCase(core, all, "off", new String[0], new String[0], null, res);
             allocationWindow(core, all);
+            onClient(() -> {
+                core.renderer().setRenderTimes(null);
+                return null;
+            });
+            for (int i : cheapestAndDearest(marginal)) {
+                pairedCheck(core, all, NEW_IDS[i], marginal[i]);
+            }
         } finally {
             onClient(() -> {
                 core.renderer().setRenderTimes(null);
@@ -1432,6 +1440,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         long[][] data = onClient(() -> new long[][] {COST_SAMPLES.clone(), HOOK_SAMPLES.clone(), EMPTY_SAMPLES.clone(),
             {costUndrawn, costLast - costFirst}});
         check(data[3][0] == 0, name + ": the core drew in every measured frame, " + data[3][0] + " frames without");
+        checkPlayerAlive(name);
         long[] hook = stats(data[1]);
         long[] pair = stats(data[2]);
         res[0] = resolution(data[2], resolution(data[1], res[0]));
@@ -1461,6 +1470,83 @@ public final class LegacyGameTest implements ClientModInitializer {
         }
         long own = marginal == null ? -1 : stats(column(data[0], indexesOf(order, new String[] {marginal})[0]))[0];
         return new long[] {sum[0], own};
+    }
+
+    /** A measured case is valid only with a living player (a dead player's screen is not the HUD being measured). */
+    private static void checkPlayerAlive(String name) throws Exception {
+        float health = onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            return mc.player != null && mc.player.isAlive() ? mc.player.getHealth() : -1F;
+        });
+        check(health > 0, name + ": player alive after the window, health " + health);
+        LOGGER.info("[hengst-gametest] COST " + name + " player alive, health " + health);
+    }
+
+    // Cross-check of the marginal cost without the per-module timer (render times off): windows A (the four M0
+    // modules) and B (A plus one module) alternate, each 60 frames to settle and 120 measured; per window the median of
+    // the hook time; per pair B minus A.
+    private static final int PAIRS = 24;
+    private static final int PAIR_SETTLE = 60;
+    private static final int PAIR_FRAMES = 120;
+    private static final long[] PAIR_SAMPLES = new long[PAIR_FRAMES];
+    private static int pairLeft;
+    private static int pairFrame;
+
+    /** Indexes of the drawn module (own time above 0) with the smallest and with the largest marginal cost. */
+    private static int[] cheapestAndDearest(long[] marginal) {
+        int lo = -1;
+        int hi = -1;
+        for (int i = 0; i < marginal.length; i++) {
+            if (marginal[i] <= 0) {
+                continue;                                         // ping and server address draw nothing here
+            }
+            if (lo < 0 || marginal[i] < marginal[lo]) {
+                lo = i;
+            }
+            if (hi < 0 || marginal[i] > marginal[hi]) {
+                hi = i;
+            }
+        }
+        check(lo >= 0, "a drawn module for the paired check");
+        return lo == hi ? new int[] {lo} : new int[] {lo, hi};
+    }
+
+    private static long pairWindow(HengstCore core, String[] all, String[] on) throws Exception {
+        String[] order = enableOnly(core, all, on);
+        check(order.length == on.length, "paired window: active " + Arrays.toString(order));
+        waitHudFrames(PAIR_SETTLE, "paired window: frames to settle");
+        onClient(() -> {
+            pairFrame = 0;
+            pairLeft = PAIR_FRAMES;
+            return null;
+        });
+        waitUntil(() -> pairLeft == 0, 60_000, "paired window: " + PAIR_FRAMES + " frames");
+        return stats(onClient(() -> PAIR_SAMPLES.clone()))[0];
+    }
+
+    /**
+     * Paired alternating windows A, B, A, B, ... (logged, not asserted): the median over the pairs of B minus A, next
+     * to the module's own time from the per-module timer.
+     */
+    private static void pairedCheck(HengstCore core, String[] all, String module, long ownMedian) throws Exception {
+        String[] b = Arrays.copyOf(M0_IDS, M0_IDS.length + 1);
+        b[M0_IDS.length] = module;
+        long[] a = new long[PAIRS];
+        long[] bb = new long[PAIRS];
+        long[] d = new long[PAIRS];
+        for (int p = 0; p < PAIRS; p++) {
+            a[p] = pairWindow(core, all, M0_IDS);
+            bb[p] = pairWindow(core, all, b);
+            d[p] = bb[p] - a[p];
+        }
+        checkPlayerAlive("paired " + module);
+        long[] ds = d.clone();
+        Arrays.sort(ds);
+        LOGGER.info("[hengst-gametest] COST paired " + module + ": median of " + PAIRS + " paired differences (B minus"
+                + " A, hook time, render times off) " + stats(d)[0] + " ns, quartiles " + ds[PAIRS / 4] + " / "
+                + ds[(3 * PAIRS) / 4] + " ns, min " + ds[0] + " max " + ds[PAIRS - 1] + " ns; window medians A "
+                + stats(a)[0] + " ns, B " + stats(bb)[0] + " ns; own time from the per-module timer " + ownMedian
+                + " ns; differences " + Arrays.toString(d));
     }
 
     /**
@@ -1530,6 +1616,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             long e1 = System.nanoTime();
             emptyPair = e1 - e0;
             hookStart = System.nanoTime();
+        } else if (pairLeft > 0) {
+            hookStart = System.nanoTime();
         } else if (allocLeft > 0) {
             long a0 = allocated();
             long a1 = allocated();
@@ -1557,6 +1645,9 @@ public final class LegacyGameTest implements ClientModInitializer {
             System.arraycopy(COST_TIMES, 0, COST_SAMPLES, f * MAX_MODULES, MAX_MODULES);
             costFrame++;
             costLeft--;
+        } else if (pairLeft > 0) {
+            PAIR_SAMPLES[pairFrame++] = System.nanoTime() - hookStart;
+            pairLeft--;
         } else if (allocLeft > 0) {
             long a2 = allocated();
             if (allocLeft <= ALLOC_FRAMES) {
