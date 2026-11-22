@@ -6,7 +6,6 @@ import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
-import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureState;
 import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
@@ -38,7 +37,6 @@ import java.time.Clock;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Calendar;
-import java.util.EnumSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -75,6 +73,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.lwjgl.input.Keyboard;
 import org.lwjgl.input.Mouse;
+import org.lwjgl.opengl.Display;
 import org.lwjgl.opengl.GL11;
 
 /**
@@ -344,7 +343,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         waitTicks(10);
         check(onClient(() -> platform.input().isDown(GameKey.FORWARD)), "W held is down");
         held = layout();
-        int[] wCell = held.fillWithColour(PRESSED_FILL);
+        int[] wCell = held.fill(PRESSED_FILL);
         check(wCell != null, "keystrokes draws a pressed cell while W is held");
         BufferedImage wHeld = shot("hengst-07-w-held");
         double lumaHeld = meanLuma(wHeld, wCell);
@@ -481,6 +480,47 @@ public final class LegacyGameTest implements ClientModInitializer {
 
         dragFpsToBottomRight(core, layout);
         moduleOverHotbarItem(core);
+        bindToggleForRestart();
+    }
+
+    // The stopwatch toggle bound to K in the controls screen at the end of the full phase; the restart phase checks
+    // that the game loaded it from options.txt and unbinds it again, both through the game's own save path.
+    private static final String TOGGLE = "key.hengst.stopwatch.toggle";
+
+    /**
+     * Binds the stopwatch toggle to K the way a player does: the controls screen with the binding selected and a real
+     * key event; the screen calls GameOptions.setKeyBindingCode, which saves options.txt.
+     */
+    private static void bindToggleForRestart() throws Exception {
+        final KeyBinding toggle = onClient(() -> binding(TOGGLE));
+        onClient(() -> {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            ControlsOptionsScreen screen = new ControlsOptionsScreen(null, mc.options);
+            mc.setScreen(screen);
+            screen.selectedKeyBinding = toggle;
+            return null;
+        });
+        settle();
+        key(Keyboard.KEY_K, 'k');
+        settle();
+        check(onClient(() -> toggle.getCode()) == Keyboard.KEY_K, "the controls screen bound the toggle to K, got "
+                + onClient(() -> toggle.getCode()));
+        check(optionLine("key_" + TOGGLE + ":").equals("key_" + TOGGLE + ":" + Keyboard.KEY_K),
+                "options.txt after the binding: " + optionLine("key_" + TOGGLE + ":"));
+        key(Keyboard.KEY_ESCAPE, (char) 0);
+        waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the controls screen");
+        pass("the stopwatch toggle bound to K in the controls screen, saved by the game's own binding call");
+    }
+
+    /** The first line of options.txt that starts with the prefix, or "". */
+    private static String optionLine(String prefix) throws Exception {
+        File options = onClient(() -> new File(MinecraftClient.getInstance().runDirectory, "options.txt"));
+        for (String line : Files.readAllLines(options.toPath(), StandardCharsets.UTF_8)) {
+            if (line.startsWith(prefix)) {
+                return line;
+            }
+        }
+        return "";
     }
 
     // ---- M1a: key registration, the seven text modules, the settings with the full catalog, language ----
@@ -489,12 +529,11 @@ public final class LegacyGameTest implements ClientModInitializer {
         "key.hengst.stopwatch.toggle", "key.hengst.stopwatch.reset"};
     private static final long MEMORY_SLACK_MB = 64;
     private static final long LANGUAGE_BOUND_MS = 1_500;
-    private static final long DISPATCH_TOLERANCE = 4096;
-    private static final long ALLOCATING_CALLS = 3;
-    private static final int GROUP_TEXT = 0xFFAAAAAA;
-    private static final int NOTICE = 0xFFAAAAAA;
-    private static final int THUMB = 0xC0FFFFFF;
-    private static final int TRACK = 0x40FFFFFF;
+    // The core's own colours, read from its constants (private there).
+    private static final int GROUP_TEXT = constant(SettingsScreen.class, "GROUP_TEXT");
+    private static final int NOTICE = constant(SettingsScreen.class, "NOTICE");
+    private static final int THUMB = constant(ScrollList.class, "THUMB");
+    private static final int TRACK = constant(ScrollList.class, "TRACK");
 
     /** The game's key binding list holds exactly the catalog's bindings, in catalog order, in the mod's category. */
     private static void keyRegistration(final HengstCore core) throws Exception {
@@ -549,6 +588,7 @@ public final class LegacyGameTest implements ClientModInitializer {
                     return speed(s) >= 3.0;
                 }
             }, 3_000, "speed while W is held");
+            shownByPixels("speed", "hengst-42a-speed-walking");
         } finally {
             keyDown(Keyboard.KEY_W, 'w', false);
         }
@@ -556,7 +596,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         settle();
         rect = shownByPixels("speed", "hengst-42-speed");
         offAndGone(core, "speed", rect, "hengst-43-speed-off");
-        pass("speed: '0.0 m/s' standing, '" + walking + "' while walking, drawn (pixels), gone when off");
+        pass("speed: '0.0 m/s' standing, '" + walking + "' while walking, both drawn (pixels), gone when off");
 
         setEnabled(core, "clock", true);
         String clock = waitText(core, "clock", matching("\\d\\d:\\d\\d"), 2_000, "clock in the 24-hour format");
@@ -568,10 +608,11 @@ public final class LegacyGameTest implements ClientModInitializer {
         String twelve = waitText(core, "clock", matching("\\d{1,2}:\\d\\d (" + am + "|" + pm + ")"), 2_000,
                 "clock in the 12-hour format");
         checkClose(clockMinutes(twelve, pm), "12-hour clock " + twelve);
+        shownByPixels("clock", "hengst-44a-clock-12h");
         setOption(core, "clock", "format", "24h");
         waitText(core, "clock", matching("\\d\\d:\\d\\d"), 2_000, "clock back in the 24-hour format");
         offAndGone(core, "clock", rect, "hengst-45-clock-off");
-        pass("clock: '" + clock + "' and '" + twelve + "' match the system time to the minute, drawn (pixels), gone when off");
+        pass("clock: '" + clock + "' and '" + twelve + "' match the system time to the minute, both drawn (pixels), gone when off");
 
         setEnabled(core, "memory", true);
         long before = onClient(() -> {
@@ -722,6 +763,13 @@ public final class LegacyGameTest implements ClientModInitializer {
         pass("settings: the full catalog overflows the list, the HUD heading and the scroll indicator are drawn (pixels)");
 
         selectStopwatch(ui);
+        // The stopwatch switched on with a real click on its row's switch; it applies when the settings close.
+        Widget stopwatchRow = featureRow((List<?>) field(list, "widgets"), "stopwatch");
+        click(0, stopwatchRow.x + constant(SettingsScreen.class, "TOGGLE_W") / 2, stopwatchRow.y + stopwatchRow.h / 2);
+        waitTicks(1);
+        final SettingsModel settingsModel = (SettingsModel) field(ui, "model");
+        check(onClient(() -> settingsModel.config("stopwatch").enabled()), "a click on the stopwatch's switch turns it on"
+                + " in the settings");
         rec = record(ui);
         check(rec.find(i18n(core, "hengst.group.comfort"), GROUP_TEXT) != null, "Comfort heading drawn at the end, texts "
                 + rec.texts);
@@ -787,6 +835,12 @@ public final class LegacyGameTest implements ClientModInitializer {
         key(Keyboard.KEY_ESCAPE, (char) 0);
         waitUntil(() -> MinecraftClient.getInstance().currentScreen == null, 3_000, "Escape closes the settings");
         settle();
+        final int swNumber = stopwatch.number();
+        check(onClient(() -> FeatureState.on(swNumber)) && layout().has("stopwatch"), "the stopwatch switched on in"
+                + " the settings is on and laid out after closing them");
+        int[] swRect = shownByPixels("stopwatch", "hengst-54a-stopwatch-from-settings");
+        offAndGone(core, "stopwatch", swRect, "hengst-54b-stopwatch-off-again");
+        pass("settings: the stopwatch switched on with a click on its switch is drawn after closing (pixels)");
     }
 
     private static void openSettings() throws Exception {
@@ -978,41 +1032,89 @@ public final class LegacyGameTest implements ClientModInitializer {
     }
 
     /**
-     * The per-tick key dispatch with the window check ({@code LegacyKeys.dispatch(MinecraftClient)}) in steady state,
-     * called once more per tick from the harness's tick listener and measured around the call only (the game
-     * allocates on this thread). The measuring call is {@code getThreadAllocatedBytes(id)} (release 8 API); a pair of
-     * calls without anything between them is measured too and subtracted per call, so the measurement's own cost does
-     * not count. Tolerance: at most {@link #ALLOCATING_CALLS} of the 300 calls may allocate, {@link #DISPATCH_TOLERANCE}
-     * bytes in all; a per-call allocation shows in every call and fails.
+     * The mod's per-tick key dispatch ({@code LegacyKeys.tick}: the keys and the focus rule) in steady state, called once
+     * more per tick from the harness's tick listener with the measurement around that call only. The game's
+     * window-active query ({@code Display.isActive()}, the argument {@code LegacyKeys.dispatch(MinecraftClient)}
+     * passes) is measured separately and reported, not asserted. The measuring call is
+     * {@code getThreadAllocatedBytes(id)} (release 8 API, it may allocate itself on Java 8); a pair of calls without
+     * anything between them is measured too and subtracted per call. 100 calls warm up, then two windows of 300 calls;
+     * every allocating call is logged with its index and the focus value. The second window must have none.
      */
     private static void dispatchAllocation() throws Exception {
-        for (int round = 0; round < 2; round++) {                 // round 0: 100 calls to warm up
+        long[][] windows = new long[2][];
+        for (int round = 0; round < 3; round++) {                 // round 0: 100 calls to warm up
             final int calls = round == 0 ? 100 : 300;
             onClient(() -> {
                 dispatchBytes = 0;
+                gameBytes = 0;
                 allocatingCalls = 0;
-                maxCallBytes = 0;
+                allocLog.setLength(0);
+                focusFlips = 0;
                 measured = 0;
                 measureLeft = calls;
                 return null;
             });
             waitUntil(() -> measureLeft == 0, 60_000, "measured dispatch calls (error " + measureError + ")");
+            String log = onClient(() -> allocLog.toString());
+            long[] r = onClient(() -> new long[] {dispatchBytes, gameBytes, allocatingCalls, measured, focusFlips});
+            LOGGER.info("[hengst-gametest] dispatch window " + round + " (" + r[3] + " calls, " + r[4]
+                    + " focus changes): mod " + r[0] + " bytes in "
+                    + r[2] + " calls, game window query " + r[1] + " bytes; allocating calls [index focused mod/game"
+                    + " bytes, call time, collections during the call]:" + (log.isEmpty() ? " none" : log));
+            if (round > 0) {
+                windows[round - 1] = r;
+            }
         }
-        long[] r = onClient(() -> new long[] {dispatchBytes, measured, allocatingCalls, maxCallBytes});
         check(measureError == null, "dispatch threw " + measureError);
-        check(r[1] == 300, "measured calls " + r[1]);
-        check(r[2] <= ALLOCATING_CALLS && r[0] <= DISPATCH_TOLERANCE, "LegacyKeys.dispatch(MinecraftClient) allocated "
-                + r[0] + " bytes in 300 ticks, in " + r[2] + " calls (largest " + r[3] + ")");
-        pass("the per-tick key dispatch with the window check allocates " + r[0] + " bytes in 300 ticks, in " + r[2]
-                + " calls (largest " + r[3] + " bytes, measurement cost subtracted)");
+        // The focus-loss branch, which a window that keeps its focus never takes: 100 losses to warm up, 300 measured.
+        long[] flips = onClient(() -> {
+            HengstCore core = HengstLegacyMod.core();
+            KeyBinding[] bindings = LegacyKeys.bindings();
+            long id = Thread.currentThread().getId();
+            long cost = -THREADS.getThreadAllocatedBytes(id);
+            cost += THREADS.getThreadAllocatedBytes(id);
+            long[] out = new long[2];
+            for (int i = 0; i < 400; i++) {
+                long a = THREADS.getThreadAllocatedBytes(id);
+                LegacyKeys.tick(core, bindings, false);
+                LegacyKeys.tick(core, bindings, true);
+                long used = Math.max(0, THREADS.getThreadAllocatedBytes(id) - a - cost);
+                if (i >= 100) {
+                    out[0] += used;
+                    out[1] += used != 0 ? 1 : 0;
+                }
+            }
+            LegacyKeys.tick(core, bindings, Display.isActive());
+            return out;
+        });
+        check(flips[0] == 0, "300 focus losses and returns allocated " + flips[0] + " bytes in " + flips[1] + " calls");
+        check(windows[1][2] == 0 && windows[1][0] == 0, "LegacyKeys.tick allocated " + windows[1][0]
+                + " bytes in the second window of 300 ticks, in " + windows[1][2] + " calls");
+        pass("the mod's per-tick key dispatch allocates nothing in the second window of 300 ticks (first window "
+                + windows[0][0] + " bytes in " + windows[0][2] + " calls; the game's window query " + windows[0][1]
+                + " and " + windows[1][1] + " bytes; measurement cost subtracted), nor in 300 focus losses and returns");
     }
 
     // Written and read on the client thread.
     private static int measureLeft;
     private static int measured;
     private static long dispatchBytes;
+    private static long gameBytes;
     private static long allocatingCalls;
-    private static long maxCallBytes;
+    private static final StringBuilder allocLog = new StringBuilder();
+    private static int focusFlips;
+    // The collectors, read around each measured call: a collection in the call is logged with an allocating call.
+    private static final java.lang.management.GarbageCollectorMXBean[] GCS =
+            ManagementFactory.getGarbageCollectorMXBeans().toArray(new java.lang.management.GarbageCollectorMXBean[0]);
+
+    private static long collections() {
+        long n = 0;
+        for (int i = 0; i < GCS.length; i++) {
+            n += GCS[i].getCollectionCount();
+        }
+        return n;
+    }
+    private static boolean lastFocused = true;
     private static volatile Throwable measureError;
     private static final com.sun.management.ThreadMXBean THREADS =
             (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
@@ -1022,22 +1124,42 @@ public final class LegacyGameTest implements ClientModInitializer {
         if (measureLeft <= 0) {
             return;
         }
+        HengstCore core = HengstLegacyMod.core();
+        KeyBinding[] bindings = LegacyKeys.bindings();
         long id = Thread.currentThread().getId();
+        long gc0 = collections();
+        long t0 = System.nanoTime();
         long a = THREADS.getThreadAllocatedBytes(id);
         long b = THREADS.getThreadAllocatedBytes(id);
+        boolean focused = Display.isActive();
+        long c = THREADS.getThreadAllocatedBytes(id);
+        if (focused != lastFocused) {
+            focusFlips++;
+            lastFocused = focused;
+        }
         try {
-            LegacyKeys.dispatch(mc);
+            LegacyKeys.tick(core, bindings, focused);
         } catch (Throwable e) {
             measureError = e;
             measureLeft = 0;
             return;
         }
-        long c = THREADS.getThreadAllocatedBytes(id);
-        long net = (c - b) - (b - a);
-        dispatchBytes += Math.max(0, net);
-        if (net > 0) {
-            allocatingCalls++;
-            maxCallBytes = Math.max(maxCallBytes, net);
+        long d = THREADS.getThreadAllocatedBytes(id);
+        long micros = (System.nanoTime() - t0) / 1000;
+        long gcs = collections() - gc0;
+        long cost = b - a;
+        long game = Math.max(0, (c - b) - cost);
+        long net = Math.max(0, (d - c) - cost);
+        gameBytes += game;
+        dispatchBytes += net;
+        if (net > 0 || game > 0) {
+            if (net > 0) {
+                allocatingCalls++;
+            }
+            if (allocLog.length() < 2000) {
+                allocLog.append(" [").append(measured).append(' ').append(focused).append(' ').append(net).append('/')
+                        .append(game).append(", ").append(micros).append(" us, ").append(gcs).append(" collections]");
+            }
         }
         measured++;
         measureLeft--;
@@ -1058,7 +1180,8 @@ public final class LegacyGameTest implements ClientModInitializer {
         check(found.size() == HENGST_KEYS.length, "options.txt has one line per mod binding, got " + found);
         check(found.get(0).endsWith(":" + Keyboard.KEY_RSHIFT), "settings key line " + found.get(0));
         for (int i = 1; i < found.size(); i++) {
-            check(found.get(i).endsWith(":" + Keyboard.KEY_NONE), "unbound key line " + found.get(i));
+            int expected = HENGST_KEYS[i].equals(TOGGLE) ? Keyboard.KEY_K : Keyboard.KEY_NONE;
+            check(found.get(i).endsWith(":" + expected), "key line " + found.get(i) + ", expected " + expected);
         }
         pass("restart: options.txt keeps the lines of all four bindings " + found);
     }
@@ -1162,6 +1285,10 @@ public final class LegacyGameTest implements ClientModInitializer {
         int[] r = layout().rect(id);
         BufferedImage base = f1Baseline("hengst-40-" + id + "-control-f1");
         final int sky = meanColour(base, r);
+        final int[] saved = onClient(() -> {
+            ModuleConfig c = core.activeProfile().module(id);
+            return new int[] {c.background() ? 1 : 0, c.shadow() ? 1 : 0, c.textColor()};
+        });
         onClient(() -> {
             ModuleConfig c = core.activeProfile().module(id);
             c.setBackground(false);
@@ -1187,9 +1314,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         } finally {
             onClient(() -> {
                 ModuleConfig c = core.activeProfile().module(id);
-                c.setBackground(true);
-                c.setShadow(true);
-                c.setTextColor(0xFFFFFFFF);
+                c.setBackground(saved[0] == 1);
+                c.setShadow(saved[1] == 1);
+                c.setTextColor(saved[2]);
                 core.applyConfigForTest();
                 return null;
             });
@@ -1346,6 +1473,16 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static int[] bounds(ScrollList list) throws Exception {
         return new int[] {(Integer) field(list, "x"), (Integer) field(list, "y"), (Integer) field(list, "w"),
             (Integer) field(list, "h")};
+    }
+
+    private static int constant(Class<?> owner, String name) {
+        try {
+            Field f = owner.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.getInt(null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("[hengst-gametest] FAIL constant " + owner.getSimpleName() + "." + name, e);
+        }
     }
 
     private static int staticInt(Object owner, String name) throws Exception {
@@ -1669,6 +1806,17 @@ public final class LegacyGameTest implements ClientModInitializer {
         checkFpsBottomRight("hengst-24-restart-fps-bottom-right", "hengst-25-restart-f1");
         pass("restart: the FPS module is drawn at the saved position (pixels)");
         optionsKeepTheKeyLines();
+        final KeyBinding toggle = onClient(() -> binding(TOGGLE));
+        check(onClient(() -> toggle.getCode()) == Keyboard.KEY_K, "restart: the toggle loaded with code "
+                + onClient(() -> toggle.getCode()) + ", saved " + Keyboard.KEY_K);
+        onClient(() -> {
+            MinecraftClient.getInstance().options.setKeyBindingCode(toggle, Keyboard.KEY_NONE);
+            KeyBinding.updateKeysByCode();
+            return null;
+        });
+        check(optionLine("key_" + TOGGLE + ":").endsWith(":" + Keyboard.KEY_NONE), "restart: toggle unbound again, "
+                + optionLine("key_" + TOGGLE + ":"));
+        pass("restart: the stopwatch toggle bound to K in the earlier run is loaded with K, then unbound again");
     }
 
     // ---- checks ----
@@ -2001,16 +2149,28 @@ public final class LegacyGameTest implements ClientModInitializer {
         }
     }
 
+    // Bound of waitTicks and waitFrames: far above any wait of the test, below the watchdog.
+    private static final long WAIT_BOUND_MS = 30_000;
+
     private static void waitTicks(int n) throws InterruptedException {
         int target = ticks + n;
+        long deadline = System.nanoTime() + WAIT_BOUND_MS * 1_000_000L;
         while (ticks < target) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("[hengst-gametest] FAIL " + n + " ticks did not pass within " + WAIT_BOUND_MS + " ms");
+            }
             Thread.sleep(5);
         }
     }
 
     private static void waitFrames(int n) throws InterruptedException {
         int target = frames + n;
+        long deadline = System.nanoTime() + WAIT_BOUND_MS * 1_000_000L;
         while (frames < target) {
+            if (System.nanoTime() > deadline) {
+                throw new AssertionError("[hengst-gametest] FAIL " + n + " frames did not pass within " + WAIT_BOUND_MS
+                        + " ms");
+            }
             Thread.sleep(5);
         }
     }
@@ -2333,12 +2493,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             return null;
         }
 
-        int[] fill(int argb) {
-            return fillWithColour(argb);
-        }
-
         /** The first fill drawn with exactly this colour, in GUI pixels. */
-        int[] fillWithColour(int argb) {
+        int[] fill(int argb) {
             for (int[] f : fills) {
                 if (f[4] == argb) {
                     return new int[] {f[0], f[1], f[2], f[3]};

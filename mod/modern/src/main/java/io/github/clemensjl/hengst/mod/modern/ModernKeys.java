@@ -55,13 +55,10 @@ final class ModernKeys {
      * From the client initializer, before the game options are created and before the core starts: one mapping per key,
      * in list order, so the index of a mapping is its index for {@link HengstCore#onFeatureKey}. All key codes are
      * computed before the first mapping is built, so an unmapped default key registers nothing; the mapping array is
-     * set only when every registration succeeded. Throws what a step throws; the caller keeps the mod inert then.
+     * set only when every registration succeeded. Throws what a step throws; the caller keeps the mod inert then. The
+     * registration step is the API mod's helper ({@link #registerMapping}) in the game, replaceable for the adapter
+     * tests.
      */
-    static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes) {
-        register(keys, codes, ModernKeys::registerMapping);
-    }
-
-    /** {@link #register(List, ToIntFunction)} with the API mod's helper replaceable, for the adapter tests. */
     static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes, UnaryOperator<KeyMapping> registrar) {
         int[] keyCodes = new int[keys.size()];
         for (int i = 0; i < keyCodes.length; i++) {
@@ -74,7 +71,10 @@ final class ModernKeys {
         mappings = built;
     }
 
-    /** The registered mappings in index order; empty until {@link #register} succeeded. For tests. */
+    /**
+     * The registered mappings in index order; empty until {@link #register} succeeded. The live array, for identity
+     * checks in tests only; nothing may write to it.
+     */
     static KeyMapping[] mappings() {
         return mappings;
     }

@@ -41,21 +41,9 @@ final class LegacyKeys {
      * is its index for {@link HengstCore#onFeatureKey}. Legacy Fabric API adds the bindings to GameOptions.allKeys when
      * it loads. All key codes are computed before the first binding is built, so an unmapped default key registers
      * nothing; the binding array is set only when every registration succeeded. Throws what a step throws; the caller
-     * keeps the mod inert then.
+     * keeps the mod inert then. The registration step is {@link #REGISTRAR} in the game, replaceable for the adapter
+     * tests.
      */
-    static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes) {
-        register(keys, codes, REGISTRAR);
-    }
-
-    /** The API mod's helper; replaceable through the overload below, for the adapter tests. */
-    static final UnaryOperator<KeyBinding> REGISTRAR = new UnaryOperator<KeyBinding>() {
-        @Override
-        public KeyBinding apply(KeyBinding binding) {
-            return KeyBindingHelper.registerKeyBinding(binding);
-        }
-    };
-
-    /** {@link #register(List, ToIntFunction)} with the registration step given. */
     static void register(List<KeySpec> keys, ToIntFunction<DefaultKey> codes, UnaryOperator<KeyBinding> registrar) {
         int[] keyCodes = new int[keys.size()];
         for (int i = 0; i < keyCodes.length; i++) {
@@ -68,7 +56,13 @@ final class LegacyKeys {
         bindings = built;
     }
 
-    /** The registered bindings in index order; empty until {@link #register} succeeded. For tests. */
+    /** The API mod's helper, the registration step in the game. */
+    static final UnaryOperator<KeyBinding> REGISTRAR = KeyBindingHelper::registerKeyBinding;
+
+    /**
+     * The registered bindings in index order; empty until {@link #register} succeeded. The live array, for identity
+     * checks in tests only; nothing may write to it.
+     */
     static KeyBinding[] bindings() {
         return bindings;
     }

@@ -204,7 +204,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         shot(ctx, "hengst-04-cps-0");
         pass("CPS counts 5 clicks and falls to 0");
 
-        ctx.setScreen(() -> new ChatScreen("", false));
+        input.pressKey(o -> o.keyChat);                           // the chat key, a real key event
         ctx.waitForScreen(ChatScreen.class);
         for (int i = 0; i < 3; i++) {
             input.pressMouse(LEFT);
@@ -225,7 +225,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         pass("W held marks the key as down");
 
         KeyMapping settingsKey = ctx.computeOnClient(mc -> mapping(mc, "key.hengst.settings"));
-        ctx.setScreen(() -> new ChatScreen("", false));
+        input.pressKey(o -> o.keyChat);
         ctx.waitForScreen(ChatScreen.class);
         input.pressKey(settingsKey);
         ctx.waitTicks(2);
@@ -339,6 +339,45 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         pass("after the M1a steps only the four M0 modules are active");
 
         dragFpsToBottomRight(ctx, core, layout);
+        bindToggleForRestart(ctx);
+    }
+
+    // The stopwatch toggle bound to K in the controls screen at the end of the full phase; the restart phase checks
+    // that the game loaded it from options.txt and unbinds it again.
+    private static final String TOGGLE = "key.hengst.stopwatch.toggle";
+
+    /** Binds the stopwatch toggle to K the way a player does: the controls screen, a real key press, Escape (saves). */
+    private static void bindToggleForRestart(ClientGameTestContext ctx) {
+        TestInput input = ctx.getInput();
+        KeyMapping toggle = ctx.computeOnClient(mc -> mapping(mc, TOGGLE));
+        InputConstants.Key k = keyboardKey(InputConstants.KEY_K);
+        ctx.setScreen(() -> new KeyBindsScreen(null, Minecraft.getInstance().options));
+        ctx.waitForScreen(KeyBindsScreen.class);
+        ctx.runOnClient(mc -> ((KeyBindsScreen) ModernPlatform.currentScreen(mc)).selectedKey = toggle);
+        input.pressKey(k);
+        ctx.waitTick();
+        check(ctx.computeOnClient(mc -> toggle.saveString()).equals(k.getName()), "the controls screen bound the toggle to "
+                + k.getName() + ", got " + ctx.computeOnClient(mc -> toggle.saveString()));
+        input.pressKey(InputConstants.KEY_ESCAPE);
+        ctx.waitForScreen(null);
+        check(optionLine("key_" + TOGGLE + ":").equals("key_" + TOGGLE + ":" + k.getName()),
+                "options.txt after closing the controls screen: " + optionLine("key_" + TOGGLE + ":"));
+        pass("the stopwatch toggle bound to K in the controls screen, saved by the game when the screen closed");
+    }
+
+    /** The first line of options.txt that starts with the prefix, or "". */
+    private static String optionLine(String prefix) {
+        Path options = FabricLoader.getInstance().getGameDir().resolve("options.txt");
+        try {
+            for (String line : Files.readAllLines(options, StandardCharsets.UTF_8)) {
+                if (line.startsWith(prefix)) {
+                    return line;
+                }
+            }
+            return "";
+        } catch (IOException e) {
+            throw new UncheckedIOException(e);
+        }
     }
 
     // ---- M1a: key registration, the seven text modules, the settings with the full catalog, language ----
@@ -396,13 +435,14 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         String walking;
         try {
             walking = waitText(ctx, core, "speed", s -> speed(s) >= 3.0, 3_000, "speed while W is held");
+            shownByPixels(ctx, "speed", "hengst-42a-speed-walking");
         } finally {
             input.releaseKey(o -> o.keyUp);
         }
         waitText(ctx, core, "speed", "0.0 m/s"::equals, 5_000, "speed after W is released");
         rect = shownByPixels(ctx, "speed", "hengst-42-speed");
         offAndGone(ctx, core, "speed", rect, "hengst-43-speed-off");
-        pass("speed: '0.0 m/s' standing, '" + walking + "' while walking, drawn (pixels), gone when off");
+        pass("speed: '0.0 m/s' standing, '" + walking + "' while walking, both drawn (pixels), gone when off");
 
         // Clock: the system time to the minute, 24-hour then 12-hour.
         setEnabled(ctx, core, "clock", true);
@@ -415,10 +455,11 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         String twelve = waitText(ctx, core, "clock", s -> s.matches("\\d{1,2}:\\d\\d (" + am + "|" + pm + ")"), 2_000,
                 "clock in the 12-hour format");
         checkClose(clockMinutes(twelve, am, pm), "12-hour clock " + twelve);
+        shownByPixels(ctx, "clock", "hengst-44a-clock-12h");
         setOption(ctx, core, "clock", "format", "24h");
         waitText(ctx, core, "clock", s -> s.matches("\\d\\d:\\d\\d"), 2_000, "clock back in the 24-hour format");
         offAndGone(ctx, core, "clock", rect, "hengst-45-clock-off");
-        pass("clock: '" + clock + "' and '" + twelve + "' match the system time to the minute, drawn (pixels), gone when off");
+        pass("clock: '" + clock + "' and '" + twelve + "' match the system time to the minute, both drawn (pixels), gone when off");
 
         // Memory: the shown figures against Runtime read just before and after the module's reading.
         setEnabled(ctx, core, "memory", true);
@@ -592,6 +633,12 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         pass("settings: one wheel notch moves the list by one row (" + rowH + " px) and back");
 
         selectStopwatch(ctx, core, ui, list);
+        // The stopwatch switched on with a real click on its row's switch; it applies when the settings close.
+        Widget stopwatchRow = featureRow((List<?>) field(list, "widgets"), "stopwatch");
+        clickGui(ctx, s, stopwatchRow.x + constant(SettingsScreen.class, "TOGGLE_W") / 2, stopwatchRow.y + stopwatchRow.h / 2);
+        SettingsModel settingsModel = (SettingsModel) field(ui, "model");
+        check(ctx.computeOnClient(mc -> settingsModel.config("stopwatch").enabled()), "a click on the stopwatch's switch"
+                + " turns it on in the settings");
         rec = record(ctx, ui);
         Text comfort = rec.find(i18n(ctx, core, "hengst.group.comfort"), GROUP_TEXT);
         check(comfort != null, "Comfort heading drawn at the end of the list, texts " + rec.texts);
@@ -642,6 +689,12 @@ public final class HengstClientGameTest implements FabricClientGameTest {
 
         input.pressKey(InputConstants.KEY_ESCAPE);
         ctx.waitForScreen(null);
+        Feature sw = core.registry().byId("stopwatch");
+        check(ctx.computeOnClient(mc -> FeatureState.on(sw.number())) && layout(ctx).has("stopwatch"), "the stopwatch"
+                + " switched on in the settings is on and laid out after closing them");
+        int[] swRect = shownByPixels(ctx, "stopwatch", "hengst-54a-stopwatch-from-settings");
+        offAndGone(ctx, core, "stopwatch", swRect, "hengst-54b-stopwatch-off-again");
+        pass("settings: the stopwatch switched on with a click on its switch is drawn after closing (pixels)");
     }
 
     /** Scrolls the feature list to its end with the wheel and clicks the stopwatch's row (beside its switch). */
@@ -796,21 +849,23 @@ public final class HengstClientGameTest implements FabricClientGameTest {
     }
 
     /**
-     * The per-tick key dispatch with the window check ({@code ModernKeys.dispatch(Minecraft)}) in steady state, called
-     * once more per tick from a tick listener and measured around the call only (the game allocates on this thread).
-     * Tolerance: at most {@link #ALLOCATING_CALLS} of the 300 calls may allocate at all, {@link #DISPATCH_TOLERANCE}
-     * bytes in all. A per-call allocation shows in every call and fails; the allowance is for a one-off event on this
-     * thread (cause not identified; a JIT deoptimization, which reallocates scalar-replaced objects on the heap, is
-     * one candidate): one 26.3 run measured 1192 bytes in total, all other runs 0.
+     * The mod's per-tick key dispatch ({@code ModernKeys.tick}: the keys and the focus rule) in steady state, called once
+     * more per tick from a tick listener with the measurement around that call only. The game's window-active query
+     * ({@code Minecraft.isWindowActive()}, the argument {@code ModernKeys.dispatch(Minecraft)} passes) is measured
+     * separately and reported, not asserted: it is game code. 100 calls warm up, then two windows of 300 calls; every
+     * allocating call is logged with its index and the focus value. The second window must have no allocating call.
      */
     private static void dispatchAllocation(ClientGameTestContext ctx) {
-        for (int round = 0; round < 2; round++) {                 // round 0: 100 calls to warm up
+        long[][] windows = new long[2][];
+        for (int round = 0; round < 3; round++) {                 // round 0: 100 calls to warm up
             int calls = round == 0 ? 100 : 300;
             ctx.runOnClient(mc -> {
                 dispatchBytes = 0;
+                gameBytes = 0;
                 emptyBytes = 0;
                 allocatingCalls = 0;
-                maxCallBytes = 0;
+                allocLog.setLength(0);
+                focusFlips = 0;
                 measured = 0;
                 measureLeft = calls;
             });
@@ -819,33 +874,72 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             int[] state = ctx.computeOnClient(mc -> new int[] {measureLeft, measured, tickCalls});
             check(state[0] == 0, "measured dispatch calls within 60 s: left " + state[0] + ", measured " + state[1]
                     + ", tick listener calls " + state[2] + ", error " + measureError);
+            String log = ctx.computeOnClient(mc -> allocLog.toString());
+            long[] r = ctx.computeOnClient(mc -> new long[] {dispatchBytes, gameBytes, emptyBytes, allocatingCalls,
+                measured, focusFlips});
+            LOGGER.info("[hengst-gametest] dispatch window {} ({} calls, {} focus changes): mod {} bytes in {} calls,"
+                    + " game window query {} bytes, empty measurement {} bytes; allocating calls [index focused mod/game"
+                    + " bytes, call time, collections during the call]:{}", round, r[4], r[5], r[0], r[3], r[1], r[2], log.isEmpty() ? " none" : log);
+            if (round > 0) {
+                windows[round - 1] = r;
+            }
         }
-        long[] r = ctx.computeOnClient(mc -> new long[] {dispatchBytes, emptyBytes, measured, allocatingCalls,
-            maxCallBytes});
-        check(r[2] == 300, "measured calls " + r[2]);
-        check(r[3] <= ALLOCATING_CALLS && r[0] <= DISPATCH_TOLERANCE, "ModernKeys.dispatch(Minecraft) allocated "
-                + r[0] + " bytes in 300 ticks, in " + r[3] + " calls (largest " + r[4] + ")");
-        pass("the per-tick key dispatch with the window check allocates " + r[0] + " bytes in 300 ticks, in " + r[3]
-                + " calls (largest " + r[4] + " bytes; empty measurement " + r[1] + " bytes)");
+        // The focus-loss branch, which a window that keeps its focus never takes: 100 losses to warm up, 300 measured.
+        long[] flips = ctx.computeOnClient(mc -> {
+            HengstCore core = HengstModernMod.core();
+            KeyMapping[] mappings = ModernKeys.mappings();
+            long[] out = new long[2];
+            for (int i = 0; i < 400; i++) {
+                long a = THREADS.getCurrentThreadAllocatedBytes();
+                ModernKeys.tick(core, mappings, false);
+                ModernKeys.tick(core, mappings, true);
+                long used = THREADS.getCurrentThreadAllocatedBytes() - a;
+                if (i >= 100) {
+                    out[0] += used;
+                    out[1] += used != 0 ? 1 : 0;
+                }
+            }
+            ModernKeys.tick(core, mappings, mc.isWindowActive());
+            return out;
+        });
+        check(flips[0] == 0, "300 focus losses and returns allocated " + flips[0] + " bytes in " + flips[1] + " calls");
+        check(windows[1][3] == 0 && windows[1][0] == 0, "ModernKeys.tick allocated " + windows[1][0]
+                + " bytes in the second window of 300 ticks, in " + windows[1][3] + " calls");
+        pass("the mod's per-tick key dispatch allocates nothing in the second window of 300 ticks (first window "
+                + windows[0][0] + " bytes in " + windows[0][3] + " calls; the game's window query " + windows[0][1]
+                + " and " + windows[1][1] + " bytes), nor in 300 focus losses and returns");
     }
 
-    private static final long DISPATCH_TOLERANCE = 4096;
-    private static final long ALLOCATING_CALLS = 3;
     private static final long MEMORY_SLACK_MB = 64;
-    private static final int GROUP_TEXT = 0xFFAAAAAA;
-    private static final int NOTICE = 0xFFAAAAAA;
-    private static final int THUMB = 0xC0FFFFFF;
-    private static final int TRACK = 0x40FFFFFF;
+    // The core's own colours, read from its constants (private there).
+    private static final int GROUP_TEXT = constant(SettingsScreen.class, "GROUP_TEXT");
+    private static final int NOTICE = constant(SettingsScreen.class, "NOTICE");
+    private static final int THUMB = constant(ScrollList.class, "THUMB");
+    private static final int TRACK = constant(ScrollList.class, "TRACK");
     private static final com.sun.management.ThreadMXBean THREADS =
             (com.sun.management.ThreadMXBean) ManagementFactory.getThreadMXBean();
     // Written and read on the client thread.
     private static int measureLeft;
     private static int measured;
     private static long dispatchBytes;
+    private static long gameBytes;
     private static long emptyBytes;
     private static int tickCalls;
     private static long allocatingCalls;
-    private static long maxCallBytes;
+    private static final StringBuilder allocLog = new StringBuilder();
+    private static int focusFlips;
+    // The collectors, read around each measured call: a collection in the call is logged with an allocating call.
+    private static final java.lang.management.GarbageCollectorMXBean[] GCS =
+            ManagementFactory.getGarbageCollectorMXBeans().toArray(new java.lang.management.GarbageCollectorMXBean[0]);
+
+    private static long collections() {
+        long n = 0;
+        for (int i = 0; i < GCS.length; i++) {
+            n += GCS[i].getCollectionCount();
+        }
+        return n;
+    }
+    private static boolean lastFocused = true;
     private static volatile Throwable measureError;
 
     /** End of every client tick (registered after the mod's own listener): the measured extra dispatch call. */
@@ -854,21 +948,39 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         if (measureLeft <= 0) {
             return;
         }
+        HengstCore core = HengstModernMod.core();
+        KeyMapping[] mappings = ModernKeys.mappings();
+        long gc0 = collections();
+        long t0 = System.nanoTime();
         long a = THREADS.getCurrentThreadAllocatedBytes();
         long b = THREADS.getCurrentThreadAllocatedBytes();
+        boolean focused = mc.isWindowActive();
+        long c = THREADS.getCurrentThreadAllocatedBytes();
+        if (focused != lastFocused) {
+            focusFlips++;
+            lastFocused = focused;
+        }
         try {
-            ModernKeys.dispatch(mc);
+            ModernKeys.tick(core, mappings, focused);
         } catch (Throwable e) {
             measureError = e;
             measureLeft = 0;
             return;
         }
-        long c = THREADS.getCurrentThreadAllocatedBytes();
+        long d = THREADS.getCurrentThreadAllocatedBytes();
+        long micros = (System.nanoTime() - t0) / 1000;
+        long gcs = collections() - gc0;
         emptyBytes += b - a;
-        dispatchBytes += c - b;
-        if (c != b) {
-            allocatingCalls++;
-            maxCallBytes = Math.max(maxCallBytes, c - b);
+        gameBytes += c - b;
+        dispatchBytes += d - c;
+        if (d != c || c != b) {
+            if (d != c) {
+                allocatingCalls++;
+            }
+            if (allocLog.length() < 2000) {
+                allocLog.append(" [").append(measured).append(' ').append(focused).append(' ').append(d - c)
+                        .append('/').append(c - b).append(", ").append(micros).append(" us, ").append(gcs).append(" collections]");
+            }
         }
         measured++;
         measureLeft--;
@@ -933,6 +1045,10 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         int[] r = layout(ctx).rect(id);
         BufferedImage base = f1Baseline(ctx, "hengst-40-" + id + "-control-f1");
         int sky = meanColour(base, r);
+        int[] saved = ctx.computeOnClient(mc -> {
+            ModuleConfig c = core.activeProfile().module(id);
+            return new int[] {c.background() ? 1 : 0, c.shadow() ? 1 : 0, c.textColor()};
+        });
         ctx.runOnClient(mc -> {
             ModuleConfig c = core.activeProfile().module(id);
             c.setBackground(false);
@@ -957,9 +1073,9 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         } finally {
             ctx.runOnClient(mc -> {
                 ModuleConfig c = core.activeProfile().module(id);
-                c.setBackground(true);
-                c.setShadow(true);
-                c.setTextColor(0xFFFFFFFF);
+                c.setBackground(saved[0] == 1);
+                c.setShadow(saved[1] == 1);
+                c.setTextColor(saved[2]);
                 core.applyConfigForTest();
             });
         }
@@ -1033,33 +1149,48 @@ public final class HengstClientGameTest implements FabricClientGameTest {
     }
 
     /**
-     * Switches the game language as the language screen does and waits until the core has loaded it (its language
-     * check runs once a second, also while the resource reload runs) and the loading overlay is gone.
+     * Switches the game language as the language screen does (selection, option, resource reload; the options are saved
+     * as the screen's close does) and waits until the core has loaded it and the loading overlay is gone. Two times are
+     * logged: from the switch (includes the game's resource reload) and from the first tick after the reload finished.
+     * The mod's promise is its own periodic check: the core has the new language at most one second after the reload.
      */
     private static void setLanguage(ClientGameTestContext ctx, HengstCore core, String code, String comfort) {
         long start = System.nanoTime();
+        long[] at = new long[2];                                  // [reload done seen, core picked up], client thread
         CompletableFuture<Void> reload = ctx.computeOnClient(mc -> {
             mc.getLanguageManager().setSelected(code);
             mc.options.languageCode = code;
+            mc.options.save();
             return mc.reloadResourcePacks();
         });
-        waitUntil(ctx, mc -> comfort.equals(core.context().i18n().get("hengst.group.comfort")), 3_000,
-                "the core loads " + code + " after the switch");
-        long picked = (System.nanoTime() - start) / 1_000_000;
-        check(picked <= LANGUAGE_BOUND_MS, "the core picked up " + code + " after " + picked + " ms");
         long deadline = System.nanoTime() + 60_000_000_000L;
+        ctx.waitFor(mc -> {
+            long now = System.nanoTime();
+            if (at[0] == 0 && reload.isDone()) {
+                at[0] = now;
+            }
+            if (at[1] == 0 && comfort.equals(core.context().i18n().get("hengst.group.comfort"))) {
+                at[1] = now;
+            }
+            return (at[0] != 0 && at[1] != 0) || now > deadline;
+        }, ClientGameTestContext.NO_TIMEOUT);
+        check(at[0] != 0 && !reload.isCompletedExceptionally(), "resource reload for " + code + " within 60 s");
+        check(at[1] != 0, "the core loads " + code + " after the switch, within 60 s");
+        long total = (at[1] - start) / 1_000_000;
+        long afterReload = Math.max(0, at[1] - at[0]) / 1_000_000;
+        check(afterReload <= LANGUAGE_BOUND_MS, "the core picked up " + code + " " + afterReload
+                + " ms after the reload finished (bound " + LANGUAGE_BOUND_MS + " ms)");
         // The loading overlay covers the frame until it has faded out, after the reload itself completed.
-        ctx.waitFor(mc -> (reload.isDone() && noOverlay(mc)) || System.nanoTime() > deadline,
-                ClientGameTestContext.NO_TIMEOUT);
-        check(reload.isDone() && !reload.isCompletedExceptionally(), "resource reload for " + code);
+        ctx.waitFor(mc -> noOverlay(mc) || System.nanoTime() > deadline, ClientGameTestContext.NO_TIMEOUT);
         check(ctx.computeOnClient(HengstClientGameTest::noOverlay), "loading overlay gone after the reload for " + code);
-        pass("language " + code + " picked up by the core " + picked + " ms after the switch (bound "
-                + LANGUAGE_BOUND_MS + " ms; resource reload and overlay " + (System.nanoTime() - start) / 1_000_000
-                + " ms)");
+        pass("language " + code + " picked up by the core " + afterReload + " ms after the reload finished (bound "
+                + LANGUAGE_BOUND_MS + " ms), " + total + " ms after the switch; reload and overlay "
+                + (System.nanoTime() - start) / 1_000_000 + " ms");
     }
 
-    // One language check per second plus the tick it lands in, the screenshot-free wait loop and a margin.
-    private static final long LANGUAGE_BOUND_MS = 1_500;
+    // The core checks the language once a second, in a tick; the wait observes once per tick (50 ms): one second plus
+    // that one tick of observation.
+    private static final long LANGUAGE_BOUND_MS = 1_050;
 
     private static boolean noOverlay(Minecraft mc) {
         //? if >=26.1 {
@@ -1151,6 +1282,16 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         throw new AssertionError("[hengst-gametest] FAIL no field " + name + " in " + owner.getClass());
     }
 
+    private static int constant(Class<?> owner, String name) {
+        try {
+            Field f = owner.getDeclaredField(name);
+            f.setAccessible(true);
+            return f.getInt(null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("[hengst-gametest] FAIL constant " + owner.getSimpleName() + "." + name, e);
+        }
+    }
+
     private static int staticInt(Object owner, String name) {
         try {
             Field f = owner.getClass().getDeclaredField(name);
@@ -1233,7 +1374,27 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         check(anchor == Anchor.BOTTOM_RIGHT, "restart: loaded FPS anchor (run runClientGameTest first), got " + anchor);
         checkFpsBottomRight(ctx, "hengst-18-restart-fps-bottom-right", "hengst-19-restart-f1");
         pass("restart: the FPS module is drawn at the saved position (pixels)");
+        check(optionLine("lang:").equals("lang:en_us"), "restart: options.txt " + optionLine("lang:"));
+        String[] lang = ctx.computeOnClient(mc -> new String[] {mc.options.languageCode,
+            mc.getLanguageManager().getSelected(), core.context().i18n().get("hengst.group.comfort"),
+            Component.translatable("key.hengst.settings").getString()});
+        check("en_us".equals(lang[0]) && "en_us".equals(lang[1]) && "Comfort".equals(lang[2])
+                && langFile("en_us").get("key.hengst.settings").equals(lang[3]), "restart: the game runs in English, got "
+                + Arrays.toString(lang));
+        pass("restart: options.txt has lang:en_us and the game and the core run in English");
         optionsKeepTheKeyLines();
+        KeyMapping toggle = ctx.computeOnClient(mc -> mapping(mc, TOGGLE));
+        String k = keyboardKey(InputConstants.KEY_K).getName();
+        check(ctx.computeOnClient(mc -> toggle.saveString()).equals(k), "restart: the toggle loaded as "
+                + ctx.computeOnClient(mc -> toggle.saveString()) + ", saved " + k);
+        ctx.runOnClient(mc -> {
+            toggle.setKey(toggle.getDefaultKey());
+            KeyMapping.resetMapping();
+            mc.options.save();
+        });
+        check(optionLine("key_" + TOGGLE + ":").endsWith(":key.keyboard.unknown"), "restart: toggle unbound again, "
+                + optionLine("key_" + TOGGLE + ":"));
+        pass("restart: the stopwatch toggle bound to K in the earlier run is loaded with K, then unbound again");
     }
 
     /** The game's options.txt, written by the earlier run, keeps one line per binding of the mod. */
@@ -1256,7 +1417,9 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         check(found.size() == HENGST_KEYS.length, "options.txt has one line per mod binding, got " + found);
         check(found.get(0).endsWith(":key.keyboard.right.shift"), "settings key line " + found.get(0));
         for (int i = 1; i < found.size(); i++) {
-            check(found.get(i).endsWith(":key.keyboard.unknown"), "unbound key line " + found.get(i));
+            String expected = HENGST_KEYS[i].equals(TOGGLE) ? keyboardKey(InputConstants.KEY_K).getName()
+                    : "key.keyboard.unknown";
+            check(found.get(i).endsWith(":" + expected), "key line " + found.get(i) + ", expected " + expected);
         }
         pass("restart: options.txt keeps the lines of all four bindings " + found);
     }

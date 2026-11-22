@@ -11,4 +11,36 @@ tasks.register('buildAll', Sync) {
     include 'hengst-mod-*.jar'
     exclude '*-sources.jar'
     into 'dist'
+
+    // No game-test, harness or test-helper class in a shipped jar, nested jars (jar-in-jar) included.
+    doLast {
+        def forbidden = ~/(?i)(gametest|testutil)|(^|\/)Test[A-Z][^\/]*\.class$|Test\.class$/
+        def jars = ['1.8.9', '1.21.11', '26.3'].collect { file("dist/hengst-mod-${mod_version}+${it}.jar") }
+        jars.each { if (!it.isFile()) throw new GradleException("missing ${it}") }
+        jars.each { File jar ->
+            def scan
+            scan = { InputStream input, String where ->
+                def zip = new java.util.zip.ZipInputStream(input)
+                def entry
+                int classes = 0
+                while ((entry = zip.nextEntry) != null) {
+                    if (entry.name.endsWith('.class')) {
+                        classes++
+                    }
+                    if (entry.name =~ forbidden) {
+                        throw new GradleException("test class or resource ${entry.name} in ${where}")
+                    }
+                    if (entry.name.endsWith('.jar')) {
+                        scan(new ByteArrayInputStream(zip.readAllBytes()), "${where}!/${entry.name}")
+                    }
+                }
+                return classes
+            }
+            int found = jar.withInputStream { scan(it, jar.name) }
+            if (found == 0) {
+                throw new GradleException("no class in ${jar.name}: the jar scan read nothing")
+            }
+        }
+        logger.lifecycle("buildAll: ${jars.size()} jars scanned, no game-test or test-helper entry")
+    }
 }
