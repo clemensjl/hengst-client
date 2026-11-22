@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/hengst-core", "apps/cli", "apps/desktop/src-tauri"]
+members = ["crates/hengst-core", "crates/hengst-testkit", "apps/cli", "apps/desktop/src-tauri"]
 
 [workspace.package]
 version = "0.0.1"

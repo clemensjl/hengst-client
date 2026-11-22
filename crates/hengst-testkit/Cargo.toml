@@ -1,0 +1,24 @@
+[package]
+name = "hengst-testkit"
+version.workspace = true
+edition.workspace = true
+# Same as the core it depends on; the MSRV CI job does not build this crate.
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Mock Microsoft, Xbox, Minecraft, Mojang and Fabric services for tests. Dev only: never a normal dependency of a shipped binary."
+
+[dependencies]
+base64.workspace = true
+hengst-core = { path = "../hengst-core" }
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+url = "2"
+wiremock.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+reqwest.workspace = true
+tempfile.workspace = true
