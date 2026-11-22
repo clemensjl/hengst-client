@@ -278,6 +278,40 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
 
   // Each banned pattern must flag its own sample, and the patterns must not be so wide that they
   // flag what the design allows: a pattern that silently stops matching fails here.
+  it("no hand-written source uses a color of Tailwind's default palette", () => {
+    expect(handWritten.length).toBeGreaterThan(10);
+    for (const { file, text } of handWritten) {
+      expect(
+        bannedIn(text).filter((why) => /default palette/.test(why)),
+        file,
+      ).toEqual([]);
+    }
+    for (const sample of [
+      "text-red-500",
+      "bg-blue-600",
+      "bg-white",
+      "border-gray-200",
+      "dark:text-zinc-100",
+    ]) {
+      expect(bannedIn(`<i className="${sample}" />`).join(), sample).toMatch(
+        /default palette|white|dark/,
+      );
+    }
+    // The design's own names are not the palette.
+    for (const fine of [
+      "text-danger",
+      "bg-surface-raised",
+      "text-red",
+      "bg-blue-ish",
+      "border-input",
+    ]) {
+      expect(
+        bannedIn(fine).filter((why) => /default palette/.test(why)),
+        fine,
+      ).toEqual([]);
+    }
+  });
+
   it("every banned pattern flags its sample and none flags an allowed class", () => {
     expect(BANNED_CLASSES.length).toBeGreaterThan(25);
     for (const b of BANNED_CLASSES) {

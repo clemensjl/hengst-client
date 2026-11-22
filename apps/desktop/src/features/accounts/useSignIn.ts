@@ -47,6 +47,8 @@ export function useSignIn(language: Language): SignIn {
   const reopening = useRef(false);
   /** `cancel` succeeded: nothing is left running that the dialog started. */
   const cancelled = useRef(false);
+  /** The dialog is being left: nothing may be started any more (a switch under way is dropped). */
+  const leaving = useRef(false);
 
   // A failure, or any other end, makes the next start possible.
   useEffect(() => {
@@ -104,6 +106,12 @@ export function useSignIn(language: Language): SignIn {
     if (!isActive(s)) return true;
     // Nothing to cancel while the account is being saved or an earlier cancel is under way.
     if (s.phase === "completing") return false;
+    if (switching.current) {
+      // Escape during the switch to the code: the switch is already cancelling the browser
+      // sign-in; it must not start the code afterwards. Leave now.
+      leaving.current = true;
+      return true;
+    }
     const id = currentOp();
     if (id === null) {
       // Not known yet: leave this attempt; `loginStart`'s answer cancels it.
@@ -115,7 +123,10 @@ export function useSignIn(language: Language): SignIn {
       cancelled.current = await api.loginCancel(id);
       return cancelled.current;
     } catch {
-      return false;
+      // The backend refused or could not answer: the dialog still closes, and leaving cancels
+      // once more as a best effort (unmount, below).
+      leaving.current = true;
+      return true;
     }
   }, []);
 
@@ -131,6 +142,8 @@ export function useSignIn(language: Language): SignIn {
           switching.current = false;
           return;
         }
+        // The dialog was left meanwhile: the browser sign-in is cancelled, the code is not started.
+        if (leaving.current) return;
         dispatch({ event: "switchToCode" });
         launch("deviceCode");
       })
@@ -156,6 +169,7 @@ export function useSignIn(language: Language): SignIn {
   // watches is cancelled (the close paths cancel first; this is the net under them).
   useEffect(
     () => () => {
+      leaving.current = true;
       attempt.current++;
       const left = stateRef.current;
       const id = op.current ?? ("op" in left ? left.op : null);

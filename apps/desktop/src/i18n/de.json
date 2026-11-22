@@ -199,5 +199,10 @@
   "signIn.noClientId.body": "Er wurde ohne Microsoft-Client-ID gebaut. Verwende ein offizielles Release oder trage beim eigenen Bauen die Client-ID ein.",
   "signIn.noClientId.help": "Anleitung zum Bauen",
   "errors.openFailed.signIn.title": "Der Browser ließ sich nicht öffnen",
-  "errors.openFailed.signIn.body": "Verwende stattdessen den Code."
+  "errors.openFailed.signIn.body": "Verwende stattdessen den Code.",
+  "accounts.choose": "Konto wählen",
+  "accounts.chipHint": "Öffnet das Kontomenü zum Wechseln, Hinzufügen und Abmelden",
+  "signIn.code.announce": "Dein Code lautet {{code}}",
+  "signIn.code.address": "Adresse: {{uri}}",
+  "signIn.closeBusy": "Schließen geht erst, wenn die Anmeldung fertig ist"
 }

@@ -62,7 +62,8 @@ const readable = (el: HTMLElement) => {
 };
 export const footerLabels = () => footerButtons().map(readable);
 export const button = (name: string | RegExp) => within(dialog()).getByRole("button", { name });
-export const isPrimary = (el: Element) => el.className.includes("bg-primary");
+/** The primary button of the design (the Button variant), not a class name. */
+export const isPrimary = (el: Element) => el.getAttribute("data-variant") === "primary";
 
 /**
  * Ends a test that ran on fake timers by closing its dialog on real ones: Base UI's focus return

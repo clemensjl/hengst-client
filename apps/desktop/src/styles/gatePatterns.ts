@@ -18,7 +18,17 @@ const COLOR_UTILITY =
   "(?:bg|text|border|ring|outline|fill|stroke|from|to|via|decoration|shadow|divide|accent|caret)";
 const VARIANTS = "(?:[a-z0-9-]+:)*";
 
+const PALETTE =
+  "slate|gray|zinc|neutral|stone|red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose";
+
 export const BANNED_CLASSES: Banned[] = [
+  {
+    why: "a color of Tailwind's default palette (the palette is reset: only the tokens exist)",
+    pattern: new RegExp(
+      String.raw`\b${VARIANTS}${COLOR_UTILITY}-(?:white|black|(?:${PALETTE})-\d{2,3})(?![\w-])`,
+    ),
+    sample: "hover:text-red-500",
+  },
   word("ring-ring/", "shadcn's ring color with alpha"),
   word("outline-ring/", "shadcn's outline color with alpha"),
   word("dark:", "dark mode is the .dark token set, not per-class variants"),

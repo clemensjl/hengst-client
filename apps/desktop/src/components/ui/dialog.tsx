@@ -32,7 +32,14 @@ function DialogOverlay({ className, ...props }: DialogPrimitive.Backdrop.Props) 
 }
 
 /** The close button is an icon button: it carries its name and a tooltip with the same text. */
-function DialogCloseButton({ label, disabled }: { label: string; disabled?: boolean }) {
+function DialogCloseButton({
+  label,
+  busyReasonId,
+}: {
+  label: string;
+  /** Set while closing is not possible: the id of the visible text that says why. */
+  busyReasonId?: string;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger
@@ -40,7 +47,10 @@ function DialogCloseButton({ label, disabled }: { label: string; disabled?: bool
           <DialogPrimitive.Close
             data-slot="dialog-close"
             aria-label={label}
-            disabled={disabled}
+            // Not `disabled`: a disabled button cannot be reached to learn why. The dialog's own
+            // close handler refuses while the reason holds.
+            aria-disabled={busyReasonId ? true : undefined}
+            aria-describedby={busyReasonId}
             render={<Button variant="ghost" size="icon" className="absolute top-3 right-3" />}
           />
         }
@@ -56,12 +66,12 @@ function DialogContent({
   className,
   children,
   closeLabel,
-  closeDisabled,
+  closeBusyReasonId,
   ...props
 }: DialogPrimitive.Popup.Props & {
   /** The name of the close button; without it the dialog has none. */
   closeLabel?: string;
-  closeDisabled?: boolean;
+  closeBusyReasonId?: string;
 }) {
   return (
     <DialogPrimitive.Portal>
@@ -75,7 +85,7 @@ function DialogContent({
         {...props}
       >
         {children}
-        {closeLabel && <DialogCloseButton label={closeLabel} disabled={closeDisabled} />}
+        {closeLabel && <DialogCloseButton label={closeLabel} busyReasonId={closeBusyReasonId} />}
       </DialogPrimitive.Popup>
     </DialogPrimitive.Portal>
   );

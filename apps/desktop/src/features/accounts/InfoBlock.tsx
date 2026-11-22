@@ -12,10 +12,7 @@ import { useState } from "react";
 export function InfoBlock({ title, children }: { title: ReactNode; children: ReactNode }) {
   return (
     <div className="flex items-start gap-3">
-      <InfoIcon
-        className="mt-[5px] size-[18px] shrink-0 text-muted-foreground"
-        aria-hidden="true"
-      />
+      <InfoIcon className="mt-1 size-[18px] shrink-0 text-muted-foreground" aria-hidden="true" />
       <div className="flex min-w-0 flex-col gap-2">
         {title}
         {children}

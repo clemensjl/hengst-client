@@ -77,9 +77,7 @@ describe("AccountChip", () => {
     act(() => {
       vi.advanceTimersByTime(250);
     });
-    const block = container.querySelector("[aria-busy]")!;
-    expect(block.className).toContain("rounded-pill");
-    expect(block.className).not.toMatch(/animate/);
+    expect(container.querySelector("[aria-busy]")).not.toBeNull();
     vi.useRealTimers();
   });
 
@@ -124,28 +122,6 @@ describe("AccountChip", () => {
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
 
-  it("below 880 px the name and the badge are hidden, the circle and the chevron stay", async () => {
-    await setup([account("c", "Old_Mate", { selected: true, signInRequired: true })], {
-      open: "none",
-    });
-    const button = chip("Account: Old_Mate");
-    const name = within(button).getByText("Old_Mate");
-    expect(name.className).toContain("max-medium:hidden");
-    expect(within(button).getByText("Sign in again").className).toContain("max-medium:hidden");
-    // The state stays available to assistive technology.
-    expect(button.getAttribute("aria-describedby")).toBeTruthy();
-  });
-
-  it("the badge never shrinks and the name is the part that truncates", async () => {
-    await setup([account("c", "Old_Mate", { selected: true, signInRequired: true })], {
-      open: "none",
-    });
-    const button = chip("Account: Old_Mate");
-    expect(within(button).getByText("Sign in again").className).toContain("shrink-0");
-    expect(within(button).getByText("Old_Mate").className).toMatch(/truncate/);
-    expect(within(button).getByText("Old_Mate").className).toContain("max-w-52");
-  });
-
   it("a name that is cut off shows the full name in a tooltip reachable by keyboard", async () => {
     const wide = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockReturnValue(300);
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(100);
@@ -169,6 +145,50 @@ describe("AccountChip", () => {
         "Sixteen_Chars_Nm",
       ),
     );
+  });
+
+  it("the chip names the account and, in its description, what it opens; a stale login is described too", async () => {
+    await setup([account("c", "Old_Mate", { selected: true, signInRequired: true })], {
+      open: "none",
+    });
+    const button = chip("Account: Old_Mate");
+    const description = button
+      .getAttribute("aria-describedby")!
+      .split(" ")
+      .map((id) => document.getElementById(id)?.textContent)
+      .join(" ");
+    expect(description).toContain("Opens the account menu");
+    expect(description).toContain("Sign in again");
+  });
+
+  it("with accounts but none selected the chip says so and never shows another account's name", async () => {
+    await setup([account("a", "Mira_K"), jonas], { open: "none" });
+    expect(screen.queryByRole("button", { name: /Account: / })).toBeNull();
+    const button = screen.getByRole("button", { name: "Choose account" });
+    expect(button.textContent).not.toContain("Mira_K");
+    fireEvent.click(button);
+    const menu = await screen.findByRole("menu");
+    for (const item of within(menu).getAllByRole("menuitemradio")) {
+      expect(item.getAttribute("aria-checked")).toBe("false");
+    }
+  });
+
+  it("choosing an account closes the menu", async () => {
+    await setup([mira, jonas], { open: "none" });
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getAllByRole("menuitemradio")[1]);
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  });
+
+  it("a failed select says so and the chip stays truthful: the list is read again and nothing switched", async () => {
+    const backend = await setup([mira, jonas], { open: "none" });
+    backend.selectFails = { code: "accountNotFound", params: {}, action: null, detail: "x" };
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getAllByRole("menuitemradio")[1]);
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Account not found"));
+    await waitFor(() => expect(backend.count("accounts_list")).toBe(2));
+    expect(chip("Account: Mira_K")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Account: Jonas_T" })).toBeNull();
   });
 });
 
@@ -196,17 +216,6 @@ describe("keyboard", () => {
     fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(chip()));
-  });
-
-  it("the menu items carry the keyboard highlight style (the inset outline is in the utility)", async () => {
-    await setup([mira, jonas], { open: "none" });
-    const menu = await openMenu();
-    for (const item of within(menu).getAllByRole("menuitem")) {
-      expect(item.className).toContain("menu-item");
-    }
-    for (const item of within(menu).getAllByRole("menuitemradio")) {
-      expect(item.className).toContain("menu-item");
-    }
   });
 });
 

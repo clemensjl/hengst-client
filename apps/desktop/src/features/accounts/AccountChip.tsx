@@ -1,4 +1,4 @@
-import { ChevronDownIcon, LogInIcon, TriangleAlertIcon } from "lucide-react";
+import { ChevronDownIcon, LogInIcon, TriangleAlertIcon, UserRoundIcon } from "lucide-react";
 import { useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/Badge";
@@ -20,21 +20,31 @@ const setChip = (el: HTMLElement | null) => {
   chipRef.current = el;
 };
 
-/** The account the chip shows: the selected one, else the first. */
-function shownAccount(accounts: AccountDto[]): AccountDto {
-  return accounts.find((a) => a.selected) ?? accounts[0];
-}
-
 /** The first letter of the name as a whole character (a name may start with a surrogate pair). */
 const initialOf = (name: string) => (Array.from(name)[0] ?? "?").toUpperCase();
 
-function AccountChipButton({ accounts }: { accounts: AccountDto[] }) {
+/** Accounts exist but none is selected: the chip says so instead of naming some other account. */
+function ChooseAccountButton({ accounts }: { accounts: AccountDto[] }) {
   const { t } = useTranslation();
-  const account = shownAccount(accounts);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger ref={setChip} render={<Button />}>
+        <UserRoundIcon aria-hidden="true" />
+        {t("accounts.choose")}
+        <ChevronDownIcon aria-hidden="true" />
+      </DropdownMenuTrigger>
+      <AccountMenuContent accounts={accounts} />
+    </DropdownMenu>
+  );
+}
+
+function AccountChipButton({ accounts, account }: { accounts: AccountDto[]; account: AccountDto }) {
+  const { t } = useTranslation();
   const nameRef = useRef<HTMLSpanElement>(null);
   const truncated = useTruncated(nameRef, account.name);
   const needsSignIn = account.signInRequired;
   const stateId = "account-chip-state";
+  const hintId = "account-chip-hint";
   return (
     <DropdownMenu>
       <Tooltip disabled={!truncated}>
@@ -43,7 +53,7 @@ function AccountChipButton({ accounts }: { accounts: AccountDto[] }) {
             <DropdownMenuTrigger
               ref={setChip}
               aria-label={t("accounts.chip", { name: account.name })}
-              aria-describedby={needsSignIn ? stateId : undefined}
+              aria-describedby={needsSignIn ? `${hintId} ${stateId}` : hintId}
               className="flex h-10 shrink-0 items-center gap-2 rounded-pill border border-input bg-secondary py-1 pr-3 pl-1 text-small text-foreground transition-[background-color] duration-(--dur-press) ease-out select-none hover:bg-hover active:bg-selected active:duration-0 data-popup-open:bg-selected"
             />
           }
@@ -61,10 +71,14 @@ function AccountChipButton({ accounts }: { accounts: AccountDto[] }) {
           {needsSignIn && (
             <Badge className="shrink-0 max-medium:hidden">{t("accounts.needsSignIn")}</Badge>
           )}
-          <ChevronDownIcon className="size-4 shrink-0" aria-hidden="true" />
+          {/* 8 px from the circle to the name, 4 px from the name to the chevron (DESIGN.md 10.3). */}
+          <ChevronDownIcon className="-ml-1 size-4 shrink-0" aria-hidden="true" />
         </TooltipTrigger>
         <TooltipContent side="bottom">{account.name}</TooltipContent>
       </Tooltip>
+      <span id={hintId} className="sr-only">
+        {t("accounts.chipHint")}
+      </span>
       {needsSignIn && (
         <span id={stateId} className="sr-only">
           {t("accounts.needsSignIn")}
@@ -85,7 +99,7 @@ export function AccountChip() {
     return (
       <DropdownMenu>
         <DropdownMenuTrigger ref={setChip} render={<Button />}>
-          <TriangleAlertIcon aria-hidden="true" />
+          <TriangleAlertIcon className="text-warning" aria-hidden="true" />
           {t("accounts.unavailable")}
         </DropdownMenuTrigger>
         <AccountErrorMenuContent error={accounts.error} />
@@ -112,5 +126,11 @@ export function AccountChip() {
     );
   }
 
-  return <AccountChipButton accounts={accounts.data.accounts} />;
+  const list = accounts.data.accounts;
+  const selected = list.find((a) => a.selected);
+  return selected ? (
+    <AccountChipButton accounts={list} account={selected} />
+  ) : (
+    <ChooseAccountButton accounts={list} />
+  );
 }

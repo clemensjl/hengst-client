@@ -26,13 +26,26 @@ const Spinner = () => <LoaderCircleIcon className="spinner size-4" aria-hidden="
 function InertButton({
   children,
   reserve,
+  focusOnMount,
   ...props
 }: Omit<React.ComponentProps<typeof Button>, "onClick"> & {
+  /** Takes the focus when it appears: it replaces the button that had it. */
+  focusOnMount?: boolean;
   /** The label of the idle button: the width does not shrink below it (DESIGN.md 10.1). */
   reserve?: string;
 }) {
+  const ref = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (focusOnMount) ref.current?.focus();
+  }, [focusOnMount]);
   return (
-    <Button aria-disabled="true" aria-busy="true" onClick={(e) => e.preventDefault()} {...props}>
+    <Button
+      ref={ref}
+      aria-disabled="true"
+      aria-busy="true"
+      onClick={(e) => e.preventDefault()}
+      {...props}
+    >
       <Spinner />
       <span className="grid">
         {reserve && (
@@ -72,6 +85,11 @@ function CodeView({
 }) {
   const { t } = useTranslation();
   const remaining = useRemaining(state.expiresAt);
+  // Announced once, when the code appears: the region is there empty first, then it is filled.
+  const [announcement, setAnnouncement] = useState("");
+  useEffect(() => {
+    setAnnouncement(t("signIn.code.announce", { code: Array.from(state.userCode).join(" ") }));
+  }, [t, state.userCode]);
   const [copied, setCopied] = useState(false);
   const [copyFailed, setCopyFailed] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -93,6 +111,9 @@ function CodeView({
   return (
     <div className="flex flex-col gap-3">
       <DialogDescription>{t("signIn.code.body")}</DialogDescription>
+      <span role="status" aria-live="polite" className="sr-only">
+        {announcement}
+      </span>
       <div className="flex flex-wrap items-center gap-2">
         <div className="rounded-md bg-background px-4 py-3 font-mono text-code tracking-[0.04em] [overflow-wrap:anywhere]">
           {state.userCode}
@@ -115,6 +136,13 @@ function CodeView({
       <p className="text-caption text-muted-foreground tabular-nums">
         {t("signIn.code.remaining", { time: formatRemaining(remaining) })}
       </p>
+      {/* The address the service named, as text and only if it is https. It is never a link:
+          "Open" goes to the fixed target of the app (DESIGN.md 11.5, plan ruling). */}
+      {state.verificationUri.startsWith("https://") && (
+        <p className="text-caption break-all text-muted-foreground">
+          {t("signIn.code.address", { uri: state.verificationUri })}
+        </p>
+      )}
     </div>
   );
 }
@@ -183,6 +211,7 @@ function Body({
     case "completing":
       return (
         <p
+          id="sign-in-completing"
           ref={bodyRef as React.RefObject<HTMLParagraphElement | null>}
           tabIndex={-1}
           role="status"
@@ -274,7 +303,7 @@ function Footer({
       return (
         <>
           {cancel}
-          <InertButton variant="primary" reserve={t("signIn.start")}>
+          <InertButton variant="primary" reserve={t("signIn.start")} focusOnMount>
             {t("signIn.opening")}
           </InertButton>
         </>
@@ -397,11 +426,17 @@ export function SignInDialog({
       <DialogContent
         className="w-140"
         closeLabel={t("common.close")}
-        closeDisabled={state.phase === "completing"}
+        closeBusyReasonId={state.phase === "completing" ? "sign-in-busy-reason" : undefined}
         initialFocus={primaryRef}
         finalFocus={chipRef}
       >
         <DialogTitle>{title}</DialogTitle>
+        {/* Why the close button waits; read through its aria-describedby, there only while it waits. */}
+        {state.phase === "completing" && (
+          <span id="sign-in-busy-reason" className="sr-only">
+            {t("signIn.closeBusy")}
+          </span>
+        )}
         <DialogBody>
           <Body signIn={signIn} copyRef={copyRef} bodyRef={bodyRef} devOffline={devOffline} />
         </DialogBody>

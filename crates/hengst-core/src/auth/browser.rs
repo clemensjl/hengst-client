@@ -2016,7 +2016,7 @@ mod tests {
                     e.is_body(),
                 );
                 panic!(
-                    "the first callback request to the bound port failed (unexplained, see the                      output above): {e}"
+                    "the first callback request to the bound port failed (unexplained, see the output above): {e}"
                 );
             }
         };

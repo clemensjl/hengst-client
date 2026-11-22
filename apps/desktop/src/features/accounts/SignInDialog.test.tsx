@@ -102,7 +102,14 @@ describe("SignInDialog phases", () => {
     expect(await within(dialog()).findAllByText("Signing in…")).not.toHaveLength(0);
     expect(footerButtons()).toHaveLength(2);
     for (const b of footerButtons()) expect(b.getAttribute("aria-disabled")).toBe("true");
-    expect(button("Close").hasAttribute("disabled")).toBe(true);
+    // The close button is not disabled out of reach: it says why closing waits, and does nothing.
+    const x = button("Close");
+    expect(x.hasAttribute("disabled")).toBe(false);
+    expect(x.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(x.getAttribute("aria-describedby")!)?.textContent).toBe(
+      "Closing works once the sign-in is done",
+    );
+    fireEvent.click(x);
     fireEvent.keyDown(document.body, { key: "Escape" });
     await act(async () => {});
     expect(backend.count("login_cancel")).toBe(0);
@@ -355,6 +362,109 @@ describe("SignInDialog closing and cancelling", () => {
     fireEvent.click(within(footer()).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(backend.count("login_cancel")).toBe(0);
+  });
+});
+
+describe("SignInDialog focus, announcements and races", () => {
+  it("starting keeps the focus inside the dialog", async () => {
+    await setup();
+    fireEvent.click(button("Sign in with Microsoft"));
+    await screen.findByRole("button", { name: "Opening…" });
+    await waitFor(() => expect(dialog().contains(document.activeElement)).toBe(true));
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("the device code is announced once when it appears, character by character", async () => {
+    const backend = await setup();
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(1));
+    act(() => {
+      backend.started();
+      backend.emit({
+        event: "deviceCode",
+        data: {
+          userCode: "ABCD1234",
+          verificationUri: "https://www.microsoft.com/link",
+          expiresAt: Math.floor(Date.now() / 1000) + 900,
+        },
+      });
+    });
+    const live = await screen.findByText("Your code is A B C D 1 2 3 4");
+    expect(live.getAttribute("role")).toBe("status");
+    expect(live.closest("[aria-live]")?.getAttribute("aria-live")).toBe("polite");
+  });
+
+  it("shows the address the service gave as text, only if it is https", async () => {
+    const backend = await setup();
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(1));
+    const code = (uri: string) =>
+      act(() => {
+        backend.started();
+        backend.emit({
+          event: "deviceCode",
+          data: {
+            userCode: "ABCD1234",
+            verificationUri: uri,
+            expiresAt: Math.floor(Date.now() / 1000) + 900,
+          },
+        });
+      });
+    code("https://www.microsoft.com/link");
+    expect(
+      await within(dialog()).findByText("Address: https://www.microsoft.com/link"),
+    ).toBeTruthy();
+    expect(dialog().querySelector("a")).toBeNull();
+  });
+
+  it("a verification address that is not https is not shown", async () => {
+    const backend = await setup();
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(1));
+    act(() => {
+      backend.started();
+      backend.emit({
+        event: "deviceCode",
+        data: {
+          userCode: "ABCD1234",
+          verificationUri: "javascript:alert(1)",
+          expiresAt: Math.floor(Date.now() / 1000) + 900,
+        },
+      });
+    });
+    await within(dialog()).findByText("ABCD1234");
+    expect(within(dialog()).queryByText(/Address:/)).toBeNull();
+  });
+
+  it("escape during the switch to the code closes the dialog and leaves nothing running", async () => {
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "browserOpened" }));
+    fireEvent.click(button("Use a code instead"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    // The switch's own cancel ended the browser sign-in; no code sign-in was started after the close.
+    expect(backend.count("login_start")).toBe(1);
+  });
+
+  it("a rejected login_cancel still closes the dialog and raises no unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const listener = (e: PromiseRejectionEvent) => unhandled.push(e.reason);
+    window.addEventListener("unhandledrejection", listener);
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "browserOpened" }));
+    backend.cancelFails = { code: "internal", params: {}, action: null, detail: "x" };
+    fireEvent.click(button("Cancel"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 30));
+    });
+    window.removeEventListener("unhandledrejection", listener);
+    expect(unhandled).toEqual([]);
   });
 });
 

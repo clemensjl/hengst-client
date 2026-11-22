@@ -40,6 +40,10 @@ export function fakeBackend(initial: AccountsDto = { accounts: [], canSignIn: tr
     startFails: null as ErrorDto | null,
     /** `accounts_list` fails with this. */
     listFails: null as ErrorDto | null,
+    /** `login_cancel` rejects with this. */
+    cancelFails: null as ErrorDto | null,
+    /** `account_select` fails with this. */
+    selectFails: null as ErrorDto | null,
     /** `account_remove` fails with this. */
     removeFails: null as ErrorDto | null,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
@@ -63,7 +67,11 @@ export function fakeBackend(initial: AccountsDto = { accounts: [], canSignIn: tr
         channels.push(args.channel as Channel);
         return nextOp++;
       case "login_cancel":
+        if (b.cancelFails) throw b.cancelFails;
         return b.cancelAnswer;
+      case "account_select":
+        if (b.selectFails) throw b.selectFails;
+        return;
       case "login_reopen_browser":
         if (b.reopenFails) throw b.reopenFails;
         return;

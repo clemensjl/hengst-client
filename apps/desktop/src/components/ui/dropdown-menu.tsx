@@ -102,6 +102,8 @@ function DropdownMenuRadioItem({ className, children, ...props }: MenuPrimitive.
   return (
     <MenuPrimitive.RadioItem
       data-slot="dropdown-menu-radio-item"
+      // Choosing an account is the action: the menu closes (Base UI keeps radio items open).
+      closeOnClick
       className={cn(item, className)}
       {...props}
     >
