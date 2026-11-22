@@ -190,6 +190,19 @@ fn normal_rectangle(window: &WebviewWindow) -> tauri::Result<Option<WindowState>
     }))
 }
 
+/// A sign-in that is still waiting ends with its window: its listener and tasks are freed.
+pub fn cancel_operations_when_destroyed<R: tauri::Runtime>(window: &WebviewWindow<R>) {
+    let handle = window.app_handle().clone();
+    window.on_window_event(move |event| cancel_operations_on(&handle, event));
+}
+
+/// What the hook does with a window event: only the window's destruction cancels.
+pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
+    if let WindowEvent::Destroyed = event {
+        app.state::<AppState>().operations.cancel_all();
+    }
+}
+
 fn create_window(
     app: &AppHandle,
     args: &StartupArgs,
@@ -298,15 +311,7 @@ fn create_window(
             focused.err()
         ),
     }
-    // A sign-in that is still waiting ends with its window: its listener and tasks are freed.
-    {
-        let handle = app.clone();
-        window.on_window_event(move |event| {
-            if let WindowEvent::Destroyed = event {
-                handle.state::<AppState>().operations.cancel_all();
-            }
-        });
-    }
+    cancel_operations_when_destroyed(&window);
     // With the setting on System the native background follows the OS theme at runtime too.
     {
         let (themed, handle) = (window.clone(), app.clone());

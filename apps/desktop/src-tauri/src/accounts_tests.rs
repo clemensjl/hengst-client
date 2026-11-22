@@ -16,6 +16,12 @@ struct TestStore {
     deletes: AtomicUsize,
     /// From this delete call on (1 = the first) every delete is refused; 0 = never.
     refuse_delete_from: AtomicUsize,
+    /// While armed, `set` announces itself in `reached` and waits for `release`.
+    gate_set: AtomicBool,
+    reached: AtomicBool,
+    release: AtomicBool,
+    /// `set` panics (a blocking task that fails).
+    panic_set: AtomicBool,
 }
 
 struct Shared(Arc<TestStore>);
@@ -26,6 +32,15 @@ impl SecretStore for Shared {
     }
 
     fn set(&self, key: &str, value: &Secret) -> Result<()> {
+        if self.0.panic_set.load(Ordering::SeqCst) {
+            panic!("the test store panics");
+        }
+        if self.0.gate_set.load(Ordering::SeqCst) {
+            self.0.reached.store(true, Ordering::SeqCst);
+            while !self.0.release.load(Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
         if self.0.refuse_set.load(Ordering::SeqCst) {
             return Err(Error::CredentialStore("refused by the test".into()));
         }
@@ -74,12 +89,7 @@ struct Harness {
 }
 
 fn pages() -> BrowserLoginPages {
-    BrowserLoginPages {
-        success_title: "Done".into(),
-        success_body: "You can return to the launcher.".into(),
-        failure_title: "Not done".into(),
-        failure_body: "Go back to the launcher.".into(),
-    }
+    login_pages(Language::En)
 }
 
 fn is_terminal(e: &LoginEvent) -> bool {
@@ -342,8 +352,6 @@ async fn started_is_always_the_first_event_and_carries_the_op_returned_by_login_
     ] {
         let h = Harness::new(AuthScenario::Ok, browser).await;
         let (op, events) = h.login(method);
-        // Present before anything else could happen: it is sent before `start_login` returns.
-        assert_eq!(snapshot(&events)[0], LoginEvent::Started { op });
         let events = wait_terminal(&events).await;
         assert_eq!(events[0], LoginEvent::Started { op });
         let started = events
@@ -450,13 +458,7 @@ async fn every_failure_scenario_ends_in_one_typed_failure_and_saves_nothing() {
         assert_eq!(failed(&seen).code, code, "{scenario:?} {method:?}");
         let terminals = seen.iter().filter(|e| is_terminal(e)).count();
         assert_eq!(terminals, 1, "{scenario:?} {method:?}: {seen:?}");
-        // Nothing follows the terminal event.
-        tokio::time::sleep(Duration::from_millis(150)).await;
-        assert_eq!(
-            snapshot(&events).len(),
-            seen.len(),
-            "{scenario:?} {method:?}"
-        );
+        assert!(is_terminal(seen.last().unwrap()));
         assert!(h.microsoft().is_empty(), "{scenario:?} {method:?}");
         assert!(!h.store.has(PLAYER_A.uuid, SecretKind::Minecraft));
     }
@@ -561,8 +563,6 @@ async fn cancel_ends_a_waiting_login() {
     // Cancelling again, or an unknown operation, does nothing.
     assert!(!h.ops.cancel(op));
     assert!(!h.ops.cancel(OperationId(9999)));
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(snapshot(&events).len(), seen.len());
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -572,9 +572,9 @@ async fn cancel_works_in_every_phase() {
     let h = Harness::new(slow, Browser::Silent).await;
     let (op, events) = h.login(LoginMethod::DeviceCode);
     assert!(h.ops.cancel(op));
-    tokio::time::sleep(Duration::from_millis(900)).await;
+    // The queue closed with `Cancelled`: the device code that is still on its way cannot follow.
     assert_eq!(
-        snapshot(&events),
+        wait_terminal(&events).await,
         [LoginEvent::Started { op }, LoginEvent::Cancelled]
     );
 
@@ -585,8 +585,7 @@ async fn cancel_works_in_every_phase() {
     assert!(h.ops.cancel(op));
     let seen = wait_terminal(&events).await;
     assert_eq!(seen.last(), Some(&LoginEvent::Cancelled));
-    tokio::time::sleep(Duration::from_millis(150)).await;
-    assert_eq!(snapshot(&events).len(), seen.len());
+    assert_eq!(seen.iter().filter(|e| is_terminal(e)).count(), 1);
 
     // completing: the Xbox and Minecraft requests are slow
     let slow = AuthScenario::Slow(Duration::from_millis(250));
@@ -594,8 +593,8 @@ async fn cancel_works_in_every_phase() {
     let (op, events) = h.login(LoginMethod::Browser);
     wait_for(&events, |e| *e == LoginEvent::Completing).await;
     assert!(h.ops.cancel(op));
-    tokio::time::sleep(Duration::from_millis(1800)).await;
-    let seen = snapshot(&events);
+    // `cancel` removed the operation: it can no longer start saving, so nothing is stored.
+    let seen = wait_terminal(&events).await;
     assert_eq!(seen.last(), Some(&LoginEvent::Cancelled), "{seen:?}");
     assert_eq!(seen.iter().filter(|e| is_terminal(e)).count(), 1);
     assert!(h.microsoft().is_empty());
@@ -662,17 +661,30 @@ async fn cancel_all_ends_every_waiting_operation() {
 // ---- the browser address stays in Rust ----
 
 #[tokio::test(flavor = "multi_thread")]
-async fn reopen_uses_the_stored_address_and_refuses_unknown_operations() {
+async fn reopen_uses_the_stored_address_at_most_every_two_seconds() {
     let h = Harness::new(AuthScenario::Ok, Browser::Silent).await;
     let (op, events) = h.login(LoginMethod::Browser);
     wait_for(&events, |e| *e == LoginEvent::BrowserOpened).await;
-    h.accounts.reopen_browser(&h.ops, op).unwrap();
+    let t0 = Instant::now();
+    // Right after the first open: nothing happens, and it is not an error.
+    h.accounts.reopen_browser_at(&h.ops, op, t0).unwrap();
+    assert_eq!(lock(&h.opened).len(), 1);
+    let later = |secs| t0 + Duration::from_secs(secs);
+    h.accounts.reopen_browser_at(&h.ops, op, later(3)).unwrap();
     let opened = lock(&h.opened).clone();
     assert_eq!(opened.len(), 2);
     assert_eq!(opened[0], opened[1]);
+    // Within two seconds of that open: ignored.
+    h.accounts.reopen_browser_at(&h.ops, op, later(4)).unwrap();
+    assert_eq!(lock(&h.opened).len(), 2);
+    h.accounts.reopen_browser_at(&h.ops, op, later(6)).unwrap();
+    assert_eq!(lock(&h.opened).len(), 3);
     // A refusing browser is a typed error that names nothing of the address.
     h.open_refused.store(true, Ordering::SeqCst);
-    let e = h.accounts.reopen_browser(&h.ops, op).unwrap_err();
+    let e = h
+        .accounts
+        .reopen_browser_at(&h.ops, op, later(9))
+        .unwrap_err();
     assert_eq!(e.code, ErrorCode::OpenFailed);
     assert!(!e.detail.contains("authorize") && !e.detail.contains("state"));
     // The sign-in goes on.
@@ -699,31 +711,276 @@ async fn a_browser_that_cannot_be_opened_ends_the_sign_in() {
 }
 
 #[test]
-fn page_texts_from_the_web_view_are_checked() {
-    let good = LoginPagesDto {
-        success_title: "a".into(),
-        success_body: "b".into(),
-        failure_title: "c".into(),
-        failure_body: "d".into(),
-    };
-    assert!(browser_pages(good.clone()).is_ok());
-    for bad in [
-        LoginPagesDto {
-            success_title: " ".into(),
-            ..good.clone()
-        },
-        LoginPagesDto {
-            failure_body: String::new(),
-            ..good.clone()
-        },
-        LoginPagesDto {
-            success_body: "x".repeat(501),
-            ..good.clone()
-        },
-    ] {
-        let e = browser_pages(bad).unwrap_err();
-        assert_eq!(e.code, ErrorCode::InvalidInput);
+fn the_browser_page_is_fixed_text_in_both_languages_and_never_claims_a_finished_sign_in() {
+    let de = login_pages(Language::De);
+    let en = login_pages(Language::En);
+    for p in [&de, &en] {
+        for text in [
+            &p.success_title,
+            &p.success_body,
+            &p.failure_title,
+            &p.failure_body,
+        ] {
+            assert!(!text.trim().is_empty() && text.chars().count() <= 200);
+            // DESIGN.md 12: no exclamation marks, no emoji, no dash as separator.
+            assert!(!text.contains('!') && !text.contains(" - ") && !text.contains(" \u{2013} "));
+            assert!(!text.to_lowercase().contains("minecraft"));
+        }
+        // Titles have no full stop, bodies are sentences.
+        assert!(!p.success_title.ends_with('.') && !p.failure_title.ends_with('.'));
+        assert!(p.success_body.ends_with('.') && p.failure_body.ends_with('.'));
     }
+    // The Xbox and game steps still follow: the page only sends the user back.
+    assert!(en.success_body.contains("return to Hengst Client"));
+    assert!(de.success_body.contains("zurückkehren"));
+    for text in [&en.success_title, &en.success_body] {
+        let t = text.to_lowercase();
+        assert!(
+            !t.contains("signed in") && !t.contains("you are in"),
+            "{text}"
+        );
+    }
+    for text in [&de.success_title, &de.success_body] {
+        assert!(!text.contains("angemeldet"), "{text}");
+    }
+    // German addresses the user as "du", never "Sie".
+    for text in [&de.success_body, &de.failure_body] {
+        assert!(!text.contains("Sie ") && !text.contains("Ihr"), "{text}");
+    }
+    assert_ne!(de.success_body, en.success_body);
+    // The setting decides; the system language only fills in when there is none.
+    assert_eq!(page_language(Some(Language::De)), Language::De);
+    assert_eq!(page_language(Some(Language::En)), Language::En);
+}
+
+#[test]
+fn only_https_addresses_reach_the_system_opener() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let opener = https_only(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    for bad in [
+        "http://login.microsoftonline.com/",
+        "file:///C:/Windows/System32/calc.exe",
+        "C:\\Windows\\System32\\calc.exe",
+        "calc.exe",
+        "ms-msdt:/id",
+        "javascript:alert(1)",
+        "HTTPS://login.microsoftonline.com/",
+        " https://login.microsoftonline.com/",
+        "",
+    ] {
+        assert!(opener(bad).is_err(), "{bad}");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing was passed on");
+    assert!(
+        opener("https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize?x=1").is_ok()
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_ended_operation_does_not_open_its_pending_tab() {
+    let events: Events = Arc::default();
+    let (out, forwarder) = OpOut::new(sink_into(&events));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let counted = calls.clone();
+    let opener: BrowserOpener = Arc::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    });
+    assert_eq!(open_unless_ended(&out, &opener, "https://x/"), Ok(true));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert!(out.end(LoginEvent::Cancelled));
+    // Replaced or cancelled before its first open ran: no tab.
+    assert_eq!(open_unless_ended(&out, &opener, "https://x/"), Ok(false));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    forwarder.await.unwrap();
+}
+
+// ---- the event queue ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_in_a_synchronous_stretch_cannot_send_progress_after_the_terminal_event() {
+    let ops = Operations::default();
+    let events: Events = Arc::default();
+    let (out, forwarder) = OpOut::new(sink_into(&events));
+    let (parked_tx, parked_rx) = std::sync::mpsc::channel::<()>();
+    let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
+    let (done_tx, done_rx) = std::sync::mpsc::channel::<Vec<bool>>();
+    let on_cancel: Box<dyn Fn() + Send + Sync> = {
+        let out = out.clone();
+        Box::new(move || {
+            out.end(LoginEvent::Cancelled);
+        })
+    };
+    let id = ops.start(OpKind::Login, on_cancel, {
+        let out = out.clone();
+        move |op| {
+            out.progress(LoginEvent::Started { op });
+            // The task blocks a thread without an await: an abort cannot reach it.
+            tokio::spawn(async move {
+                parked_tx.send(()).unwrap();
+                go_rx.recv().unwrap();
+                let sent = vec![
+                    out.progress(LoginEvent::Completing),
+                    out.progress(LoginEvent::BrowserOpened),
+                ];
+                done_tx.send(sent).unwrap();
+            })
+            .abort_handle()
+        }
+    });
+    parked_rx.recv().unwrap();
+    assert!(ops.cancel(id));
+    go_tx.send(()).unwrap();
+    let sent = done_rx.recv().unwrap();
+    assert_eq!(sent, [false, false], "both events were refused");
+    forwarder.await.unwrap();
+    assert_eq!(
+        snapshot(&events),
+        [LoginEvent::Started { op: id }, LoginEvent::Cancelled]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_blocking_sink_does_not_stall_cancel_and_started_stays_first() {
+    let ops = Operations::default();
+    let seen: Events = Arc::default();
+    let (unblock_tx, unblock_rx) = std::sync::mpsc::channel::<()>();
+    let unblock_rx = Mutex::new(unblock_rx);
+    let sink: EventSink<LoginEvent> = {
+        let seen = seen.clone();
+        Arc::new(move |e| {
+            // The first event blocks the sink (a web view that does not take it yet).
+            if lock(&seen).is_empty() {
+                lock(&seen).push(e);
+                let _ = lock(&unblock_rx).recv();
+            } else {
+                lock(&seen).push(e);
+            }
+        })
+    };
+    let (out, forwarder) = OpOut::new(sink);
+    let on_cancel: Box<dyn Fn() + Send + Sync> = {
+        let out = out.clone();
+        Box::new(move || {
+            out.end(LoginEvent::Cancelled);
+        })
+    };
+    let id = ops.start(OpKind::Login, on_cancel, {
+        let out = out.clone();
+        move |op| {
+            out.progress(LoginEvent::Started { op });
+            out.progress(LoginEvent::Completing);
+            tokio::spawn(std::future::pending::<()>()).abort_handle()
+        }
+    });
+    // The sink is stuck inside `Started`; `cancel` (synchronous, like the command) still returns.
+    let cancelled = ops.cancel(id);
+    assert!(cancelled);
+    unblock_tx.send(()).unwrap();
+    forwarder.await.unwrap();
+    assert_eq!(
+        snapshot(&seen),
+        [
+            LoginEvent::Started { op: id },
+            LoginEvent::Completing,
+            LoginEvent::Cancelled
+        ]
+    );
+}
+
+// ---- the final save ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn cancel_during_the_final_save_returns_false_and_the_sign_in_completes() {
+    let h = Harness::new(AuthScenario::Ok, Browser::Visits).await;
+    h.store.gate_set.store(true, Ordering::SeqCst);
+    let (op, events) = h.login(LoginMethod::Browser);
+    until("the save has started", || {
+        h.store.reached.load(Ordering::SeqCst)
+    })
+    .await;
+    assert!(!h.ops.cancel(op), "saving: too late to cancel");
+    h.store.release.store(true, Ordering::SeqCst);
+    let seen = wait_terminal(&events).await;
+    assert_eq!(signed_in(&seen).id, PLAYER_A.uuid);
+    assert_eq!(seen.iter().filter(|e| is_terminal(e)).count(), 1);
+    assert!(!seen.contains(&LoginEvent::Cancelled));
+    assert_eq!(h.microsoft().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panicking_save_is_an_internal_error_not_a_file_system_error() {
+    let h = Harness::new(AuthScenario::Ok, Browser::Visits).await;
+    h.store.panic_set.store(true, Ordering::SeqCst);
+    let events = h.run(LoginMethod::Browser).await;
+    assert_eq!(failed(&events).code, ErrorCode::Internal);
+    assert_eq!(internal("x").code, ErrorCode::Internal);
+    assert!(h.microsoft().is_empty());
+}
+
+// ---- operations and the window ----
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_destroyed_window_cancels_the_operations() {
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::{Manager, WebviewWindowBuilder, WindowEvent};
+    let dir = tempfile::tempdir().unwrap();
+    let state = crate::state::AppState::new(
+        Paths::new(dir.path()),
+        hengst_core::launch::Endpoints::default(),
+    );
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    // The real hook can be installed on a window of the mock runtime.
+    let window = WebviewWindowBuilder::new(&app, "main", Default::default())
+        .build()
+        .unwrap();
+    crate::startup::cancel_operations_when_destroyed(&window);
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let counted = cancelled.clone();
+    let operations = app.state::<crate::state::AppState>().operations.clone();
+    let id = operations.start(
+        OpKind::Login,
+        Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }),
+        |_| tokio::spawn(std::future::pending::<()>()).abort_handle(),
+    );
+    // Other window events leave it alone; the mock runtime does not deliver `Destroyed`, so the
+    // hook's decision is exercised with the event itself.
+    crate::startup::cancel_operations_on(app.handle(), &WindowEvent::Focused(true));
+    assert_eq!(cancelled.load(Ordering::SeqCst), 0);
+    crate::startup::cancel_operations_on(app.handle(), &WindowEvent::Destroyed);
+    assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+    assert!(!operations.cancel(id), "it was cancelled by the window");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn subscribing_after_a_page_load_cancels_the_sign_in_nobody_watches() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = crate::state::AppState::new(
+        Paths::new(dir.path()),
+        hengst_core::launch::Endpoints::default(),
+    );
+    let cancelled = Arc::new(AtomicUsize::new(0));
+    let counted = cancelled.clone();
+    let id = state.operations.start(
+        OpKind::Login,
+        Box::new(move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        }),
+        |_| tokio::spawn(std::future::pending::<()>()).abort_handle(),
+    );
+    crate::commands::app::subscribe_events_impl(&state, Arc::new(|_| {}));
+    assert_eq!(cancelled.load(Ordering::SeqCst), 1);
+    assert!(!state.operations.cancel(id));
 }
 
 // ---- re-signing in ----
@@ -767,39 +1024,69 @@ async fn signing_in_again_as_another_player_adds_that_player_and_keeps_the_old_o
 // ---- sign-out with a refusing store ----
 
 #[test]
-fn a_secret_store_that_refuses_halfway_never_leaves_a_usable_looking_entry() {
-    for refuse_from in [1, 2] {
-        let (_dir, paths, accounts, store) = seeded(&[PLAYER_A, PLAYER_B]);
-        store
-            .refuse_delete_from
-            .store(refuse_from, Ordering::SeqCst);
-        let e = accounts.remove(PLAYER_B.uuid).unwrap_err();
-        assert!(matches!(e, Error::CredentialStore(_)), "{e}");
-        assert_eq!(error_dto(&e).code, ErrorCode::CredentialStore);
-        // The file still parses and lists B, but flagged: not usable without sign-in.
-        let list = accounts.list(&Settings::default()).unwrap();
-        let b = list
-            .accounts
-            .iter()
-            .find(|a| a.id == PLAYER_B.uuid)
-            .unwrap();
-        assert!(b.sign_in_required, "refuse_from {refuse_from}");
-        let a = list
-            .accounts
-            .iter()
-            .find(|a| a.id == PLAYER_A.uuid)
-            .unwrap();
-        assert!(!a.sign_in_required);
-        let file = load_accounts_file(&paths.accounts_file()).unwrap();
-        assert_eq!(file.accounts.len(), 2);
-        // Once the store works, signing out completes.
-        store.refuse_delete_from.store(0, Ordering::SeqCst);
-        accounts.remove(PLAYER_B.uuid).unwrap();
-        assert!(!store.has(PLAYER_B.uuid, SecretKind::Refresh));
-        assert!(!store.has(PLAYER_B.uuid, SecretKind::Minecraft));
-        let file = load_accounts_file(&paths.accounts_file()).unwrap();
-        assert_eq!(file.accounts.len(), 1);
+fn a_refusing_first_delete_changes_nothing() {
+    let (_dir, paths, accounts, store) = seeded(&[PLAYER_A, PLAYER_B]);
+    store.refuse_delete_from.store(1, Ordering::SeqCst);
+    let e = accounts.remove(PLAYER_B.uuid).unwrap_err();
+    assert_eq!(error_dto(&e).code, ErrorCode::CredentialStore);
+    let list = accounts.list(&Settings::default()).unwrap();
+    for id in [PLAYER_A.uuid, PLAYER_B.uuid] {
+        let a = list.accounts.iter().find(|a| a.id == id).unwrap();
+        assert!(!a.sign_in_required, "a working account is not flagged");
     }
+    assert!(store.has(PLAYER_B.uuid, SecretKind::Refresh));
+    assert!(store.has(PLAYER_B.uuid, SecretKind::Minecraft));
+    assert_eq!(
+        load_accounts_file(&paths.accounts_file())
+            .unwrap()
+            .accounts
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn a_refusing_second_delete_flags_the_entry_and_a_later_sign_out_completes() {
+    let (_dir, paths, accounts, store) = seeded(&[PLAYER_A, PLAYER_B]);
+    store.refuse_delete_from.store(2, Ordering::SeqCst);
+    let e = accounts.remove(PLAYER_B.uuid).unwrap_err();
+    assert!(matches!(e, Error::CredentialStore(_)), "{e}");
+    assert_eq!(error_dto(&e).code, ErrorCode::CredentialStore);
+    let list = accounts.list(&Settings::default()).unwrap();
+    let b = list
+        .accounts
+        .iter()
+        .find(|a| a.id == PLAYER_B.uuid)
+        .unwrap();
+    assert!(b.sign_in_required, "tokens are partly gone: sign in again");
+    let a = list
+        .accounts
+        .iter()
+        .find(|a| a.id == PLAYER_A.uuid)
+        .unwrap();
+    assert!(!a.sign_in_required);
+    store.refuse_delete_from.store(0, Ordering::SeqCst);
+    accounts.remove(PLAYER_B.uuid).unwrap();
+    assert!(!store.has(PLAYER_B.uuid, SecretKind::Minecraft));
+    let file = load_accounts_file(&paths.accounts_file()).unwrap();
+    assert_eq!(file.accounts.len(), 1);
+}
+
+#[test]
+fn a_failing_file_write_after_both_deletes_is_reported_and_a_later_sign_out_completes() {
+    let (_dir, paths, accounts, store) = seeded(&[PLAYER_A, PLAYER_B]);
+    // The temp file of the atomic write cannot be created: a folder sits in its place.
+    let tmp = paths.root().join("accounts.json.tmp");
+    std::fs::create_dir(&tmp).unwrap();
+    let e = accounts.remove(PLAYER_B.uuid).unwrap_err();
+    assert_eq!(error_dto(&e).code, ErrorCode::FileSystem);
+    assert!(!store.has(PLAYER_B.uuid, SecretKind::Refresh));
+    assert!(!store.has(PLAYER_B.uuid, SecretKind::Minecraft));
+    std::fs::remove_dir(&tmp).unwrap();
+    accounts.remove(PLAYER_B.uuid).unwrap();
+    let file = load_accounts_file(&paths.accounts_file()).unwrap();
+    assert_eq!(file.accounts.len(), 1);
+    assert_eq!(file.default.as_deref(), Some(PLAYER_A.uuid));
 }
 
 // ---- files and settings ----

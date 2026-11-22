@@ -41,16 +41,6 @@ pub enum LoginMethod {
     DeviceCode,
 }
 
-/// The (translated) texts of the page the browser shows after the redirect. The core escapes them.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginPagesDto {
-    pub success_title: String,
-    pub success_body: String,
-    pub failure_title: String,
-    pub failure_body: String,
-}
-
 /// Names one running operation. Unique within one run of the app, never reused. A newtype struct
 /// is a plain number in JSON.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, TS)]

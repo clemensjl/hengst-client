@@ -1,5 +1,5 @@
-use crate::accounts::browser_pages;
-use crate::dto::accounts::{AccountsDto, LoginEvent, LoginMethod, LoginPagesDto, OperationId};
+use crate::accounts::{internal, login_pages, page_language};
+use crate::dto::accounts::{AccountsDto, LoginEvent, LoginMethod, OperationId};
 use crate::dto::error::ErrorDto;
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventSink};
@@ -8,10 +8,8 @@ use std::sync::Arc;
 use tauri::ipc::Channel;
 use tauri::State;
 
-fn join_error(e: tauri::Error) -> ErrorDto {
-    error_dto(&hengst_core::Error::Io(std::io::Error::other(
-        e.to_string(),
-    )))
+fn join_error(_: tauri::Error) -> ErrorDto {
+    internal("a background task failed")
 }
 
 /// Reads `accounts.json` only. Blocking file I/O runs on a blocking thread.
@@ -56,15 +54,15 @@ pub async fn account_remove(state: State<'_, AppState>, id: String) -> Result<()
 }
 
 /// Starts a sign-in and returns at once; the progress arrives on `channel`, which gets `Started`
-/// with the operation id first. A running sign-in is cancelled.
+/// with the operation id first. A running sign-in is cancelled. The texts of the page the browser
+/// shows afterwards are fixed in Rust, in the language of the settings.
 #[tauri::command]
 pub async fn login_start(
     state: State<'_, AppState>,
     method: LoginMethod,
-    pages: LoginPagesDto,
     channel: Channel<LoginEvent>,
 ) -> Result<OperationId, ErrorDto> {
-    let pages = browser_pages(pages)?;
+    let pages = login_pages(page_language(state.settings.get().language));
     let sink: EventSink<LoginEvent> = Arc::new(move |e| {
         let _ = channel.send(e);
     });

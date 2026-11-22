@@ -1983,8 +1983,23 @@ mod tests {
                 .await
         });
         // An answered request proves the wait is running; a held-open connection must not keep
-        // the port either.
-        assert_eq!(callback(port, "code=abc&state=wrong").await.status(), 400);
+        // the port either. Under heavy load a request can run into the connection's own read
+        // timeout before the wait loop got scheduled: asking again is part of waiting for it.
+        let answered = tokio::time::timeout(Duration::from_secs(20), async {
+            loop {
+                let asked = client()
+                    .get(format!("http://127.0.0.1:{port}/?code=abc&state=wrong"))
+                    .send()
+                    .await;
+                if let Ok(response) = asked {
+                    return response.status();
+                }
+                tokio::time::sleep(Duration::from_millis(50)).await;
+            }
+        })
+        .await
+        .expect("the wait loop answers");
+        assert_eq!(answered, 400);
         let _held = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         finish.abort(); // cancelled like login_cancel
         let _ = finish.await;

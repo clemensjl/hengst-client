@@ -6,13 +6,12 @@
 //! device code.
 
 use crate::dto::accounts::{
-    AccountDto, AccountKindDto, AccountsDto, LoginEvent, LoginMethod, LoginPagesDto, OperationId,
-    DEV_ACCOUNT_ID,
+    AccountDto, AccountKindDto, AccountsDto, LoginEvent, LoginMethod, OperationId, DEV_ACCOUNT_ID,
 };
 use crate::dto::error::{ErrorCode, ErrorDto};
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
-use crate::settings::{Settings, SettingsHandle};
+use crate::settings::{Language, Settings, SettingsHandle};
 use hengst_core::auth::browser::{BrowserLoginPages, BROWSER_LOGIN_TIMEOUT};
 use hengst_core::auth::flow::LoginSession;
 use hengst_core::auth::store::{load_accounts_file, AccountStore, SecretStore, StoredAccount};
@@ -22,7 +21,9 @@ use hengst_core::secret::Secret;
 use hengst_core::{Error, Result};
 use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, MutexGuard};
-use tokio::task::AbortHandle;
+use std::time::{Duration, Instant};
+use tokio::sync::mpsc;
+use tokio::task::{AbortHandle, JoinHandle};
 
 /// Opens an address in the system browser. The text of a failure is never shown (it could carry
 /// the address); a refusal is just a refusal.
@@ -34,7 +35,21 @@ pub type BrowserOpener = Arc<dyn Fn(&str) -> std::result::Result<(), ()> + Send 
 /// address then reaches the registered browser as one argument of that browser's own command
 /// line, which cannot be avoided when handing a URL to a browser.
 pub fn system_browser_opener() -> BrowserOpener {
-    Arc::new(|url| tauri_plugin_opener::open_url(url, None::<&str>).map_err(|_| ()))
+    https_only(|url| tauri_plugin_opener::open_url(url, None::<&str>).map_err(|_| ()))
+}
+
+/// Lets only `https://` addresses through to `open`: `ShellExecuteExW` would also run a file path
+/// or start a custom protocol handler. The sign-in address is always Microsoft's `https` page.
+fn https_only(
+    open: impl Fn(&str) -> std::result::Result<(), ()> + Send + Sync + 'static,
+) -> BrowserOpener {
+    Arc::new(move |url| {
+        if url.starts_with("https://") {
+            open(url)
+        } else {
+            Err(())
+        }
+    })
 }
 
 /// The opener of the `e2e` build: the test kit plays the browser against the mock service in
@@ -101,28 +116,65 @@ fn open_failed() -> ErrorDto {
     }
 }
 
-/// The longest page text accepted from the web view.
-const MAX_PAGE_TEXT: usize = 500;
-
-/// The texts of the browser page, checked: not empty, not huge. The core escapes them.
-pub fn browser_pages(pages: LoginPagesDto) -> std::result::Result<BrowserLoginPages, ErrorDto> {
-    let LoginPagesDto {
-        success_title,
-        success_body,
-        failure_title,
-        failure_body,
-    } = pages;
-    for text in [&success_title, &success_body, &failure_title, &failure_body] {
-        if text.trim().is_empty() || text.chars().count() > MAX_PAGE_TEXT {
-            return Err(invalid_input("pages"));
-        }
+/// A background task panicked or was cancelled: nothing the user can act on.
+pub fn internal(what: &str) -> ErrorDto {
+    ErrorDto {
+        code: ErrorCode::Internal,
+        params: BTreeMap::new(),
+        action: None,
+        detail: what.to_string(),
     }
-    Ok(BrowserLoginPages {
-        success_title,
-        success_body,
-        failure_title,
-        failure_body,
-    })
+}
+
+/// The texts of the page the browser shows after the Microsoft redirect. They are fixed here, not
+/// taken from the web view: nothing a compromised page sends can end up on the page of a real
+/// sign-in. The success text only says that the user can return to the launcher: the Xbox and
+/// game steps still follow and can fail.
+pub fn login_pages(language: Language) -> BrowserLoginPages {
+    let t = |a: &str, b: &str, c: &str, d: &str| BrowserLoginPages {
+        success_title: a.to_string(),
+        success_body: b.to_string(),
+        failure_title: c.to_string(),
+        failure_body: d.to_string(),
+    };
+    match language {
+        Language::De => t(
+            "Microsoft-Anmeldung abgeschlossen",
+            "Du kannst zu Hengst Client zurückkehren und diesen Tab schließen. Dort geht es automatisch weiter.",
+            "Anmeldung nicht abgeschlossen",
+            "Kehre zu Hengst Client zurück. Dort steht, was passiert ist, und du kannst es erneut versuchen.",
+        ),
+        Language::En => t(
+            "Microsoft sign-in finished",
+            "You can return to Hengst Client and close this tab. It continues there on its own.",
+            "Sign-in not completed",
+            "Return to Hengst Client. It shows what happened, and you can try again.",
+        ),
+    }
+}
+
+/// The page language: the setting, else the language of Windows.
+pub fn page_language(setting: Option<Language>) -> Language {
+    setting.unwrap_or_else(system_language)
+}
+
+#[cfg(windows)]
+fn system_language() -> Language {
+    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
+    let mut buffer = [0u16; 85];
+    // SAFETY: the buffer is 85 UTF-16 units, the size the call is told.
+    let len = unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32) };
+    let name = String::from_utf16_lossy(&buffer[..(len.max(1) as usize - 1)]);
+    if name.to_ascii_lowercase().starts_with("de") {
+        Language::De
+    } else {
+        Language::En
+    }
+}
+
+#[cfg(not(windows))]
+fn system_language() -> Language {
+    Language::En
 }
 
 // ---- operations ----
@@ -140,6 +192,8 @@ struct Entry {
     on_cancel: Box<dyn Fn() + Send + Sync>,
     /// The authorization URL of a browser sign-in. Never leaves Rust.
     reopen: Option<String>,
+    /// When the browser was last asked to open that address.
+    opened_at: Option<Instant>,
     /// The operation saves its result and can no longer be cancelled.
     committing: bool,
 }
@@ -192,6 +246,7 @@ impl Operations {
                     abort,
                     on_cancel,
                     reopen: None,
+                    opened_at: None,
                     committing: false,
                 },
             );
@@ -244,18 +299,32 @@ impl Operations {
         }
     }
 
+    /// Remembers the address of the running operation and that the browser was just asked to open it.
     pub fn set_reopen(&self, id: OperationId, url: String) {
         if let Some(entry) = lock(&self.inner).running.get_mut(&id) {
             entry.reopen = Some(url);
+            entry.opened_at = Some(Instant::now());
         }
     }
 
-    /// For the Rust side only: the address never goes into a DTO.
-    pub fn reopen_url(&self, id: OperationId) -> Option<String> {
-        lock(&self.inner)
-            .running
-            .get(&id)
-            .and_then(|e| e.reopen.clone())
+    /// For the Rust side only: the address never goes into a DTO. A second request within `gap`
+    /// of the last open is `TooSoon`.
+    fn take_reopen(&self, id: OperationId, now: Instant, gap: Duration) -> Reopen {
+        let mut inner = lock(&self.inner);
+        let Some(entry) = inner.running.get_mut(&id) else {
+            return Reopen::Unknown;
+        };
+        let Some(url) = entry.reopen.clone() else {
+            return Reopen::Unknown;
+        };
+        if entry
+            .opened_at
+            .is_some_and(|at| now.saturating_duration_since(at) < gap)
+        {
+            return Reopen::TooSoon;
+        }
+        entry.opened_at = Some(now);
+        Reopen::Url(url)
     }
 
     /// The operation is about to save its result: from now on it cannot be cancelled. `false`
@@ -274,6 +343,65 @@ impl Operations {
     /// `cancel` was first and has sent `Cancelled`.
     fn finish(&self, id: OperationId) -> bool {
         lock(&self.inner).running.remove(&id).is_some()
+    }
+}
+
+enum Reopen {
+    Unknown,
+    TooSoon,
+    Url(String),
+}
+
+/// The shortest time between two opens of the sign-in page for one operation.
+const REOPEN_GAP: Duration = Duration::from_secs(2);
+
+/// The events of one operation, in order, to the sink behind it.
+///
+/// Events go through a queue that one forwarding task drains into the sink, so the sink is never
+/// called while any lock is held (a sink that blocks cannot stall `cancel`). The queue closes
+/// with the terminal event, under the same small lock `progress` takes: an event of the task
+/// after the terminal event is refused, however far the task still runs before its abort
+/// takes effect. `Started` is queued before the task exists, so it is first by ordering.
+#[derive(Clone)]
+pub struct OpOut {
+    queue: Arc<Mutex<Option<mpsc::UnboundedSender<LoginEvent>>>>,
+}
+
+impl OpOut {
+    /// The forwarding task ends once the terminal event has been handed to `sink`.
+    pub fn new(sink: EventSink<LoginEvent>) -> (OpOut, JoinHandle<()>) {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let forwarder = tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                sink(event);
+            }
+        });
+        (
+            OpOut {
+                queue: Arc::new(Mutex::new(Some(tx))),
+            },
+            forwarder,
+        )
+    }
+
+    /// Queues a progress event; `false` (nothing sent) once the operation has ended.
+    pub fn progress(&self, event: LoginEvent) -> bool {
+        match lock(&self.queue).as_ref() {
+            Some(tx) => tx.send(event).is_ok(),
+            None => false,
+        }
+    }
+
+    /// Queues the terminal event and closes the queue; `false` if it was closed already.
+    pub fn end(&self, event: LoginEvent) -> bool {
+        match lock(&self.queue).take() {
+            Some(tx) => tx.send(event).is_ok(),
+            None => false,
+        }
+    }
+
+    pub fn is_live(&self) -> bool {
+        lock(&self.queue).is_some()
     }
 }
 
@@ -405,24 +533,17 @@ impl Accounts {
     }
 
     /// Signs out: removes the tokens from the secret store and the entry from the file; when it
-    /// was the selected account the first remaining one is selected, otherwise none. If the secret
-    /// store refuses halfway, the entry stays and is marked "sign in again", so it is never shown
-    /// as usable without its tokens.
+    /// was the selected account the first remaining one is selected, otherwise none. The core
+    /// decides what a failure halfway leaves (`AccountStore::remove`): nothing changed if the
+    /// first delete failed, otherwise the entry is marked "sign in again".
     pub fn remove(&self, id: &str) -> Result<()> {
         let _io = self.io();
         if id == DEV_ACCOUNT_ID {
             return Err(account_not_found(id));
         }
         let account = self.exact(id)?;
-        match self.store.remove(&account.uuid) {
-            Ok(_) => Ok(()),
-            Err(e) => {
-                // The file still lists the account; tokens may be gone already. Best effort: a
-                // failing write here must not hide the original error.
-                let _ = self.store.mark_sign_in_required(&account.uuid);
-                Err(e)
-            }
-        }
+        self.store.remove(&account.uuid)?;
+        Ok(())
     }
 
     /// The saved login of this account stopped working (4b: the launch reported `LoginExpired`).
@@ -437,19 +558,32 @@ impl Accounts {
         (self.log)(line);
     }
 
-    /// Opens the stored authorization URL of a running browser sign-in again.
+    /// Opens the stored authorization URL of a running browser sign-in again. A second request
+    /// within two seconds of the last open does nothing.
     pub fn reopen_browser(
         &self,
         ops: &Operations,
         op: OperationId,
     ) -> std::result::Result<(), ErrorDto> {
-        let url = ops.reopen_url(op).ok_or_else(|| invalid_input("op"))?;
-        (self.opener)(&url).map_err(|()| open_failed())
+        self.reopen_browser_at(ops, op, Instant::now())
+    }
+
+    fn reopen_browser_at(
+        &self,
+        ops: &Operations,
+        op: OperationId,
+        now: Instant,
+    ) -> std::result::Result<(), ErrorDto> {
+        match ops.take_reopen(op, now, REOPEN_GAP) {
+            Reopen::Unknown => Err(invalid_input("op")),
+            Reopen::TooSoon => Ok(()),
+            Reopen::Url(url) => (self.opener)(&url).map_err(|()| open_failed()),
+        }
     }
 
     /// Starts a sign-in as an operation and returns its id at once. The channel behind `sink` gets
-    /// `Started` first (before this returns), then the progress, then one terminal event. A
-    /// running sign-in is cancelled first.
+    /// `Started` first, then the progress, then one terminal event, and nothing after it. A running
+    /// sign-in is cancelled first.
     pub fn start_login(
         self: &Arc<Self>,
         ops: &Operations,
@@ -459,23 +593,26 @@ impl Accounts {
         settings: SettingsHandle,
         sink: EventSink<LoginEvent>,
     ) -> OperationId {
+        let (out, _forwarder) = OpOut::new(sink);
         let on_cancel: Box<dyn Fn() + Send + Sync> = {
-            let (sink, accounts) = (sink.clone(), self.clone());
+            let (out, accounts) = (out.clone(), self.clone());
             Box::new(move || {
                 accounts.diag("sign-in: cancelled");
-                sink(LoginEvent::Cancelled);
+                out.end(LoginEvent::Cancelled);
             })
         };
         let accounts = self.clone();
         let (ops_for_task, events) = (ops.clone(), events.clone());
         ops.start(OpKind::Login, on_cancel, move |op| {
-            sink(LoginEvent::Started { op });
+            // Queued before the task is spawned and before the operation is in the table, so
+            // nothing (the task, `cancel`, a replacing `start`) can queue an event ahead of it.
+            out.progress(LoginEvent::Started { op });
             let ctx = LoginCtx {
                 op,
                 method,
                 pages,
                 settings,
-                sink,
+                out,
                 ops: ops_for_task,
                 events,
             };
@@ -499,7 +636,7 @@ struct LoginCtx {
     method: LoginMethod,
     pages: BrowserLoginPages,
     settings: SettingsHandle,
-    sink: EventSink<LoginEvent>,
+    out: OpOut,
     ops: Operations,
     events: EventHub,
 }
@@ -525,7 +662,7 @@ impl Accounts {
                     c.events.emit(AppEvent::DataChanged {
                         scope: DataScope::Settings,
                     });
-                    (c.sink)(LoginEvent::SignedIn { account });
+                    c.out.end(LoginEvent::SignedIn { account });
                 }
             }
             Err(error) => {
@@ -537,7 +674,7 @@ impl Accounts {
                             scope: DataScope::Accounts,
                         });
                     }
-                    (c.sink)(LoginEvent::Failed { error });
+                    c.out.end(LoginEvent::Failed { error });
                 }
             }
         }
@@ -549,10 +686,13 @@ impl Accounts {
         c: &LoginCtx,
     ) -> (std::result::Result<Option<AccountDto>, ErrorDto>, bool) {
         let tokens = match self.microsoft_step(c).await {
-            Ok(tokens) => tokens,
+            Ok(Some(tokens)) => tokens,
+            Ok(None) => return (Ok(None), false),
             Err(e) => return (Err(e), false),
         };
-        (c.sink)(LoginEvent::Completing);
+        if !c.out.progress(LoginEvent::Completing) {
+            return (Ok(None), false);
+        }
         let auth = self.auth.as_ref().expect("checked by the Microsoft step");
         let session = match auth.complete_login(tokens, unix_now()).await {
             Ok(session) => session,
@@ -562,17 +702,21 @@ impl Accounts {
             return (Ok(None), false);
         }
         let (accounts, settings) = (self.clone(), c.settings.clone());
-        let saved = tokio::task::spawn_blocking(move || accounts.persist(&session, &settings))
-            .await
-            .unwrap_or_else(|e| Err(Error::Io(std::io::Error::other(e.to_string()))));
-        (saved.map(Some).map_err(dto), true)
+        let saved =
+            tokio::task::spawn_blocking(move || accounts.persist(&session, &settings)).await;
+        let saved = match saved {
+            Ok(saved) => saved.map(Some).map_err(dto),
+            Err(_) => Err(internal("the task that saves the account failed")),
+        };
+        (saved, true)
     }
 
-    /// The browser or device-code step: Microsoft tokens for the signed-in user.
+    /// The browser or device-code step: Microsoft tokens for the signed-in user. `None`: the
+    /// operation ended (cancelled or replaced) meanwhile.
     async fn microsoft_step(
         self: &Arc<Self>,
         c: &LoginCtx,
-    ) -> std::result::Result<hengst_core::auth::msa::MsaTokens, ErrorDto> {
+    ) -> std::result::Result<Option<hengst_core::auth::msa::MsaTokens>, ErrorDto> {
         if let Some(reason) = &self.store_error {
             return Err(dto(Error::CredentialStore(reason.clone())));
         }
@@ -583,28 +727,38 @@ impl Accounts {
         match c.method {
             LoginMethod::Browser => {
                 let login = auth.start_browser_login().await.map_err(dto)?;
-                c.ops.set_reopen(c.op, login.authorize_url().to_string());
-                let (opener, url) = (self.opener.clone(), login.authorize_url().to_string());
-                let opened = tokio::task::spawn_blocking(move || opener(&url))
-                    .await
-                    .unwrap_or(Err(()));
-                if opened.is_err() {
-                    // Dropping `login` frees the port.
-                    return Err(open_failed());
+                let url = login.authorize_url().to_string();
+                c.ops.set_reopen(c.op, url.clone());
+                let (opener, out) = (self.opener.clone(), c.out.clone());
+                let opened =
+                    tokio::task::spawn_blocking(move || open_unless_ended(&out, &opener, &url))
+                        .await
+                        .map_err(|_| internal("the task that opens the browser failed"))?;
+                match opened {
+                    Ok(true) => {}
+                    // Ended meanwhile: dropping `login` frees the port.
+                    Ok(false) => return Ok(None),
+                    Err(()) => return Err(open_failed()),
                 }
-                (c.sink)(LoginEvent::BrowserOpened);
+                if !c.out.progress(LoginEvent::BrowserOpened) {
+                    return Ok(None);
+                }
                 auth.finish_browser_login(login, &c.pages, BROWSER_LOGIN_TIMEOUT)
                     .await
+                    .map(Some)
                     .map_err(dto)
             }
             LoginMethod::DeviceCode => {
                 let code = auth.start_device_login().await.map_err(dto)?;
-                (c.sink)(LoginEvent::DeviceCode {
+                let shown = c.out.progress(LoginEvent::DeviceCode {
                     user_code: code.user_code.clone(),
                     verification_uri: code.verification_uri.clone(),
                     expires_at: unix_now().saturating_add(code.expires_in),
                 });
-                auth.poll_device_login(&code).await.map_err(dto)
+                if !shown {
+                    return Ok(None);
+                }
+                auth.poll_device_login(&code).await.map(Some).map_err(dto)
             }
         }
     }
@@ -620,6 +774,19 @@ impl Accounts {
         })?;
         Ok(account_dto(&stored, true))
     }
+}
+
+/// Opens `url` unless the operation has ended already (a replaced sign-in must not open a tab
+/// after its replacement started). `Ok(false)`: not opened because it ended.
+fn open_unless_ended(
+    out: &OpOut,
+    opener: &BrowserOpener,
+    url: &str,
+) -> std::result::Result<bool, ()> {
+    if !out.is_live() {
+        return Ok(false);
+    }
+    opener(url).map(|()| true)
 }
 
 #[cfg(test)]

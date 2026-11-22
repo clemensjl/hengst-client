@@ -18,7 +18,6 @@ pub const ALL_TYPES: &[Export] = &[
     accounts::AccountDto::export_all,
     accounts::AccountsDto::export_all,
     accounts::LoginMethod::export_all,
-    accounts::LoginPagesDto::export_all,
     accounts::OperationId::export_all,
     accounts::LoginEvent::export_all,
     versions::VersionFilter::export_all,

@@ -262,21 +262,45 @@ impl<S: SecretStore> AccountStore<S> {
         Ok(marked)
     }
 
-    /// Deletes both tokens and the entry. If it was the default, the first
-    /// remaining account becomes the default, otherwise there is none.
+    /// Deletes both tokens and the entry. If it was the default, the first remaining account
+    /// becomes the default, otherwise there is none.
+    ///
+    /// If the first delete fails nothing has changed and that error is returned. Any later
+    /// failure (the second delete or the write) leaves an entry whose tokens may be partly gone:
+    /// it is marked `sign_in_required` (one best-effort write of the file as it was, the entry
+    /// flagged) and the original error is returned. A secret that is already missing counts as
+    /// deleted, so calling `remove` again completes the job.
     pub fn remove(&self, selector: &str) -> Result<StoredAccount> {
-        let mut file = self.load()?;
-        let account = pick(&file, Some(selector))?.clone();
+        let before = self.load()?;
+        let account = pick(&before, Some(selector))?.clone();
         self.secrets
             .delete(&secret_key(&account.uuid, SecretKind::Refresh))?;
-        self.secrets
-            .delete(&secret_key(&account.uuid, SecretKind::Minecraft))?;
-        file.accounts.retain(|a| a.uuid != account.uuid);
-        if file.default.as_deref() == Some(account.uuid.as_str()) {
-            file.default = file.accounts.first().map(|a| a.uuid.clone());
+        let finish = || -> Result<()> {
+            self.secrets
+                .delete(&secret_key(&account.uuid, SecretKind::Minecraft))?;
+            let mut file = AccountsFile {
+                version: before.version,
+                default: before.default.clone(),
+                accounts: before.accounts.clone(),
+            };
+            file.accounts.retain(|a| a.uuid != account.uuid);
+            if file.default.as_deref() == Some(account.uuid.as_str()) {
+                file.default = file.accounts.first().map(|a| a.uuid.clone());
+            }
+            self.write(&file)
+        };
+        match finish() {
+            Ok(()) => Ok(account),
+            Err(e) => {
+                let mut flagged = before;
+                if let Some(entry) = flagged.accounts.iter_mut().find(|a| a.uuid == account.uuid) {
+                    entry.sign_in_required = true;
+                }
+                // Best effort: it may fail for the same reason as the write that just failed.
+                let _ = self.write(&flagged);
+                Err(e)
+            }
         }
-        self.write(&file)?;
-        Ok(account)
     }
 
     /// A missing token means the login has to be redone.
@@ -558,6 +582,127 @@ mod tests {
             store.mark_sign_in_required("nobody"),
             Err(Error::Auth(AuthError::AccountNotFound { .. }))
         ));
+    }
+
+    /// Delegates to a memory store; refuses every delete from the n-th call on (1 = the first).
+    struct RefusingDeletes {
+        inner: MemorySecretStore,
+        calls: std::sync::atomic::AtomicUsize,
+        refuse_from: std::sync::atomic::AtomicUsize,
+    }
+
+    impl RefusingDeletes {
+        fn new(refuse_from: usize) -> Self {
+            Self {
+                inner: MemorySecretStore::default(),
+                calls: Default::default(),
+                refuse_from: refuse_from.into(),
+            }
+        }
+    }
+
+    impl SecretStore for std::sync::Arc<RefusingDeletes> {
+        fn get(&self, key: &str) -> Result<Option<Secret>> {
+            self.inner.get(key)
+        }
+
+        fn set(&self, key: &str, value: &Secret) -> Result<()> {
+            self.inner.set(key, value)
+        }
+
+        fn delete(&self, key: &str) -> Result<()> {
+            use std::sync::atomic::Ordering::SeqCst;
+            let n = self.calls.fetch_add(1, SeqCst) + 1;
+            let from = self.refuse_from.load(SeqCst);
+            if from != 0 && n >= from {
+                return Err(Error::CredentialStore("refused".into()));
+            }
+            self.inner.delete(key)
+        }
+    }
+
+    fn refusing(
+        refuse_from: usize,
+    ) -> (
+        tempfile::TempDir,
+        std::path::PathBuf,
+        std::sync::Arc<RefusingDeletes>,
+        AccountStore<std::sync::Arc<RefusingDeletes>>,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("accounts.json");
+        let secrets = std::sync::Arc::new(RefusingDeletes::new(refuse_from));
+        let store = AccountStore::new(file.clone(), secrets.clone());
+        store
+            .save_session(&session("Steve", UUID_A, "mc-a", "rt-a"))
+            .unwrap();
+        store
+            .save_session(&session("Alex", UUID_B, "mc-b", "rt-b"))
+            .unwrap();
+        (dir, file, secrets, store)
+    }
+
+    fn has(secrets: &RefusingDeletes, uuid: &str, kind: SecretKind) -> bool {
+        secrets
+            .inner
+            .get(&secret_key(uuid, kind))
+            .unwrap()
+            .is_some()
+    }
+
+    #[test]
+    fn remove_whose_first_delete_fails_changes_nothing() {
+        let (_d, file, secrets, store) = refusing(1);
+        let e = store.remove(UUID_B).unwrap_err();
+        assert!(matches!(e, Error::CredentialStore(_)), "{e}");
+        let listed = load_accounts_file(&file).unwrap();
+        assert_eq!(listed.accounts.len(), 2);
+        assert!(listed.accounts.iter().all(|a| !a.sign_in_required));
+        assert!(has(&secrets, UUID_B, SecretKind::Refresh));
+        assert!(has(&secrets, UUID_B, SecretKind::Minecraft));
+    }
+
+    #[test]
+    fn remove_whose_second_delete_fails_flags_the_entry_and_reports_the_original_error() {
+        let (_d, file, secrets, store) = refusing(2);
+        let e = store.remove(UUID_B).unwrap_err();
+        assert!(matches!(e, Error::CredentialStore(_)), "{e}");
+        let listed = load_accounts_file(&file).unwrap();
+        assert_eq!(listed.accounts.len(), 2);
+        let b = listed.accounts.iter().find(|a| a.uuid == UUID_B).unwrap();
+        assert!(b.sign_in_required);
+        let a = listed.accounts.iter().find(|a| a.uuid == UUID_A).unwrap();
+        assert!(!a.sign_in_required);
+        assert!(
+            !has(&secrets, UUID_B, SecretKind::Refresh),
+            "one secret is gone"
+        );
+        // A later remove completes: the missing secret counts as deleted.
+        secrets
+            .refuse_from
+            .store(0, std::sync::atomic::Ordering::SeqCst);
+        store.remove(UUID_B).unwrap();
+        assert_eq!(load_accounts_file(&file).unwrap().accounts.len(), 1);
+        assert!(!has(&secrets, UUID_B, SecretKind::Minecraft));
+    }
+
+    #[test]
+    fn remove_whose_write_fails_after_both_deletes_is_reported_and_completes_later() {
+        let (dir, file, secrets, store) = refusing(0);
+        // The temp file of the atomic write cannot be created: a folder sits in its place.
+        let tmp = dir.path().join("accounts.json.tmp");
+        std::fs::create_dir(&tmp).unwrap();
+        let e = store.remove(UUID_B).unwrap_err();
+        assert!(matches!(e, Error::Io(_)), "the original error: {e}");
+        assert!(!has(&secrets, UUID_B, SecretKind::Refresh));
+        assert!(!has(&secrets, UUID_B, SecretKind::Minecraft));
+        // The entry is still listed (the flag write needs the same temp file and failed too).
+        assert_eq!(load_accounts_file(&file).unwrap().accounts.len(), 2);
+        std::fs::remove_dir(&tmp).unwrap();
+        store.remove(UUID_B).unwrap();
+        let listed = load_accounts_file(&file).unwrap();
+        assert_eq!(listed.accounts.len(), 1);
+        assert_eq!(listed.default.as_deref(), Some(UUID_A));
     }
 
     #[test]

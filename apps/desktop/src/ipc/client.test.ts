@@ -1,7 +1,6 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LoginEvent } from "./bindings/LoginEvent";
-import type { LoginPagesDto } from "./bindings/LoginPagesDto";
 import { api } from "./client";
 
 afterEach(() => clearMocks());
@@ -43,14 +42,7 @@ describe("ipc client", () => {
     });
   });
 
-  const pages: LoginPagesDto = {
-    successTitle: "Done",
-    successBody: "You can return to the launcher.",
-    failureTitle: "Not done",
-    failureBody: "Go back to the launcher.",
-  };
-
-  it("loginStart passes the channel and the pages and returns the op", async () => {
+  it("loginStart passes the method and the channel, no texts, and returns the op", async () => {
     let seen: [string, string[]] | undefined;
     mockIPC((cmd, args) => {
       const a = args as { channel: { onmessage?: (e: LoginEvent) => void } };
@@ -59,8 +51,8 @@ describe("ipc client", () => {
       return 7;
     });
     const events: LoginEvent[] = [];
-    const op = await api.loginStart("browser", pages, (e) => events.push(e));
-    expect(seen).toEqual(["login_start", ["method", "pages", "channel"]]);
+    const op = await api.loginStart("browser", (e) => events.push(e));
+    expect(seen).toEqual(["login_start", ["method", "channel"]]);
     expect(op).toBe(7);
     expect(events[0]).toEqual({ event: "started", data: { op: 7 } });
   });
@@ -87,9 +79,9 @@ describe("ipc client", () => {
 
   it("a failed sign-in command rejects with the typed error", async () => {
     mockIPC(() => {
-      throw { code: "invalidInput", params: { field: "pages" }, action: null, detail: "x" };
+      throw { code: "invalidInput", params: { field: "op" }, action: null, detail: "x" };
     });
-    await expect(api.loginStart("deviceCode", pages, () => {})).rejects.toMatchObject({
+    await expect(api.loginStart("deviceCode", () => {})).rejects.toMatchObject({
       dto: { code: "invalidInput" },
     });
   });

@@ -144,9 +144,5 @@
   "errors.offline.launch.body": "Files for this version are missing. Check your internet connection and try again.",
   "errors.credentialStore.signIn.title": "The sign-in could not be saved",
   "errors.credentialStore.signIn.body": "Windows Credential Manager refused access. Try again.",
-  "errors.copyFailed": "Copying failed: select the text and press Ctrl+C.",
-  "accounts.loginPage.successTitle": "Microsoft sign-in finished",
-  "accounts.loginPage.successBody": "You can return to Hengst Client and close this tab. It continues there on its own.",
-  "accounts.loginPage.failureTitle": "Sign-in not completed",
-  "accounts.loginPage.failureBody": "Return to Hengst Client. It shows what happened, and you can try again."
+  "errors.copyFailed": "Copying failed: select the text and press Ctrl+C."
 }

@@ -57,6 +57,9 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
             crate::commands::app::app_info,
             crate::commands::open::open_url,
             crate::commands::accounts::accounts_list,
+            crate::commands::accounts::account_select,
+            crate::commands::accounts::account_remove,
+            crate::commands::accounts::login_start,
             crate::commands::accounts::login_cancel,
             crate::commands::accounts::login_reopen_browser,
             not_in_the_list
@@ -114,7 +117,7 @@ fn open_url_refuses_a_free_url_from_the_web_view() {
 }
 
 #[test]
-fn the_main_window_may_call_the_account_commands_and_others_may_not() {
+fn the_main_window_may_call_all_six_account_commands_and_others_may_not() {
     let (app, _dir) = app();
     let list = call(&app, "main", "accounts_list").unwrap();
     // The development account is the only possible entry (builds with `dev-offline`).
@@ -142,7 +145,23 @@ fn the_main_window_may_call_the_account_commands_and_others_may_not() {
     )
     .unwrap_err();
     assert_eq!(err["code"], "invalidInput");
-    for cmd in ["accounts_list", "login_cancel", "login_reopen_browser"] {
+    // The other three are granted to the main window too: the call gets as far as its arguments.
+    for (cmd, body) in [
+        ("account_select", serde_json::json!({ "id": "nobody" })),
+        ("account_remove", serde_json::json!({ "id": "nobody" })),
+        ("login_start", serde_json::json!({ "method": "browser" })),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert!(!err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+    for cmd in [
+        "accounts_list",
+        "account_select",
+        "account_remove",
+        "login_start",
+        "login_cancel",
+        "login_reopen_browser",
+    ] {
         let err = call(&app, "other", cmd).unwrap_err();
         assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }
