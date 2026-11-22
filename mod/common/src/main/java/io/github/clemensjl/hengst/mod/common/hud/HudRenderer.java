@@ -30,6 +30,7 @@ public final class HudRenderer {
     // A module that threw is skipped until the next rebuild; parallel to modules.
     private boolean[] failed = new boolean[0];
     private boolean suppressed;
+    private long[] renderTimes;
 
     /** Without restrictions. */
     public HudRenderer(FeatureRegistry registry, GameVersion version) {
@@ -65,6 +66,17 @@ public final class HudRenderer {
     /** Set by the owner while one of the mod's own screens (editor, settings) is open. */
     public void setSuppressed(boolean suppressed) {
         this.suppressed = suppressed;
+    }
+
+    /**
+     * Test hook for the cost measurement (unit tests and the in-game tests; null, the default, in the shipped mod). While
+     * an array is set, {@link #render} writes into it, per active module (index as in {@link #activeModules()}), the
+     * nanoseconds that frame spent on the module's size, placement, transform and render, read with
+     * {@code ctx.time().nanoTime()}; a skipped or failed module gets 0. An array shorter than the active list is left
+     * alone. Without an array the frame costs one null check per module on a local.
+     */
+    public void setRenderTimes(long[] lastFrameNanos) {
+        renderTimes = lastFrameNanos;
     }
 
     public int activeCount() {
@@ -109,13 +121,21 @@ public final class HudRenderer {
         ModuleConfig[] c = configs;
         boolean[] bad = failed;
         MutableRect r = rect;
+        long[] times = renderTimes;
+        if (times != null && times.length < m.length) {
+            times = null;
+        }
         for (int i = 0; i < m.length; i++) {
+            if (times != null) {
+                times[i] = 0;
+            }
             if (bad[i]) {
                 continue;
             }
             HudModule module = m[i];
             ModuleConfig cfg = c[i];
             try {
+                long start = times != null ? ctx.time().nanoTime() : 0;
                 float scale = cfg.scale();
                 int w = Math.round(module.width(canvas, cfg) * scale);
                 int h = Math.round(module.height(canvas, cfg) * scale);
@@ -128,6 +148,9 @@ public final class HudRenderer {
                     module.render(canvas, cfg, ctx);
                 } finally {
                     canvas.popTransform();
+                }
+                if (times != null) {
+                    times[i] = ctx.time().nanoTime() - start;
                 }
             } catch (RuntimeException e) {
                 fail(bad, i, module, e, ctx);

@@ -80,6 +80,25 @@ class HengstCoreAllocationTest {
         assertTrue(counting.texts > 0);
     }
 
+    /** The in-game cost probe: with the per-module time array set the frame path still allocates nothing. */
+    @Test void render_with_render_times_set_allocates_nothing() {
+        core = start(); platform.inWorld = true;
+        platform.playerX = 10.25; platform.playerY = 64; platform.playerZ = -3.5;
+        long[] times = new long[core.renderer().activeCount()];
+        core.renderer().setRenderTimes(times);
+        CountingCanvas counting = new CountingCanvas();
+        for (int i = 0; i < 3000; i++) { core.onClientTick(); frame(counting); }
+        int calls = 20000;
+        long before = allocated();
+        for (int i = 0; i < calls; i++) { frame(counting); }
+        long bytes = allocated() - before;
+        core.renderer().setRenderTimes(null);
+        System.out.println("HengstCore allocation with render times set, " + calls + " frames: " + bytes + " bytes");
+        assertEquals(0, bytes, "frames with render times set allocated " + bytes + " bytes");
+        assertEquals(4, times.length);
+        assertTrue(counting.texts > 0);
+    }
+
     @Test void ticks_with_a_constant_server_and_language_allocate_nothing() {
         core = start(); platform.inWorld = true;
         platform.serverAddress = "mc.example.net"; platform.languageCode = "de_de";

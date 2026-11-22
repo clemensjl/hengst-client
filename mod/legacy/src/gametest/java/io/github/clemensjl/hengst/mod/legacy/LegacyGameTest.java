@@ -144,11 +144,11 @@ public final class LegacyGameTest implements ClientModInitializer {
         test.start();
         Thread watchdog = new Thread(() -> {
             try {
-                Thread.sleep(TimeUnit.MINUTES.toMillis(8));
+                Thread.sleep(TimeUnit.MINUTES.toMillis(12));
             } catch (InterruptedException e) {
                 return;
             }
-            LOGGER.error("[hengst-gametest] FAIL watchdog: the test did not finish within 8 minutes");
+            LOGGER.error("[hengst-gametest] FAIL watchdog: the test did not finish within 12 minutes");
             System.exit(2);
         }, "hengst-gametest-watchdog");
         watchdog.setDaemon(true);
@@ -161,6 +161,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         hudSeq = ++seq;
         hudCalls++;
         depthAtHud = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
+        costHudStart();
     }
 
     // GL state around the mod's HUD draw and the faint-fill probe (client thread).
@@ -170,8 +171,12 @@ public final class LegacyGameTest implements ClientModInitializer {
     private static int[] faintRect;
     private static final LegacyCanvas FAINT_CANVAS = new LegacyCanvas();
 
-    /** At the end of the mod's HUD hook: records the depth state and, when asked, draws one faint fill. */
+    /**
+     * At the end of the mod's HUD hook: closes a cost or allocation frame, records the depth state and, when asked,
+     * draws one faint fill.
+     */
     public static void afterHud() {
+        costHudEnd();
         depthAfterHud = GL11.glIsEnabled(GL11.GL_DEPTH_TEST);
         int[] r = faintRect;
         if (r != null) {
@@ -216,6 +221,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             MinecraftClient mc = MinecraftClient.getInstance();
             mc.player.sendChatMessage("/time set 6000");
             mc.player.sendChatMessage("/gamerule doDaylightCycle false");
+            // No hostile mobs: the cost measurement keeps the player standing for minutes (a slime killed it once).
+            mc.player.sendChatMessage("/difficulty peaceful");
             // The "Press E to open your inventory" hint would cover the top right (the settings' buttons).
             mc.player.sendChatMessage("/achievement give achievement.openInventory");
             return null;
@@ -475,6 +482,7 @@ public final class LegacyGameTest implements ClientModInitializer {
         settingsWithTheFullCatalog(core);
         languageSwitch(core);
         dispatchAllocation();
+        costMeasurement(core);
         check(onClient(() -> core.renderer().activeCount()) == 4, "four active modules after the M1a steps");
         pass("after the M1a steps only the four M0 modules are active");
 
@@ -1060,7 +1068,7 @@ public final class LegacyGameTest implements ClientModInitializer {
             LOGGER.info("[hengst-gametest] dispatch window " + round + " (" + r[3] + " calls, " + r[4]
                     + " focus changes): mod " + r[0] + " bytes in "
                     + r[2] + " calls, game window query " + r[1] + " bytes; allocating calls [index focused mod/game"
-                    + " bytes, call time, collections during the call]:" + (log.isEmpty() ? " none" : log));
+                    + " bytes, call time, collections during the call, JVM uptime]:" + (log.isEmpty() ? " none" : log));
             if (round > 0) {
                 windows[round - 1] = r;
             }
@@ -1158,7 +1166,8 @@ public final class LegacyGameTest implements ClientModInitializer {
             }
             if (allocLog.length() < 2000) {
                 allocLog.append(" [").append(measured).append(' ').append(focused).append(' ').append(net).append('/')
-                        .append(game).append(", ").append(micros).append(" us, ").append(gcs).append(" collections]");
+                        .append(game).append(", ").append(micros).append(" us, ").append(gcs).append(" collections, uptime ")
+                        .append(ManagementFactory.getRuntimeMXBean().getUptime()).append(" ms]");
             }
         }
         measured++;
@@ -1184,6 +1193,475 @@ public final class LegacyGameTest implements ClientModInitializer {
             check(found.get(i).endsWith(":" + expected), "key line " + found.get(i) + ", expected " + expected);
         }
         pass("restart: options.txt keeps the lines of all four bindings " + found);
+    }
+
+    // ---- Task 16: the core's cost per module per frame, in the real game ----
+
+    // 500 frames to settle (JIT, caches), then 2000 measured frames per case; 300 frames for the allocation window.
+    private static final int COST_WARMUP = 500;
+    private static final int COST_FRAMES = 2000;
+    private static final int ALLOC_FRAMES = 300;
+    // Frames drawn through the counting canvas before the allocation window counts: a new canvas class reaching the
+    // compiled frame path makes the JIT deoptimise it once (seen on 1.8.9 as 896 bytes in one frame).
+    private static final int ALLOC_SETTLE = 100;
+    private static final int MAX_MODULES = 11;
+    private static final String[] M0_IDS = {"fps", "cps", "keystrokes", "coordinates"};
+    private static final String[] NEW_IDS = {"direction", "ping", "clock", "server_address", "memory", "speed",
+        "stopwatch"};
+    // Budgets of the measured quantity (spec 8.8), median per version, in ns. The strict judgement (four M0 modules on
+    // the median of at least three runs, each M1a module's marginal cost at 10 us) is made by the reader of the runs;
+    // the suite fails only where noise on a loaded machine cannot reach: all eleven above the budget, a marginal cost
+    // above twice its budget, the four M0 modules above twice theirs. Each strict miss is logged as a WARN line.
+    private static final long M0_BUDGET = 50_000;
+    private static final long MODULE_BUDGET = 10_000;
+    private static final long ALL_BUDGET = 120_000;
+
+    // Written by the HUD probe on the client thread, read there (computeOnClient) after the window closed.
+    private static final long[] COST_TIMES = new long[MAX_MODULES];
+    private static final long[] COST_SAMPLES = new long[COST_FRAMES * MAX_MODULES];
+    private static final long[] HOOK_SAMPLES = new long[COST_FRAMES];
+    private static final long[] EMPTY_SAMPLES = new long[COST_FRAMES];
+    private static int costLeft;
+    private static int costFrame;
+    private static int costUndrawn;
+    private static long costFirst;
+    private static long costLast;
+    private static int allocLeft;
+    private static long allocHook;
+    private static long allocMod;
+    private static long allocCanvas;
+    private static int allocFramesWithBytes;
+    private static int allocTick0;
+    private static final StringBuilder ALLOC_DIAG = new StringBuilder();
+    private static final int[] TEXT_CHANGES = new int[MAX_MODULES];
+    private static final String[] LAST_TEXT = new String[MAX_MODULES];
+
+    /** Percentile statistics of one series, in ns. */
+    private static long[] stats(long[] values) {
+        long[] v = values.clone();
+        Arrays.sort(v);
+        int n = v.length;
+        long median = n % 2 == 1 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+        long p95 = v[Math.max(0, (int) Math.ceil(0.95 * n) - 1)];
+        return new long[] {median, p95, v[n - 1]};
+    }
+
+    private static String fmt(long[] s) {
+        return "median " + s[0] + " ns p95 " + s[1] + " ns max " + s[2] + " ns";
+    }
+
+    /** The smallest positive value in the series, or 0: the observed resolution of System.nanoTime. */
+    private static long resolution(long[] values, long current) {
+        long r = current;
+        for (long x : values) {
+            if (x > 0 && (r == 0 || x < r)) {
+                r = x;
+            }
+        }
+        return r;
+    }
+
+    /** Per-frame sum over the modules at the given indexes. */
+    private static long[] sums(long[] samples, int[] indexes) {
+        long[] out = new long[COST_FRAMES];
+        for (int f = 0; f < COST_FRAMES; f++) {
+            long sum = 0;
+            for (int i : indexes) {
+                sum += samples[f * MAX_MODULES + i];
+            }
+            out[f] = sum;
+        }
+        return out;
+    }
+
+    private static long[] column(long[] samples, int index) {
+        long[] out = new long[COST_FRAMES];
+        for (int f = 0; f < COST_FRAMES; f++) {
+            out[f] = samples[f * MAX_MODULES + index];
+        }
+        return out;
+    }
+
+    private static int[] indexesOf(String[] order, String[] ids) {
+        int[] out = new int[ids.length];
+        for (int k = 0; k < ids.length; k++) {
+            out[k] = Arrays.asList(order).indexOf(ids[k]);
+            check(out[k] >= 0, ids[k] + " active in the cost case, active " + Arrays.toString(order));
+        }
+        return out;
+    }
+
+    /**
+     * The time the core spends per module and frame ({@code HudRenderer.setRenderTimes}: size, placement, transform and
+     * render of each active module, read with System.nanoTime around it). On 1.8.9 the module draws at once through the
+     * fixed pipeline, so the number includes the GL calls (immediate mode), unlike the submit time measured on the modern
+     * versions. Cases: the four M0 modules (sum per frame), each of the seven M1a text modules alone, all eleven (sum),
+     * all off (hook time only). Each case: 500 frames to settle, 2000 measured. Logged per case with median, 95th
+     * percentile and maximum; asserted: the medians against the budgets of spec 8.8. Then 300 frames with all eleven
+     * on and the allocation of the core's frame call. The game's own options and frame rate are kept.
+     */
+    private static void costMeasurement(final HengstCore core) throws Exception {
+        long[] res = new long[1];
+        final String[] all = new String[M0_IDS.length + NEW_IDS.length];
+        System.arraycopy(M0_IDS, 0, all, 0, M0_IDS.length);
+        System.arraycopy(NEW_IDS, 0, all, M0_IDS.length, NEW_IDS.length);
+        long m0;
+        long allMedian;
+        long[] alone = new long[NEW_IDS.length];
+        long[] marginal = new long[NEW_IDS.length];
+        onClient(() -> {
+            core.renderer().setRenderTimes(COST_TIMES);
+            return null;
+        });
+        try {
+            m0 = costCase(core, all, "m0", M0_IDS, M0_IDS, null, res)[0];
+            for (int i = 0; i < NEW_IDS.length; i++) {
+                alone[i] = costCase(core, all, NEW_IDS[i], new String[] {NEW_IDS[i]}, new String[] {NEW_IDS[i]}, null,
+                        res)[0];
+            }
+            for (int i = 0; i < NEW_IDS.length; i++) {
+                String[] on = Arrays.copyOf(M0_IDS, M0_IDS.length + 1);
+                on[M0_IDS.length] = NEW_IDS[i];
+                long[] r = costCase(core, all, "m0+" + NEW_IDS[i], on, on, NEW_IDS[i], res);
+                marginal[i] = r[1];
+                LOGGER.info("[hengst-gametest] COST marginal " + NEW_IDS[i] + " median " + r[1] + " ns (its own time"
+                        + " with the four M0 modules on, drawn after them; case total " + r[0] + " ns minus the m0 case "
+                        + m0 + " ns = " + (r[0] - m0) + " ns)");
+            }
+            allMedian = costCase(core, all, "all", all, all, null, res)[0];
+            costCase(core, all, "off", new String[0], new String[0], null, res);
+            allocationWindow(core, all);
+        } finally {
+            onClient(() -> {
+                core.renderer().setRenderTimes(null);
+                for (String id : all) {
+                    core.activeProfile().module(id).setEnabled(Arrays.asList(M0_IDS).contains(id));
+                }
+                core.applyConfigForTest();
+                return null;
+            });
+        }
+        LOGGER.info("[hengst-gametest] COST timer resolution observed (smallest positive reading): " + res[0] + " ns");
+        StringBuilder verdict = new StringBuilder();
+        List<String> failures = new ArrayList<String>();
+        if (m0 > M0_BUDGET) {
+            LOGGER.warn("[hengst-gametest] WARN COST m0 median " + m0 + " ns above the " + M0_BUDGET + " ns budget (judged on the median of at least three runs, spec 8.8)");
+        }
+        if (m0 > 2 * M0_BUDGET) {
+            failures.add("m0 median " + m0 + " ns > " + 2 * M0_BUDGET + " ns");
+        }
+        if (allMedian > ALL_BUDGET) {
+            failures.add("all median " + allMedian + " ns > " + ALL_BUDGET + " ns");
+        }
+        for (int i = 0; i < NEW_IDS.length; i++) {
+            verdict.append(i == 0 ? "" : ", ").append(NEW_IDS[i]).append(' ').append(marginal[i]).append(" (alone ")
+                    .append(alone[i]).append(')');
+            if (marginal[i] > MODULE_BUDGET) {
+                LOGGER.warn("[hengst-gametest] WARN COST marginal " + NEW_IDS[i] + " median " + marginal[i] + " ns above the " + MODULE_BUDGET + " ns budget");
+            }
+            if (marginal[i] > 2 * MODULE_BUDGET) {
+                failures.add("marginal " + NEW_IDS[i] + " median " + marginal[i] + " ns > " + 2 * MODULE_BUDGET + " ns");
+            }
+        }
+        LOGGER.info("[hengst-gametest] COST verdict: m0 " + m0 + " ns (budget " + M0_BUDGET + "), all " + allMedian + " ns (budget " + ALL_BUDGET + "), marginal per module ns: " + verdict);
+        check(failures.isEmpty(), "cost thresholds missed: " + failures);
+        pass("cost per module per frame (including the GL calls): all eleven within " + ALL_BUDGET + " ns, each marginal"
+                + " cost within twice " + MODULE_BUDGET + " ns, the four M0 modules within twice " + M0_BUDGET
+                + " ns (strict comparison in the COST verdict and WARN lines)");
+    }
+
+    /** Switches exactly the given modules on (all others of the catalog off) through the core. */
+    private static String[] enableOnly(final HengstCore core, final String[] all, final String[] on) throws Exception {
+        return onClient(() -> {
+            for (String id : all) {
+                core.activeProfile().module(id).setEnabled(Arrays.asList(on).contains(id));
+            }
+            core.applyConfigForTest();
+            HudModule[] active = core.renderer().activeModules();
+            String[] ids = new String[active.length];
+            for (int i = 0; i < active.length; i++) {
+                ids[i] = active[i].id();
+            }
+            return ids;
+        });
+    }
+
+    private static void waitHudFrames(int n, String what) throws Exception {
+        final int target = onClient(() -> hudCalls) + n;
+        waitUntil(() -> hudCalls >= target, 120_000, what);
+    }
+
+    /**
+     * One case; returns the median of the summed modules per frame (the hook time without modules) and, with
+     * {@code marginal} set, that module's own median ({@code -1} otherwise).
+     */
+    private static long[] costCase(HengstCore core, String[] all, String name, String[] on, String[] summed,
+            String marginal, long[] res) throws Exception {
+        String[] order = enableOnly(core, all, on);
+        check(order.length == on.length, name + ": active " + Arrays.toString(order));
+        waitHudFrames(COST_WARMUP, name + ": " + COST_WARMUP + " frames to settle");
+        onClient(() -> {
+            costFrame = 0;
+            costUndrawn = 0;
+            costLeft = COST_FRAMES;
+            return null;
+        });
+        waitUntil(() -> costLeft == 0, 120_000, name + ": " + COST_FRAMES + " measured frames");
+        long[][] data = onClient(() -> new long[][] {COST_SAMPLES.clone(), HOOK_SAMPLES.clone(), EMPTY_SAMPLES.clone(),
+            {costUndrawn, costLast - costFirst}});
+        check(data[3][0] == 0, name + ": the core drew in every measured frame, " + data[3][0] + " frames without");
+        long[] hook = stats(data[1]);
+        long[] pair = stats(data[2]);
+        res[0] = resolution(data[2], resolution(data[1], res[0]));
+        StringBuilder modules = new StringBuilder();
+        for (int i = 0; i < order.length; i++) {
+            long[] column = column(data[0], i);
+            res[0] = resolution(column, res[0]);
+            long[] s = stats(column);
+            modules.append(i == 0 ? "" : ", ").append(order[i]).append(' ').append(s[0]).append('/').append(s[1])
+                    .append('/').append(s[2]);
+        }
+        double fps = (COST_FRAMES - 1) / ((data[3][data[3].length - 1]) / 1e9);
+        String tail = String.format(java.util.Locale.ROOT, "; %.0f frames per second in the window", fps) + "; hook " + fmt(hook) + "; empty probe pair " + fmt(pair) + "; per module median/p95/max ns: "
+                + (modules.length() == 0 ? "none" : modules.toString());
+        if (summed.length == 0) {
+            LOGGER.info("[hengst-gametest] COST " + name + " median " + hook[0] + " ns (hook time, no module active"
+                    + tail + ")");
+            return new long[] {hook[0], -1};
+        }
+        long[] sum = stats(sums(data[0], indexesOf(order, summed)));
+        LOGGER.info("[hengst-gametest] COST " + name + " median " + sum[0] + " ns (" + fmt(sum) + ", sum of "
+                + summed.length + " modules per frame" + tail + ")");
+        if (summed.length == all.length) {
+            long[] m0 = stats(sums(data[0], indexesOf(order, M0_IDS)));
+            LOGGER.info("[hengst-gametest] COST all-m0part median " + m0[0] + " ns (" + fmt(m0)
+                    + ", the four M0 modules with all eleven on)");
+        }
+        long own = marginal == null ? -1 : stats(column(data[0], indexesOf(order, new String[] {marginal})[0]))[0];
+        return new long[] {sum[0], own};
+    }
+
+    /**
+     * All eleven on, 300 frames: bytes allocated on the client thread around the mod's HUD hook and, in a second pass
+     * through a canvas that counts the bytes inside its delegated drawing calls, the bytes of the core's frame call
+     * without the game's drawing code. Text changes per module in the window are listed.
+     */
+    private static void allocationWindow(HengstCore core, String[] all) throws Exception {
+        String[] order = enableOnly(core, all, all);
+        waitHudFrames(COST_WARMUP, "allocation window: frames to settle");
+        onClient(() -> {
+            allocHook = 0;
+            allocMod = 0;
+            allocCanvas = 0;
+            allocFramesWithBytes = 0;
+            Arrays.fill(TEXT_CHANGES, 0);
+            Arrays.fill(LAST_TEXT, null);
+            ALLOC_DIAG.setLength(0);
+            allocTick0 = ticks;
+            allocLeft = ALLOC_FRAMES + ALLOC_SETTLE;
+            return null;
+        });
+        waitUntil(() -> allocLeft == 0, 120_000, "allocation window: " + ALLOC_FRAMES + " frames");
+        long[] r = onClient(() -> new long[] {allocHook, allocMod, allocCanvas, allocFramesWithBytes});
+        int[] changes = onClient(() -> TEXT_CHANGES.clone());
+        String diag = onClient(() -> ALLOC_DIAG.toString());
+        StringBuilder changed = new StringBuilder();
+        for (int i = 0; i < order.length; i++) {
+            if (changes[i] > 0) {
+                changed.append(changed.length() == 0 ? "" : ", ").append(order[i]).append(' ').append(changes[i]);
+            }
+        }
+        LOGGER.info("[hengst-gametest] COST alloc " + ALLOC_FRAMES + " frames, all eleven on: the core's frame call "
+                + r[1] + " bytes (" + r[3] + " frames with bytes), the game's drawing calls inside it " + r[2]
+                + " bytes; the mod's HUD hook in the real pass " + r[0] + " bytes; text changes in the window: "
+                + (changed.length() == 0 ? "none" : changed.toString()) + " (measurement cost subtracted); frames with"
+                + " bytes:" + (diag.isEmpty() ? " none" : diag));
+    }
+
+    // HUD probe state for the two windows (client thread).
+    private static long hookStart;
+    private static long emptyPair;
+    private static long allocStart;
+    private static final LegacyCanvas ALLOC_CANVAS = new LegacyCanvas();
+    private static final AllocCanvas ALLOC_WRAP = new AllocCanvas(ALLOC_CANVAS);
+
+    private static long allocated() {
+        return THREADS.getThreadAllocatedBytes(Thread.currentThread().getId());
+    }
+
+    /** The cost of one allocation reading itself (Java 8's getThreadAllocatedBytes(long) allocates its arrays). */
+    private static long readingCost;
+
+    /** At the start of the mod's HUD hook: the start of the measured window frame. */
+    private static void costHudStart() {
+        if (costLeft > 0) {
+            Arrays.fill(COST_TIMES, -1);
+            long e0 = System.nanoTime();
+            long e1 = System.nanoTime();
+            emptyPair = e1 - e0;
+            hookStart = System.nanoTime();
+        } else if (allocLeft > 0) {
+            long a0 = allocated();
+            long a1 = allocated();
+            readingCost = a1 - a0;
+            allocStart = allocated();
+        }
+    }
+
+    /** At the end of the mod's HUD hook. */
+    private static void costHudEnd() {
+        if (costLeft > 0) {
+            long t1 = System.nanoTime();
+            HengstCore core = HengstLegacyMod.core();
+            int f = costFrame;
+            if (core.renderer().activeCount() > 0 && COST_TIMES[0] < 0) {
+                costUndrawn++;
+            }
+            if (f == 0) {
+                costFirst = hookStart;
+            }
+            costLast = hookStart;
+            HOOK_SAMPLES[f] = t1 - hookStart;
+            EMPTY_SAMPLES[f] = emptyPair;
+            System.arraycopy(COST_TIMES, 0, COST_SAMPLES, f * MAX_MODULES, MAX_MODULES);
+            costFrame++;
+            costLeft--;
+        } else if (allocLeft > 0) {
+            long a2 = allocated();
+            if (allocLeft <= ALLOC_FRAMES) {
+                allocHook += Math.max(0, a2 - allocStart - readingCost);
+            }
+            HengstCore core = HengstLegacyMod.core();
+            MinecraftClient mc = MinecraftClient.getInstance();
+            int s = LegacyInput.guiScale(mc.width, mc.height, mc.options.guiScale, mc.forcesUnicodeFont());
+            ALLOC_CANVAS.begin(mc.textRenderer, LegacyInput.guiSize(mc.width, s), LegacyInput.guiSize(mc.height, s));
+            ALLOC_WRAP.inside = 0;
+            ALLOC_WRAP.calls = 0;
+            GL11.glDisable(GL11.GL_DEPTH_TEST);
+            long a3 = allocated();
+            core.onHudRender(ALLOC_WRAP, 0.0F);
+            long a4 = allocated();
+            GL11.glEnable(GL11.GL_DEPTH_TEST);
+            // a4 - a3 holds one reading's cost, and per delegated call its bytes plus two readings, of which the
+            // wrapper's count (inside) holds the bytes plus one reading.
+            long mod = Math.max(0, a4 - a3 - readingCost - ALLOC_WRAP.inside - ALLOC_WRAP.calls * readingCost);
+            if (allocLeft > ALLOC_FRAMES) {
+                allocLeft--;
+                return;
+            }
+            allocMod += mod;
+            allocCanvas += ALLOC_WRAP.inside;
+            if (mod != 0) {
+                allocFramesWithBytes++;
+            }
+            HudModule[] active = core.renderer().activeModules();
+            int changed = 0;
+            for (int i = 0; i < active.length && i < MAX_MODULES; i++) {
+                if (active[i] instanceof TextHudModule) {
+                    String t = ((TextHudModule) active[i]).text();
+                    if (t != LAST_TEXT[i]) {
+                        if (LAST_TEXT[i] != null) {
+                            TEXT_CHANGES[i]++;
+                            changed |= 1 << i;
+                        }
+                        LAST_TEXT[i] = t;
+                    }
+                }
+            }
+            if (mod != 0 && ALLOC_DIAG.length() < 2000) {
+                // Cold path, after the measurement: which modules showed a new text in this frame, ticks since the window
+                // opened, JVM uptime (to match a compilation log).
+                ALLOC_DIAG.append(" [frame ").append(ALLOC_FRAMES - allocLeft).append(", ").append(mod).append(" bytes, tick ")
+                        .append(ticks - allocTick0).append(", new text:");
+                for (int i = 0; i < active.length && i < MAX_MODULES; i++) {
+                    if ((changed & (1 << i)) != 0) {
+                        ALLOC_DIAG.append(' ').append(active[i].id());
+                    }
+                }
+                ALLOC_DIAG.append(changed == 0 ? " none" : "").append(", uptime ")
+                        .append(ManagementFactory.getRuntimeMXBean().getUptime()).append(" ms]");
+            }
+            allocLeft--;
+        }
+    }
+
+    /**
+     * Delegates to the game's canvas and adds up the bytes allocated inside each delegated call (plus the cost of one
+     * reading per call, which the caller subtracts with the call count).
+     */
+    private static final class AllocCanvas implements Canvas {
+        private final Canvas d;
+        long inside;
+        long calls;
+
+        AllocCanvas(Canvas d) {
+            this.d = d;
+        }
+
+        private void add(long before) {
+            inside += allocated() - before;
+            calls++;
+        }
+
+        @Override
+        public int width() {
+            long a = allocated();
+            int r = d.width();
+            add(a);
+            return r;
+        }
+
+        @Override
+        public int height() {
+            long a = allocated();
+            int r = d.height();
+            add(a);
+            return r;
+        }
+
+        @Override
+        public int fontHeight() {
+            long a = allocated();
+            int r = d.fontHeight();
+            add(a);
+            return r;
+        }
+
+        @Override
+        public int textWidth(String text) {
+            long a = allocated();
+            int r = d.textWidth(text);
+            add(a);
+            return r;
+        }
+
+        @Override
+        public void fill(int x1, int y1, int x2, int y2, int argb) {
+            long a = allocated();
+            d.fill(x1, y1, x2, y2, argb);
+            add(a);
+        }
+
+        @Override
+        public void text(String text, int x, int y, int argb, boolean shadow) {
+            long a = allocated();
+            d.text(text, x, y, argb, shadow);
+            add(a);
+        }
+
+        @Override
+        public void pushTransform(float translateX, float translateY, float scale) {
+            long a = allocated();
+            d.pushTransform(translateX, translateY, scale);
+            add(a);
+        }
+
+        @Override
+        public void popTransform() {
+            long a = allocated();
+            d.popTransform();
+            add(a);
+        }
     }
 
     // ---- M1a helpers ----

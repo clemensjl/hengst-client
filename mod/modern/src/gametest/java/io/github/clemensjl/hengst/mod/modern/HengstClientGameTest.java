@@ -58,6 +58,7 @@ import net.fabricmc.fabric.api.client.rendering.v1.hud.HudElementRegistry;
 import net.fabricmc.fabric.api.client.rendering.v1.hud.VanillaHudElements;
 import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.DeltaTracker;
+import net.minecraft.client.InactivityFpsLimit;
 import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.gui.Font;
@@ -334,6 +335,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         settingsWithTheFullCatalog(ctx, core);
         languageSwitch(ctx, core);
         dispatchAllocation(ctx);
+        costMeasurement(ctx, core);
         check(core.renderer().activeCount() == 4, "four active modules after the M1a steps, got "
                 + core.renderer().activeCount());
         pass("after the M1a steps only the four M0 modules are active");
@@ -879,7 +881,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
                 measured, focusFlips});
             LOGGER.info("[hengst-gametest] dispatch window {} ({} calls, {} focus changes): mod {} bytes in {} calls,"
                     + " game window query {} bytes, empty measurement {} bytes; allocating calls [index focused mod/game"
-                    + " bytes, call time, collections during the call]:{}", round, r[4], r[5], r[0], r[3], r[1], r[2], log.isEmpty() ? " none" : log);
+                    + " bytes, call time, collections during the call, JVM uptime]:{}", round, r[4], r[5], r[0], r[3], r[1], r[2], log.isEmpty() ? " none" : log);
             if (round > 0) {
                 windows[round - 1] = r;
             }
@@ -979,11 +981,598 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             }
             if (allocLog.length() < 2000) {
                 allocLog.append(" [").append(measured).append(' ').append(focused).append(' ').append(d - c)
-                        .append('/').append(c - b).append(", ").append(micros).append(" us, ").append(gcs).append(" collections]");
+                        .append('/').append(c - b).append(", ").append(micros).append(" us, ").append(gcs).append(" collections, uptime ")
+                        .append(ManagementFactory.getRuntimeMXBean().getUptime()).append(" ms]");
             }
         }
         measured++;
         measureLeft--;
+    }
+
+    // ---- Task 16: the core's cost per module per frame, in the real game ----
+
+    // 500 frames to settle (JIT, caches), then 2000 measured frames per case; 300 frames for the allocation window.
+    private static final int COST_WARMUP = 500;
+    private static final int COST_FRAMES = 2000;
+    private static final int ALLOC_FRAMES = 300;
+    // Frames drawn through the counting canvas before the allocation window counts: a new canvas class reaching the
+    // compiled frame path makes the JIT deoptimise it once (seen on 1.8.9 as 896 bytes in one frame).
+    private static final int ALLOC_SETTLE = 100;
+    private static final int MAX_MODULES = 11;
+    private static final String[] M0_IDS = {"fps", "cps", "keystrokes", "coordinates"};
+    private static final String[] NEW_IDS = {"direction", "ping", "clock", "server_address", "memory", "speed",
+        "stopwatch"};
+    // Budgets of the measured quantity (spec 8.8), median per version, in ns. The strict judgement (four M0 modules on
+    // the median of at least three runs, each M1a module's marginal cost at 10 us) is made by the reader of the runs;
+    // the suite fails only where noise on a loaded machine cannot reach: all eleven above the budget, a marginal cost
+    // above twice its budget, the four M0 modules above twice theirs. Each strict miss is logged as a WARN line.
+    private static final long M0_BUDGET = 50_000;
+    private static final long MODULE_BUDGET = 10_000;
+    private static final long ALL_BUDGET = 120_000;
+
+    // Written by the HUD probe on the client thread, read there (computeOnClient) after the window closed.
+    private static final long[] COST_TIMES = new long[MAX_MODULES];
+    private static final long[] COST_SAMPLES = new long[COST_FRAMES * MAX_MODULES];
+    private static final long[] HOOK_SAMPLES = new long[COST_FRAMES];
+    private static final long[] EMPTY_SAMPLES = new long[COST_FRAMES];
+    private static int costLeft;
+    private static int costFrame;
+    private static int costUndrawn;
+    private static long costFirst;
+    private static long costLast;
+    private static int allocLeft;
+    private static long allocHook;
+    private static long allocMod;
+    private static long allocCanvas;
+    private static int allocFramesWithBytes;
+    private static int allocTick0;
+    private static final StringBuilder ALLOC_DIAG = new StringBuilder();
+    private static final int[] TEXT_CHANGES = new int[MAX_MODULES];
+    private static final String[] LAST_TEXT = new String[MAX_MODULES];
+
+    /** Percentile statistics of one series, in ns. */
+    private static long[] stats(long[] values) {
+        long[] v = values.clone();
+        Arrays.sort(v);
+        int n = v.length;
+        long median = n % 2 == 1 ? v[n / 2] : (v[n / 2 - 1] + v[n / 2]) / 2;
+        long p95 = v[Math.max(0, (int) Math.ceil(0.95 * n) - 1)];
+        return new long[] {median, p95, v[n - 1]};
+    }
+
+    private static String fmt(long[] s) {
+        return "median " + s[0] + " ns p95 " + s[1] + " ns max " + s[2] + " ns";
+    }
+
+    /** The smallest positive value in the series, or 0: the observed resolution of System.nanoTime. */
+    private static long resolution(long[] values, long current) {
+        long r = current;
+        for (long x : values) {
+            if (x > 0 && (r == 0 || x < r)) {
+                r = x;
+            }
+        }
+        return r;
+    }
+
+    /** Per-frame sum over the modules at the given indexes. */
+    private static long[] sums(long[] samples, int[] indexes) {
+        long[] out = new long[COST_FRAMES];
+        for (int f = 0; f < COST_FRAMES; f++) {
+            long sum = 0;
+            for (int i : indexes) {
+                sum += samples[f * MAX_MODULES + i];
+            }
+            out[f] = sum;
+        }
+        return out;
+    }
+
+    private static long[] column(long[] samples, int index) {
+        long[] out = new long[COST_FRAMES];
+        for (int f = 0; f < COST_FRAMES; f++) {
+            out[f] = samples[f * MAX_MODULES + index];
+        }
+        return out;
+    }
+
+    private static int[] indexesOf(String[] order, String[] ids) {
+        int[] out = new int[ids.length];
+        for (int k = 0; k < ids.length; k++) {
+            out[k] = Arrays.asList(order).indexOf(ids[k]);
+            check(out[k] >= 0, ids[k] + " active in the cost case, active " + Arrays.toString(order));
+        }
+        return out;
+    }
+
+    /**
+     * The time the core spends per module and frame ({@code HudRenderer.setRenderTimes}: size, placement, transform and
+     * render of each active module, read with System.nanoTime around it). On this version the module submits its draw
+     * calls into the GUI render state and the game draws them later, so the number is the submit cost, not the GPU or
+     * draw cost. Cases: the four M0 modules (sum per frame), each of the seven M1a text modules alone, all eleven (sum),
+     * all off (hook time only). Each case: 500 frames to settle, 2000 measured. Logged per case with median, 95th
+     * percentile and maximum; asserted: the medians against the budgets of spec 8.8. Then 300 frames with all eleven
+     * on and the allocation of the core's frame call. The game's own options and frame rate are kept.
+     */
+    private static void costMeasurement(ClientGameTestContext ctx, HengstCore core) {
+        long[] res = new long[1];
+        String[] all = new String[M0_IDS.length + NEW_IDS.length];
+        System.arraycopy(M0_IDS, 0, all, 0, M0_IDS.length);
+        System.arraycopy(NEW_IDS, 0, all, M0_IDS.length, NEW_IDS.length);
+        long m0;
+        long allMedian;
+        long[] alone = new long[NEW_IDS.length];
+        long[] marginal = new long[NEW_IDS.length];
+        // The game limits the frame rate while nobody touches the input ("afk": 30, later 10 frames per second), which
+        // a test that does not move would hit; a player at the keyboard does not. Off for the measurement, restored.
+        InactivityFpsLimit inactivity = ctx.computeOnClient(mc -> mc.options.inactivityFpsLimit().get());
+        ctx.runOnClient(mc -> {
+            mc.options.inactivityFpsLimit().set(InactivityFpsLimit.MINIMIZED);
+            core.renderer().setRenderTimes(COST_TIMES);
+        });
+        try {
+            m0 = costCase(ctx, core, "m0", M0_IDS, M0_IDS, null, res)[0];
+            for (int i = 0; i < NEW_IDS.length; i++) {
+                alone[i] = costCase(ctx, core, NEW_IDS[i], new String[] {NEW_IDS[i]}, new String[] {NEW_IDS[i]}, null,
+                        res)[0];
+            }
+            for (int i = 0; i < NEW_IDS.length; i++) {
+                String[] on = Arrays.copyOf(M0_IDS, M0_IDS.length + 1);
+                on[M0_IDS.length] = NEW_IDS[i];
+                long[] r = costCase(ctx, core, "m0+" + NEW_IDS[i], on, on, NEW_IDS[i], res);
+                marginal[i] = r[1];
+                LOGGER.info("[hengst-gametest] COST marginal {} median {} ns (its own time with the four M0 modules on,"
+                        + " drawn after them; case total {} ns minus the m0 case {} ns = {} ns)", NEW_IDS[i], r[1], r[0],
+                        m0, r[0] - m0);
+            }
+            allMedian = costCase(ctx, core, "all", all, all, null, res)[0];
+            costCase(ctx, core, "off", new String[0], new String[0], null, res);
+            profileCase(ctx, core, "direction", new String[] {"direction"});
+            profileCase(ctx, core, "all", all);
+            allocationWindow(ctx, core, all);
+        } finally {
+            ctx.runOnClient(mc -> {
+                mc.options.inactivityFpsLimit().set(inactivity);
+                core.renderer().setRenderTimes(null);
+                for (String id : all) {
+                    core.activeProfile().module(id).setEnabled(Arrays.asList(M0_IDS).contains(id));
+                }
+                core.applyConfigForTest();
+            });
+        }
+        LOGGER.info("[hengst-gametest] COST timer resolution observed (smallest positive reading): {} ns", res[0]);
+        StringBuilder verdict = new StringBuilder();
+        List<String> failures = new ArrayList<>();
+        if (m0 > M0_BUDGET) {
+            LOGGER.warn("[hengst-gametest] WARN COST m0 median {} ns above the {} ns budget (judged on the median of at least three runs, spec 8.8)", m0, M0_BUDGET);
+        }
+        if (m0 > 2 * M0_BUDGET) {
+            failures.add("m0 median " + m0 + " ns > " + 2 * M0_BUDGET + " ns");
+        }
+        if (allMedian > ALL_BUDGET) {
+            failures.add("all median " + allMedian + " ns > " + ALL_BUDGET + " ns");
+        }
+        for (int i = 0; i < NEW_IDS.length; i++) {
+            verdict.append(i == 0 ? "" : ", ").append(NEW_IDS[i]).append(' ').append(marginal[i]).append(" (alone ")
+                    .append(alone[i]).append(')');
+            if (marginal[i] > MODULE_BUDGET) {
+                LOGGER.warn("[hengst-gametest] WARN COST marginal {} median {} ns above the {} ns budget", NEW_IDS[i], marginal[i], MODULE_BUDGET);
+            }
+            if (marginal[i] > 2 * MODULE_BUDGET) {
+                failures.add("marginal " + NEW_IDS[i] + " median " + marginal[i] + " ns > " + 2 * MODULE_BUDGET + " ns");
+            }
+        }
+        LOGGER.info("[hengst-gametest] COST verdict: m0 {} ns (budget {}), all {} ns (budget {}), marginal per module ns: {}", m0, M0_BUDGET, allMedian, ALL_BUDGET, verdict);
+        check(failures.isEmpty(), "cost thresholds missed: " + failures);
+        pass("cost per module per frame (submit time): all eleven within " + ALL_BUDGET + " ns, each marginal cost"
+                + " within twice " + MODULE_BUDGET + " ns, the four M0 modules within twice " + M0_BUDGET
+                + " ns (strict comparison in the COST verdict and WARN lines)");
+    }
+
+    /** Switches exactly the given modules on (all others of the catalog off) through the core. */
+    private static String[] enableOnly(ClientGameTestContext ctx, HengstCore core, String[] all, String[] on) {
+        return ctx.computeOnClient(mc -> {
+            for (String id : all) {
+                core.activeProfile().module(id).setEnabled(Arrays.asList(on).contains(id));
+            }
+            core.applyConfigForTest();
+            HudModule[] active = core.renderer().activeModules();
+            String[] ids = new String[active.length];
+            for (int i = 0; i < active.length; i++) {
+                ids[i] = active[i].id();
+            }
+            return ids;
+        });
+    }
+
+    /**
+     * One case; returns the median of the summed modules per frame (the hook time without modules) and, with
+     * {@code marginal} set, that module's own median ({@code -1} otherwise).
+     */
+    private static long[] costCase(ClientGameTestContext ctx, HengstCore core, String name, String[] on,
+            String[] summed, String marginal, long[] res) {
+        String[] all = new String[M0_IDS.length + NEW_IDS.length];
+        System.arraycopy(M0_IDS, 0, all, 0, M0_IDS.length);
+        System.arraycopy(NEW_IDS, 0, all, M0_IDS.length, NEW_IDS.length);
+        String[] order = enableOnly(ctx, core, all, on);
+        check(order.length == on.length, name + ": active " + Arrays.toString(order));
+        int start = ctx.computeOnClient(mc -> hudCalls);
+        long deadline = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> hudCalls >= start + COST_WARMUP || System.nanoTime() > deadline, ClientGameTestContext.NO_TIMEOUT);
+        check(ctx.computeOnClient(mc -> hudCalls) >= start + COST_WARMUP, name + ": " + COST_WARMUP
+                + " frames to settle within 120 s");
+        ctx.runOnClient(mc -> {
+            costFrame = 0;
+            costUndrawn = 0;
+            costLeft = COST_FRAMES;
+        });
+        long deadline2 = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> costLeft == 0 || System.nanoTime() > deadline2, ClientGameTestContext.NO_TIMEOUT);
+        long[][] data = ctx.computeOnClient(mc -> new long[][] {COST_SAMPLES.clone(), HOOK_SAMPLES.clone(),
+            EMPTY_SAMPLES.clone(), {costLeft, costUndrawn, costLast - costFirst}});
+        check(data[3][0] == 0, name + ": " + COST_FRAMES + " measured frames within 120 s, " + data[3][0] + " left");
+        check(data[3][1] == 0, name + ": the core drew in every measured frame, " + data[3][1] + " frames without");
+        long[] hook = stats(data[1]);
+        long[] pair = stats(data[2]);
+        res[0] = resolution(data[2], resolution(data[1], res[0]));
+        StringBuilder modules = new StringBuilder();
+        for (int i = 0; i < order.length; i++) {
+            long[] column = column(data[0], i);
+            res[0] = resolution(column, res[0]);
+            long[] s = stats(column);
+            modules.append(i == 0 ? "" : ", ").append(order[i]).append(' ').append(s[0]).append('/').append(s[1])
+                    .append('/').append(s[2]);
+        }
+        double fps = (COST_FRAMES - 1) / ((data[3][data[3].length - 1]) / 1e9);
+        String tail = String.format(java.util.Locale.ROOT, "; %.0f frames per second in the window", fps) + "; hook " + fmt(hook) + "; empty probe pair " + fmt(pair) + "; per module median/p95/max ns: "
+                + (modules.length() == 0 ? "none" : modules.toString());
+        if (summed.length == 0) {
+            LOGGER.info("[hengst-gametest] COST {} median {} ns (hook time, no module active{})", name, hook[0], tail);
+            return new long[] {hook[0], -1};
+        }
+        long[] sum = stats(sums(data[0], indexesOf(order, summed)));
+        LOGGER.info("[hengst-gametest] COST {} median {} ns ({}, sum of {} modules per frame{})", name, sum[0], fmt(sum),
+                summed.length, tail);
+        if (summed.length == all.length) {
+            long[] m0 = stats(sums(data[0], indexesOf(order, M0_IDS)));
+            LOGGER.info("[hengst-gametest] COST all-m0part median {} ns ({}, the four M0 modules with all eleven on)",
+                    m0[0], fmt(m0));
+        }
+        long own = marginal == null ? -1 : stats(column(data[0], indexesOf(order, new String[] {marginal})[0]))[0];
+        return new long[] {sum[0], own};
+    }
+
+    /**
+     * All eleven on, 300 frames: bytes allocated on the client thread around the mod's HUD element (vanilla's submit
+     * included) and, in a second pass through a canvas that counts the bytes inside its delegated drawing calls, the
+     * bytes of the core's frame call without the game's drawing code. Text changes per module in the window are listed.
+     */
+    private static void allocationWindow(ClientGameTestContext ctx, HengstCore core, String[] all) {
+        String[] order = enableOnly(ctx, core, all, all);
+        int start = ctx.computeOnClient(mc -> hudCalls);
+        long deadline = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> hudCalls >= start + COST_WARMUP || System.nanoTime() > deadline, ClientGameTestContext.NO_TIMEOUT);
+        ctx.runOnClient(mc -> {
+            allocHook = 0;
+            allocMod = 0;
+            allocCanvas = 0;
+            allocFramesWithBytes = 0;
+            Arrays.fill(TEXT_CHANGES, 0);
+            Arrays.fill(LAST_TEXT, null);
+            ALLOC_DIAG.setLength(0);
+            allocTick0 = tickCalls;
+            allocLeft = ALLOC_FRAMES + ALLOC_SETTLE;
+        });
+        long deadline2 = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> allocLeft == 0 || System.nanoTime() > deadline2, ClientGameTestContext.NO_TIMEOUT);
+        long[] r = ctx.computeOnClient(mc -> new long[] {allocLeft, allocHook, allocMod, allocCanvas,
+            allocFramesWithBytes});
+        check(r[0] == 0, "allocation window: " + ALLOC_FRAMES + " frames within 120 s");
+        int[] changes = ctx.computeOnClient(mc -> TEXT_CHANGES.clone());
+        String diag = ctx.computeOnClient(mc -> ALLOC_DIAG.toString());
+        StringBuilder changed = new StringBuilder();
+        for (int i = 0; i < order.length; i++) {
+            if (changes[i] > 0) {
+                changed.append(changed.length() == 0 ? "" : ", ").append(order[i]).append(' ').append(changes[i]);
+            }
+        }
+        LOGGER.info("[hengst-gametest] COST alloc {} frames, all eleven on: the core's frame call {} bytes ({} frames with"
+                + " bytes), the game's drawing calls inside it {} bytes; the mod's HUD element in the real pass {} bytes;"
+                + " text changes in the window: {}; frames with bytes:{}", ALLOC_FRAMES, r[2], r[4], r[3], r[1],
+                changed.length() == 0 ? "none" : changed.toString(), diag.isEmpty() ? " none" : diag);
+    }
+
+    private static final int PROFILE_FRAMES = 1000;
+    private static final int PROFILE_CALLS = 64;
+    private static final String[] CALL_NAMES = {"width", "height", "fontHeight", "textWidth", "fill", "text",
+        "pushTransform", "popTransform"};
+    private static final long[] PROFILE_NANOS = new long[PROFILE_FRAMES * PROFILE_CALLS];
+    private static final int[] PROFILE_KINDS = new int[PROFILE_FRAMES * PROFILE_CALLS];
+    private static final int[] PROFILE_COUNT = new int[PROFILE_FRAMES];
+    private static int profileLeft;
+    private static int profileFrame;
+
+    /**
+     * Diagnosis by elimination, logged only: the mod's HUD drawn once per frame through a canvas that times each of its
+     * delegated drawing calls (System.nanoTime around the game's call); per call position in the frame, the kind of
+     * call and its median and 95th percentile over 1000 frames. Shows which of the game's calls carry the time.
+     */
+    private static void profileCase(ClientGameTestContext ctx, HengstCore core, String name, String[] on) {
+        String[] all = new String[M0_IDS.length + NEW_IDS.length];
+        System.arraycopy(M0_IDS, 0, all, 0, M0_IDS.length);
+        System.arraycopy(NEW_IDS, 0, all, M0_IDS.length, NEW_IDS.length);
+        enableOnly(ctx, core, all, on);
+        int start = ctx.computeOnClient(mc -> hudCalls);
+        long deadline = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> hudCalls >= start + COST_WARMUP || System.nanoTime() > deadline, ClientGameTestContext.NO_TIMEOUT);
+        ctx.runOnClient(mc -> {
+            profileFrame = 0;
+            profileLeft = PROFILE_FRAMES;
+        });
+        long deadline2 = System.nanoTime() + 120_000_000_000L;
+        ctx.waitFor(mc -> profileLeft == 0 || System.nanoTime() > deadline2, ClientGameTestContext.NO_TIMEOUT);
+        check(ctx.computeOnClient(mc -> profileLeft) == 0, "profile " + name + ": " + PROFILE_FRAMES + " frames within 120 s");
+        long[] nanos = ctx.computeOnClient(mc -> PROFILE_NANOS.clone());
+        int[] kinds = ctx.computeOnClient(mc -> PROFILE_KINDS.clone());
+        int[] counts = ctx.computeOnClient(mc -> PROFILE_COUNT.clone());
+        int n = counts[0];
+        StringBuilder out = new StringBuilder();
+        for (int k = 0; k < n; k++) {
+            long[] column = new long[PROFILE_FRAMES];
+            for (int f = 0; f < PROFILE_FRAMES; f++) {
+                column[f] = counts[f] > k ? nanos[f * PROFILE_CALLS + k] : 0;
+            }
+            long[] st = stats(column);
+            out.append(k == 0 ? "" : ", ").append(k).append(':').append(CALL_NAMES[kinds[k]]).append(' ').append(st[0])
+                    .append('/').append(st[1]);
+        }
+        LOGGER.info("[hengst-gametest] COST profile {} ({} canvas calls per frame; call position:kind median/p95 ns): {}",
+                name, n, out);
+    }
+
+    /** Called by the HUD probe instead of the plain inner call while a cost or allocation window is open. */
+    private static void measuredHud(Runnable inner, Runnable beginAllocCanvas) {
+        HengstCore core = HengstModernMod.core();
+        if (profileLeft > 0) {
+            beginAllocCanvas.run();
+            TIMING_WRAP.n = 0;
+            TIMING_WRAP.base = profileFrame * PROFILE_CALLS;
+            core.onHudRender(TIMING_WRAP, 0.0F);
+            PROFILE_COUNT[profileFrame] = TIMING_WRAP.n;
+            profileFrame++;
+            profileLeft--;
+            return;
+        }
+        if (costLeft > 0) {
+            Arrays.fill(COST_TIMES, -1);
+            long e0 = System.nanoTime();
+            long e1 = System.nanoTime();
+            long t0 = System.nanoTime();
+            inner.run();
+            long t1 = System.nanoTime();
+            int f = costFrame;
+            if (core.renderer().activeCount() > 0 && COST_TIMES[0] < 0) {
+                costUndrawn++;
+            }
+            if (f == 0) {
+                costFirst = t0;
+            }
+            costLast = t0;
+            HOOK_SAMPLES[f] = t1 - t0;
+            EMPTY_SAMPLES[f] = e1 - e0;
+            System.arraycopy(COST_TIMES, 0, COST_SAMPLES, f * MAX_MODULES, MAX_MODULES);
+            costFrame++;
+            costLeft--;
+            return;
+        }
+        long a0 = THREADS.getCurrentThreadAllocatedBytes();
+        long a1 = THREADS.getCurrentThreadAllocatedBytes();
+        inner.run();
+        long a2 = THREADS.getCurrentThreadAllocatedBytes();
+        beginAllocCanvas.run();
+        ALLOC_WRAP.inside = 0;
+        long a3 = THREADS.getCurrentThreadAllocatedBytes();
+        core.onHudRender(ALLOC_WRAP, 0.0F);
+        long a4 = THREADS.getCurrentThreadAllocatedBytes();
+        long cost = a1 - a0;
+        long mod = (a4 - a3 - cost) - ALLOC_WRAP.inside;
+        if (allocLeft > ALLOC_FRAMES) {
+            allocLeft--;
+            return;
+        }
+        allocHook += a2 - a1 - cost;
+        allocMod += mod;
+        allocCanvas += ALLOC_WRAP.inside;
+        if (mod != 0) {
+            allocFramesWithBytes++;
+        }
+        HudModule[] active = core.renderer().activeModules();
+        int changed = 0;
+        for (int i = 0; i < active.length && i < MAX_MODULES; i++) {
+            if (active[i] instanceof TextHudModule) {
+                String t = ((TextHudModule) active[i]).text();
+                if (t != LAST_TEXT[i]) {
+                    if (LAST_TEXT[i] != null) {
+                        TEXT_CHANGES[i]++;
+                        changed |= 1 << i;
+                    }
+                    LAST_TEXT[i] = t;
+                }
+            }
+        }
+        if (mod != 0 && ALLOC_DIAG.length() < 2000) {
+            // Cold path, after the measurement: which modules showed a new text in this frame, ticks since the window
+            // opened, JVM uptime (to match a compilation log).
+            ALLOC_DIAG.append(" [frame ").append(ALLOC_FRAMES - allocLeft).append(", ").append(mod).append(" bytes, tick ")
+                    .append(tickCalls - allocTick0).append(", new text:");
+            for (int i = 0; i < active.length && i < MAX_MODULES; i++) {
+                if ((changed & (1 << i)) != 0) {
+                    ALLOC_DIAG.append(' ').append(active[i].id());
+                }
+            }
+            ALLOC_DIAG.append(changed == 0 ? " none" : "").append(", uptime ")
+                    .append(ManagementFactory.getRuntimeMXBean().getUptime()).append(" ms]");
+        }
+        allocLeft--;
+    }
+
+    private static final ModernCanvas ALLOC_CANVAS = new ModernCanvas();
+    private static final AllocCanvas ALLOC_WRAP = new AllocCanvas(ALLOC_CANVAS);
+
+    private static final TimingCanvas TIMING_WRAP = new TimingCanvas(ALLOC_CANVAS);
+
+    /** Delegates to the game's canvas and records kind and duration of each delegated call of the frame. */
+    private static final class TimingCanvas implements Canvas {
+        private final Canvas d;
+        int n;
+        int base;
+
+        TimingCanvas(Canvas d) {
+            this.d = d;
+        }
+
+        private void add(int kind, long start) {
+            long t = System.nanoTime() - start;
+            if (n < PROFILE_CALLS) {
+                PROFILE_NANOS[base + n] = t;
+                PROFILE_KINDS[base + n] = kind;
+                n++;
+            }
+        }
+
+        @Override
+        public int width() {
+            long a = System.nanoTime();
+            int r = d.width();
+            add(0, a);
+            return r;
+        }
+
+        @Override
+        public int height() {
+            long a = System.nanoTime();
+            int r = d.height();
+            add(1, a);
+            return r;
+        }
+
+        @Override
+        public int fontHeight() {
+            long a = System.nanoTime();
+            int r = d.fontHeight();
+            add(2, a);
+            return r;
+        }
+
+        @Override
+        public int textWidth(String text) {
+            long a = System.nanoTime();
+            int r = d.textWidth(text);
+            add(3, a);
+            return r;
+        }
+
+        @Override
+        public void fill(int x1, int y1, int x2, int y2, int argb) {
+            long a = System.nanoTime();
+            d.fill(x1, y1, x2, y2, argb);
+            add(4, a);
+        }
+
+        @Override
+        public void text(String text, int x, int y, int argb, boolean shadow) {
+            long a = System.nanoTime();
+            d.text(text, x, y, argb, shadow);
+            add(5, a);
+        }
+
+        @Override
+        public void pushTransform(float translateX, float translateY, float scale) {
+            long a = System.nanoTime();
+            d.pushTransform(translateX, translateY, scale);
+            add(6, a);
+        }
+
+        @Override
+        public void popTransform() {
+            long a = System.nanoTime();
+            d.popTransform();
+            add(7, a);
+        }
+    }
+
+    /** Delegates to the game's canvas and adds up the bytes allocated inside each delegated call. */
+    private static final class AllocCanvas implements Canvas {
+        private final Canvas d;
+        long inside;
+
+        AllocCanvas(Canvas d) {
+            this.d = d;
+        }
+
+        private static long now() {
+            return THREADS.getCurrentThreadAllocatedBytes();
+        }
+
+        @Override
+        public int width() {
+            long a = now();
+            int r = d.width();
+            inside += now() - a;
+            return r;
+        }
+
+        @Override
+        public int height() {
+            long a = now();
+            int r = d.height();
+            inside += now() - a;
+            return r;
+        }
+
+        @Override
+        public int fontHeight() {
+            long a = now();
+            int r = d.fontHeight();
+            inside += now() - a;
+            return r;
+        }
+
+        @Override
+        public int textWidth(String text) {
+            long a = now();
+            int r = d.textWidth(text);
+            inside += now() - a;
+            return r;
+        }
+
+        @Override
+        public void fill(int x1, int y1, int x2, int y2, int argb) {
+            long a = now();
+            d.fill(x1, y1, x2, y2, argb);
+            inside += now() - a;
+        }
+
+        @Override
+        public void text(String text, int x, int y, int argb, boolean shadow) {
+            long a = now();
+            d.text(text, x, y, argb, shadow);
+            inside += now() - a;
+        }
+
+        @Override
+        public void pushTransform(float translateX, float translateY, float scale) {
+            long a = now();
+            d.pushTransform(translateX, translateY, scale);
+            inside += now() - a;
+        }
+
+        @Override
+        public void popTransform() {
+            long a = now();
+            d.popTransform();
+            inside += now() - a;
+        }
     }
 
     // ---- M1a helpers ----
@@ -1714,12 +2303,20 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         @Override
         public void extractRenderState(GuiGraphicsExtractor graphics, DeltaTracker delta) {
             stamp();
+            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0)) {
+                measuredHud(() -> inner.extractRenderState(graphics, delta), () -> ALLOC_CANVAS.begin(graphics));
+                return;
+            }
             inner.extractRenderState(graphics, delta);
         }
         //?} else {
         /*@Override
         public void render(GuiGraphics graphics, DeltaTracker delta) {
             stamp();
+            if (mod && (costLeft > 0 || allocLeft > 0 || profileLeft > 0)) {
+                measuredHud(() -> inner.render(graphics, delta), () -> ALLOC_CANVAS.begin(graphics));
+                return;
+            }
             inner.render(graphics, delta);
         }
         *///?}

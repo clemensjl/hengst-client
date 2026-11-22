@@ -16,6 +16,7 @@ import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
 import io.github.clemensjl.hengst.mod.common.testutil.FixedSizeModule;
+import io.github.clemensjl.hengst.mod.common.testutil.TimedModule;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import java.util.EnumSet;
@@ -512,5 +513,54 @@ class HudRendererTest {
         assertEquals(0, allocated, "allocated " + allocated + " bytes in " + frames + " frames");
         assertEquals(0, allocatedTicks, "allocated " + allocatedTicks + " bytes in " + frames + " ticks");
         assertTrue(counting.pushes > 0 && counting.pushes == counting.pops);
+    }
+
+    @Test
+    void render_times_are_written_per_module_when_asked() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new TimedModule("t1", 40, 20, 10, time, 7_000));
+        reg.register(new TimedModule("t2", 41, 0, 0, time, 9_000));
+        Profile profile = new Profile();
+        profile.module("t1").setEnabled(true);
+        profile.module("t2").setEnabled(true);
+        HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        renderer.rebuild(profile);
+        FakeCanvas canvas = new FakeCanvas();
+        long[] times = new long[2];
+        times[1] = 123;                                   // a skipped module is written too: 0
+        renderer.setRenderTimes(times);
+        renderer.render(canvas, ctx);
+        assertEquals(7_000, times[0]);
+        assertEquals(0, times[1]);
+        renderer.setRenderTimes(null);
+        renderer.render(canvas, ctx);
+        assertEquals(7_000, times[0]);
+        assertEquals(14_000, time.now);                   // the second frame was drawn without writing the array
+    }
+
+    @Test
+    void render_times_are_zero_for_a_failed_module_and_an_array_shorter_than_the_active_list_is_left_alone() {
+        FeatureRegistry reg = new FeatureRegistry();
+        reg.register(new TimedModule("t1", 40, 20, 10, time, 7_000));
+        Thrower thrower = new Thrower("thrower", 41);
+        thrower.inRender = true;
+        reg.register(thrower);
+        Profile profile = new Profile();
+        profile.module("t1").setEnabled(true);
+        profile.module("thrower").setEnabled(true);
+        HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        renderer.rebuild(profile);
+        FakeCanvas canvas = new FakeCanvas();
+        long[] times = {5, 5};
+        renderer.setRenderTimes(times);
+        renderer.render(canvas, ctx);                     // the thrower fails in this frame
+        renderer.render(canvas, ctx);                     // and is skipped in this one
+        assertEquals(7_000, times[0]);
+        assertEquals(0, times[1]);
+        long[] shorter = {5};
+        renderer.setRenderTimes(shorter);
+        renderer.render(canvas, ctx);
+        assertEquals(5, shorter[0]);
+        assertEquals(21_000, time.now);                   // drawn all three times
     }
 }
