@@ -329,6 +329,27 @@ pub async fn get_bytes_limited(
     url: &str,
     limit: usize,
 ) -> Result<Vec<u8>> {
+    let resp = client.get(url).send().await.map_err(|source| Error::Http {
+        url: url.to_string(),
+        source,
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(Error::Status {
+            url: url.to_string(),
+            status: status.as_u16(),
+        });
+    }
+    read_limited(resp, url, limit).await
+}
+
+/// Reads the body of `resp` (from `url`), at most `limit` bytes, enforced on the bytes actually
+/// read; a larger body is `Error::TooLarge` and is never returned.
+pub(crate) async fn read_limited(
+    mut resp: reqwest::Response,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<u8>> {
     let http = |source| Error::Http {
         url: url.to_string(),
         source,
@@ -337,14 +358,6 @@ pub async fn get_bytes_limited(
         url: url.to_string(),
         limit,
     };
-    let mut resp = client.get(url).send().await.map_err(http)?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(Error::Status {
-            url: url.to_string(),
-            status: status.as_u16(),
-        });
-    }
     if resp.content_length().is_some_and(|n| n > limit as u64) {
         return Err(too_large());
     }

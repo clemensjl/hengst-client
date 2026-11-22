@@ -33,7 +33,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Connection tasks alive at once; beyond that the oldest one still reading is closed.
 const MAX_CONNECTIONS: usize = 32;
-/// Pause after a failed accept.
+/// Pause before accepting again after an accept error that may repeat (resources exhausted or
+/// unknown); per-connection errors cause none.
 const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 /// Longest `error` code kept from an authorization response.
 const MAX_ERROR_CODE: usize = 64;
@@ -379,17 +380,23 @@ impl Connections {
         }
     }
 
-    /// Serves an accepted connection. After an accept error the loop pauses briefly, so an error
-    /// that keeps coming back cannot spin it.
-    async fn accepted(
+    /// Serves an accepted connection. An error that concerns only one connection is skipped at
+    /// once; any other accept error (no file handles or buffers left, unknown) holds accepting
+    /// back for [`ACCEPT_BACKOFF`] through `not_before`, so it cannot spin the loop.
+    fn accepted(
         &mut self,
         conn: std::io::Result<TcpStream>,
         port: u16,
         loop_tx: &mpsc::Sender<Callback>,
+        not_before: &mut Option<tokio::time::Instant>,
     ) {
         match conn {
-            Ok(stream) => self.spawn(stream, port, loop_tx),
-            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+            Ok(stream) => {
+                *not_before = None;
+                self.spawn(stream, port, loop_tx);
+            }
+            Err(e) if per_connection(&e) => {}
+            Err(_) => *not_before = Some(tokio::time::Instant::now() + ACCEPT_BACKOFF),
         }
     }
 
@@ -408,6 +415,38 @@ impl Connections {
             .spawn(serve(stream, port, loop_tx.clone(), reading.clone()));
         self.reading.push_back((task, reading));
     }
+}
+
+/// Where the wait loop takes its connections from; tests script accept errors through it.
+trait Acceptor: Send + Sync {
+    /// The next connection. Cancel safe.
+    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<TcpStream>> + Send + '_;
+}
+
+impl Acceptor for Arc<Listeners> {
+    fn accept(&self) -> impl std::future::Future<Output = std::io::Result<TcpStream>> + Send + '_ {
+        accept(&self.v4, self.v6.as_ref())
+    }
+}
+
+/// An accept error that concerns only the one connection (it was reset or aborted before the
+/// accept): accept the next one at once.
+fn per_connection(e: &std::io::Error) -> bool {
+    // Windows reports WSAECONNRESET (10054) and WSAECONNABORTED (10053) as these kinds.
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted};
+    matches!(e.kind(), ConnectionReset | ConnectionAborted | Interrupted)
+}
+
+/// The next connection, but not before `not_before`. The pause lives in this future only, so
+/// the other branches of the wait loop keep being polled while it lasts.
+async fn next_connection<A: Acceptor>(
+    acceptor: &A,
+    not_before: Option<tokio::time::Instant>,
+) -> std::io::Result<TcpStream> {
+    if let Some(at) = not_before {
+        tokio::time::sleep_until(at).await;
+    }
+    acceptor.accept().await
 }
 
 /// The next connection on either loopback listener. Cancel safe.
@@ -521,6 +560,19 @@ impl MicrosoftAuth {
         pages: &BrowserLoginPages,
         timeout: Duration,
     ) -> Result<MsaTokens> {
+        self.finish_with(login, pages, timeout, |listeners| listeners)
+            .await
+    }
+
+    /// [`MicrosoftAuth::finish_browser_login`] with the connection source built by `acceptor`
+    /// from the login's listeners.
+    async fn finish_with<A: Acceptor>(
+        &self,
+        login: BrowserLogin,
+        pages: &BrowserLoginPages,
+        timeout: Duration,
+        acceptor: impl FnOnce(Arc<Listeners>) -> A,
+    ) -> Result<MsaTokens> {
         let BrowserLogin {
             listeners,
             port,
@@ -529,16 +581,19 @@ impl MicrosoftAuth {
             state,
             ..
         } = login;
+        let acceptor = acceptor(listeners);
         let deadline = tokio::time::sleep(timeout);
         tokio::pin!(deadline);
         let (loop_tx, mut callbacks) = mpsc::channel::<Callback>(MAX_CONNECTIONS);
         let mut connections = Connections::new();
+        // Set after an accept error that may repeat; see `Connections::accepted`.
+        let mut not_before: Option<tokio::time::Instant> = None;
 
         let (outcome, reply, written) = loop {
             tokio::select! {
                 _ = &mut deadline => return Err(AuthError::BrowserLoginTimedOut.into()),
-                conn = accept(&listeners.v4, listeners.v6.as_ref()) => {
-                    connections.accepted(conn, port, &loop_tx).await;
+                conn = next_connection(&acceptor, not_before) => {
+                    connections.accepted(conn, port, &loop_tx, &mut not_before);
                 }
                 Some(cb) = callbacks.recv() => {
                     let valid = cb.state.as_deref().is_some_and(|s| same(s, &state));
@@ -572,8 +627,8 @@ impl MicrosoftAuth {
                     tokio::select! {
                         r = &mut exchange => break r,
                         _ = &mut deadline => break Err(AuthError::BrowserLoginTimedOut.into()),
-                        conn = accept(&listeners.v4, listeners.v6.as_ref()) => {
-                            connections.accepted(conn, port, &loop_tx).await;
+                        conn = next_connection(&acceptor, not_before) => {
+                            connections.accepted(conn, port, &loop_tx, &mut not_before);
                         }
                         Some(cb) = callbacks.recv() => {
                             let _ = cb.reply.send(Reply::BadRequest);
@@ -1701,6 +1756,220 @@ mod tests {
             200
         );
         assert!(finish.await.unwrap().is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_connection_reset_before_accept_arrives_as_a_dead_socket() {
+        // Observed on Windows 11: a client that connects and resets (SO_LINGER 0) before the
+        // listener accepts is still accepted; its first read fails with ConnectionReset. A
+        // platform that reports it from accept instead must report a per-connection kind.
+        let l = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let s = TcpStream::connect(l.local_addr().unwrap()).await.unwrap();
+        s.set_zero_linger().unwrap();
+        drop(s);
+        match tokio::time::timeout(Duration::from_secs(10), l.accept())
+            .await
+            .expect("the reset connection is reported")
+        {
+            Ok((mut c, _)) => {
+                let mut buf = [0u8; 8];
+                assert!(matches!(c.read(&mut buf).await, Err(_) | Ok(0)));
+            }
+            Err(e) => assert!(per_connection(&e), "{:?} {:?}", e.kind(), e.raw_os_error()),
+        }
+    }
+
+    #[tokio::test]
+    async fn connections_reset_before_accept_do_not_disturb_the_login() {
+        let (auth, _server) = auth_with_token_endpoint(1).await;
+        let login = auth.start_browser_login().await.unwrap();
+        let port = redirect_port(&login);
+        let state = login.state_for_test().to_string();
+        let finish = tokio::spawn(async move {
+            auth.finish_browser_login(login, &pages(), Duration::from_secs(30))
+                .await
+        });
+        for _ in 0..50 {
+            let s = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+            s.set_zero_linger().unwrap();
+            drop(s);
+        }
+        let r = tokio::time::timeout(
+            Duration::from_secs(10),
+            callback(port, &format!("code=abc&state={state}")),
+        )
+        .await
+        .expect("resets do not hold up the redirect");
+        assert_eq!(r.status(), 200);
+        assert!(finish.await.unwrap().is_ok());
+    }
+
+    /// The login's listeners with scripted accept errors: `script(n)` for the n-th accept (from
+    /// 0) returns the error to report instead of waiting for a connection.
+    struct Scripted<F> {
+        listeners: Arc<Listeners>,
+        script: F,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl<F: Fn(usize) -> Option<std::io::Error> + Send + Sync> Acceptor for Scripted<F> {
+        async fn accept(&self) -> std::io::Result<TcpStream> {
+            let n = self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(e) = (self.script)(n) {
+                // A real accept error comes back through the reactor; so does this one.
+                tokio::task::yield_now().await;
+                return Err(e);
+            }
+            self.listeners.accept().await
+        }
+    }
+
+    struct ScriptedRun {
+        finish: tokio::task::JoinHandle<Result<MsaTokens>>,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+        port: u16,
+        state: String,
+        _server: MockServer,
+    }
+
+    /// Runs `finish` with scripted accept errors in front of the real listeners.
+    async fn finish_scripted<F>(script: F, timeout: Duration, token_calls: u64) -> ScriptedRun
+    where
+        F: Fn(usize) -> Option<std::io::Error> + Send + Sync + 'static,
+    {
+        let (auth, server) = auth_with_token_endpoint(token_calls).await;
+        let login = auth.start_browser_login().await.unwrap();
+        let port = redirect_port(&login);
+        let state = login.state_for_test().to_string();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        let finish = tokio::spawn(async move {
+            auth.finish_with(login, &pages(), timeout, move |listeners| Scripted {
+                listeners,
+                script,
+                calls: counted,
+            })
+            .await
+        });
+        ScriptedRun {
+            finish,
+            calls,
+            port,
+            state,
+            _server: server,
+        }
+    }
+
+    fn resource_error() -> std::io::Error {
+        if cfg!(windows) {
+            std::io::Error::from_raw_os_error(10024) // WSAEMFILE
+        } else {
+            std::io::Error::other("too many open files")
+        }
+    }
+
+    #[tokio::test]
+    async fn a_burst_of_reset_errors_does_not_delay_the_callback() {
+        let burst = 400;
+        let run = finish_scripted(
+            move |n| {
+                (n < burst).then(|| {
+                    std::io::Error::from(if n % 2 == 0 {
+                        std::io::ErrorKind::ConnectionReset
+                    } else {
+                        std::io::ErrorKind::ConnectionAborted
+                    })
+                })
+            },
+            Duration::from_secs(60),
+            1,
+        )
+        .await;
+        // With a pause per error this would take burst * 50 ms = 20 s.
+        let r = tokio::time::timeout(
+            Duration::from_secs(5),
+            callback(run.port, &format!("code=abc&state={}", run.state)),
+        )
+        .await
+        .expect("per-connection accept errors must not pause accepting");
+        assert_eq!(r.status(), 200);
+        assert!(run.finish.await.unwrap().is_ok());
+        assert!(run.calls.load(Ordering::SeqCst) > burst);
+    }
+
+    #[tokio::test]
+    async fn endless_reset_errors_do_not_stop_the_deadline() {
+        let run = finish_scripted(
+            |_| Some(std::io::Error::from(std::io::ErrorKind::ConnectionReset)),
+            Duration::from_millis(300),
+            0,
+        )
+        .await;
+        let err = tokio::time::timeout(Duration::from_secs(10), run.finish)
+            .await
+            .expect("the deadline fires")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)),
+            "{err}"
+        );
+        assert!(run.calls.load(Ordering::SeqCst) > 1);
+    }
+
+    #[tokio::test]
+    async fn a_resource_error_pauses_accepting_but_the_deadline_still_fires() {
+        let started = tokio::time::Instant::now();
+        let run = finish_scripted(|_| Some(resource_error()), Duration::from_millis(300), 0).await;
+        let err = tokio::time::timeout(Duration::from_secs(10), run.finish)
+            .await
+            .expect("the deadline fires during the pauses")
+            .unwrap()
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)),
+            "{err}"
+        );
+        // About one accept per pause, never a tight loop (an upper bound: load cannot break it).
+        let n = run.calls.load(Ordering::SeqCst);
+        let max = (started.elapsed().as_millis() / ACCEPT_BACKOFF.as_millis()) as usize + 2;
+        assert!(n >= 2 && n <= max, "{n} accepts, at most {max} expected");
+    }
+
+    #[tokio::test]
+    async fn accepting_resumes_after_a_resource_error() {
+        let run =
+            finish_scripted(|n| (n < 3).then(resource_error), Duration::from_secs(60), 1).await;
+        let r = tokio::time::timeout(
+            Duration::from_secs(10),
+            callback(run.port, &format!("code=abc&state={}", run.state)),
+        )
+        .await
+        .expect("accepting resumes");
+        assert_eq!(r.status(), 200);
+        assert!(run.finish.await.unwrap().is_ok());
+    }
+
+    #[test]
+    fn only_per_connection_errors_skip_the_pause() {
+        use std::io::{Error as IoError, ErrorKind};
+        for kind in [
+            ErrorKind::ConnectionReset,
+            ErrorKind::ConnectionAborted,
+            ErrorKind::Interrupted,
+        ] {
+            assert!(per_connection(&IoError::from(kind)), "{kind:?}");
+        }
+        assert!(!per_connection(&resource_error()));
+        assert!(!per_connection(&IoError::other("unknown")));
+        #[cfg(windows)]
+        for raw in [10053, 10054] {
+            assert!(per_connection(&IoError::from_raw_os_error(raw)), "{raw}");
+        }
+        #[cfg(windows)]
+        for raw in [10024, 10055] {
+            assert!(!per_connection(&IoError::from_raw_os_error(raw)), "{raw}");
+        }
     }
 
     #[tokio::test]
