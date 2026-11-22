@@ -49,7 +49,10 @@ export function useSignIn(language: Language): SignIn {
   const cancelled = useRef(false);
   /** The dialog is being left: nothing may be started any more (a switch under way is dropped). */
   const leaving = useRef(false);
-  /** The answer of the cancel that a switch to the code sent: did it end the browser sign-in? */
+  /**
+   * The answer of the cancel that a switch to the code sent: may the dialog close (the browser
+   * sign-in ended, or the backend could not answer)?
+   */
   const switchResult = useRef<Promise<boolean>>(Promise.resolve(false));
 
   // A failure, or any other end, makes the next start possible.
@@ -141,7 +144,9 @@ export function useSignIn(language: Language): SignIn {
     if (s.phase !== "waitingBrowser" || switching.current) return;
     switching.current = true;
     const answer = api.loginCancel(s.op);
-    switchResult.current = answer.catch(() => false);
+    // A rejected cancel lets the dialog close, as in `cancel` without a switch: leaving cancels
+    // once more as a best effort (unmount, below).
+    switchResult.current = answer.catch(() => true);
     void answer
       .then((cancelled) => {
         if (!cancelled) {

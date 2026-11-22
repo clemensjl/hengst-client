@@ -13,7 +13,6 @@ export interface Banned {
 const literal = (s: string): RegExp => new RegExp(s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
 const word = (s: string, why: string): Banned => ({ why, pattern: literal(s), sample: s });
 
-/** The utilities that take a color; an alpha modifier or an arbitrary value on them is ruled out. */
 // Every utility that takes a color, including the side-specific borders (border-t, border-x ...),
 // the ring offset and the placeholder color.
 const COLOR_UTILITY =
@@ -107,7 +106,7 @@ export const BANNED_CLASSES: Banned[] = [
   {
     why: ARBITRARY_COLOR_WHY,
     pattern: new RegExp(
-      `\\b${VARIANTS}${COLOR_UTILITY}-\\[(?:#|rgb|hsl|oklch|oklab|lab|lch|color-mix|color:)`,
+      `\\b${VARIANTS}${COLOR_UTILITY}-\\[(?:#|rgb|hsl|oklch|oklab|lab\\(|lch\\(|color-mix|color:)`,
       "i",
     ),
     sample: "text-[#123456]",

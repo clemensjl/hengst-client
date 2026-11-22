@@ -50,7 +50,7 @@ function DialogCloseButton({ label, busyReason }: { label: string; busyReason?: 
               <Button
                 variant="ghost"
                 size="icon"
-                className="absolute top-3 right-3 aria-disabled:text-text-disabled"
+                className="absolute top-3 right-3 aria-disabled:text-text-disabled aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent"
               />
             }
           />

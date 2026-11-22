@@ -729,6 +729,28 @@ async fn browser_stalls_scenario_leaves_the_browser_waiting_and_the_code_pending
     let code = a.start_device_login().await.unwrap();
     assert!(start.elapsed() < Duration::from_secs(5));
     assert!(!code.user_code.is_empty());
+    // The code stays pending for the two polls, each token answer taking a second; then it is
+    // granted, after the same delay.
+    let dc = start_device(&s).await;
+    for _ in 0..2 {
+        let asked = Instant::now();
+        let r = poll_device(&s, "e2e-client", &dc).await;
+        assert_eq!((r.status, r.error()), (400, "authorization_pending"));
+        assert!(
+            asked.elapsed() >= Duration::from_secs(1),
+            "{:?}",
+            asked.elapsed()
+        );
+    }
+    let asked = Instant::now();
+    let r = poll_device(&s, "e2e-client", &dc).await;
+    assert_eq!(r.status, 200);
+    assert!(r.body["access_token"].is_string());
+    assert!(
+        asked.elapsed() >= Duration::from_secs(1),
+        "{:?}",
+        asked.elapsed()
+    );
     // The authorize page does not answer: the browser sign-in would wait.
     let login = a.start_browser_login().await.unwrap();
     let asked = reqwest::Client::builder()

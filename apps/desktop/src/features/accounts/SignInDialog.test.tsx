@@ -507,6 +507,21 @@ describe("SignInDialog focus, announcements and races", () => {
     expect(toast).toHaveBeenCalledWith("Signed in as Jonas_T");
   });
 
+  it("escape during the switch whose cancel is rejected closes the dialog, as a plain cancel does", async () => {
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "browserOpened" }));
+    backend.cancelFails = { code: "internal", params: {}, action: null, detail: "x" };
+    fireEvent.click(button("Use a code instead"));
+    fireEvent.keyDown(document.body, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 50));
+    });
+    // No code sign-in was started after the close.
+    expect(backend.count("login_start")).toBe(1);
+  });
+
   it("the close button during completing shows why it waits, as a tooltip as well as a description", async () => {
     const backend = await setup();
     await startBrowser(backend);
@@ -516,6 +531,10 @@ describe("SignInDialog focus, announcements and races", () => {
     });
     const x = await within(dialog()).findByRole("button", { name: "Close" });
     expect(x.getAttribute("aria-disabled")).toBe("true");
+    // It does not look pressable: the ghost hover and pressed fills are switched off while it waits
+    // (jsdom computes no :hover, so the classes are what can be checked here).
+    expect(x.className).toContain("aria-disabled:hover:bg-transparent");
+    expect(x.className).toContain("aria-disabled:active:bg-transparent");
     fireEvent.keyDown(document.body, { key: "Tab" });
     act(() => x.focus());
     await waitFor(() =>

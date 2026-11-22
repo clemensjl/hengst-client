@@ -327,6 +327,8 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
       "placeholder-[#fff]",
       "bg-[rgb(1,2,3)]",
       "hover:bg-[oklch(0.5_0.1_20)]",
+      "bg-[lab(50%_10_10)]",
+      "text-[lch(50%_10_10)]",
     ];
     for (const sample of arbitrary) {
       expect(bannedIn(`<i className="${sample}" />`), sample).toContain(ARBITRARY_COLOR_WHY);
@@ -345,6 +347,9 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
       "bg-transparent",
       "text-[13px]",
       "border-t-border-strong",
+      // Only the color functions are literals: a value that merely starts with "lab" or "lch" is not.
+      "text-[label]",
+      "bg-[lchart]",
     ]) {
       const flagged = bannedIn(fine).filter(
         (why) => why === PALETTE_WHY || why === ARBITRARY_COLOR_WHY,
