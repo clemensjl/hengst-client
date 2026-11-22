@@ -363,7 +363,15 @@ describe("recycleBinFailed reasons", () => {
   });
 
   it("puts the reason before the generic sentence, in de and en", () => {
-    for (const reason of ["tooLarge", "binOff", "noBin", "inUse", "other"]) {
+    for (const reason of [
+      "tooLarge",
+      "binOff",
+      "noBin",
+      "inUse",
+      "other",
+      "unchecked",
+      "unknown",
+    ]) {
       for (const t of [de, en]) {
         const generic = describeError(failed(), t).body;
         const body = describeError(failed(reason), t).body;

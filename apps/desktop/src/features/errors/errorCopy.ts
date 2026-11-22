@@ -59,9 +59,9 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   busy: keys("busy"),
 };
 
-/** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
-const REASONS = ["tooLarge", "binOff", "noBin", "inUse", "other"];
+const REASONS = ["tooLarge", "binOff", "noBin", "inUse", "other", "unchecked", "unknown"];
 
+/** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
 const COPY_PARAMS = ["loader", "game", "version", "name"] as const;
 
 /**

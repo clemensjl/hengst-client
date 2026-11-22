@@ -21,6 +21,18 @@
 //!    (No, then Cancel, then close) and gives up after a time limit.
 //! 3. `confirm`: after a successful call the folder must be found in the bin (`trash::os_limited`),
 //!    otherwise the outcome is `Unconfirmed` and the UI says so instead of "in the Recycle Bin".
+//!    The bin is listed before and after the call; only an item that is new counts.
+//!
+//! All three layers look at ONE path: the parent of the folder is canonicalized once (links in it
+//! are resolved, the `\\?\` prefix is dropped) and the folder name is joined to it; the final
+//! component is never resolved. `trash` canonicalizes the parent the same way, so the volume that is
+//! checked is the volume that is changed.
+//!
+//! Known limits: the `RecycleBinSize` policy and the legacy global `NukeOnDelete` are not read
+//! (layers 2 and 3 cover them); `trash::os_limited::list` fails as a whole when one item of the bin
+//! cannot be read, which ends as `Unconfirmed` (safe, but the user may see it for a folder that is
+//! in the bin). After a time-out the shell thread keeps running: a later move is refused until it
+//! has ended, and its outcome is reported as unknown.
 
 use hengst_core::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -39,8 +51,12 @@ pub enum BinReason {
     NoBin,
     /// A file in the folder is in use.
     InUse,
-    /// Anything else, including facts that could not be read.
+    /// Windows would not move the folder, for a reason it did not name.
     Other,
+    /// The Recycle Bin settings could not be checked, so Windows was never asked.
+    Unchecked,
+    /// The outcome is not known (the shell call timed out or is still running).
+    Unknown,
 }
 
 impl BinReason {
@@ -51,6 +67,8 @@ impl BinReason {
             BinReason::NoBin => "noBin",
             BinReason::InUse => "inUse",
             BinReason::Other => "other",
+            BinReason::Unchecked => "unchecked",
+            BinReason::Unknown => "unknown",
         }
     }
 }
@@ -66,8 +84,10 @@ pub enum RecycleFailure {
     InUse(String),
     /// Windows asked to delete permanently and the app declined (the shell reported failure).
     Declined(String),
-    /// The shell call did not finish in time.
+    /// The shell call did not finish in time; it may still be running.
     TimedOut,
+    /// An earlier shell call has not ended yet (after a time-out); nothing was started.
+    StillRunning,
     /// The shell reported another failure.
     Failed(String),
     /// The shell reported success, but the folder is gone and was not found in the bin (or the
@@ -80,6 +100,7 @@ impl RecycleFailure {
         match self {
             RecycleFailure::Refused(r) => *r,
             RecycleFailure::InUse(_) => BinReason::InUse,
+            RecycleFailure::TimedOut | RecycleFailure::StillRunning => BinReason::Unknown,
             _ => BinReason::Other,
         }
     }
@@ -99,6 +120,9 @@ impl std::fmt::Display for RecycleFailure {
                 "Windows asked to delete the folder permanently instead of moving it to the Recycle Bin; the app declined: {d}"
             ),
             RecycleFailure::TimedOut => write!(f, "the Recycle Bin call did not finish in time"),
+            RecycleFailure::StillRunning => {
+                write!(f, "an earlier Recycle Bin call is still running")
+            }
             RecycleFailure::Failed(d) => write!(f, "the Recycle Bin did not take the folder: {d}"),
             RecycleFailure::Unconfirmed(d) => write!(
                 f,
@@ -152,20 +176,20 @@ pub fn precheck(f: &VolumeFacts) -> std::result::Result<(), BinReason> {
     match f.fixed_drive {
         Some(true) => {}
         Some(false) => return Err(BinReason::NoBin),
-        None => return Err(BinReason::Other),
+        None => return Err(BinReason::Unchecked),
     }
     match f.no_recycle_policy {
         Some(false) => {}
         Some(true) => return Err(BinReason::BinOff),
-        None => return Err(BinReason::Other),
+        None => return Err(BinReason::Unchecked),
     }
     match f.nuke_on_delete {
         Some(0) => {}
         Some(_) => return Err(BinReason::BinOff),
-        None => return Err(BinReason::Other),
+        None => return Err(BinReason::Unchecked),
     }
     let (Some(capacity), Some(bytes)) = (f.max_capacity_mb, f.folder_bytes) else {
-        return Err(BinReason::Other);
+        return Err(BinReason::Unchecked);
     };
     if bytes > size_limit(capacity) {
         return Err(BinReason::TooLarge);
@@ -190,22 +214,69 @@ fn normalized(p: &Path) -> String {
         .to_string()
 }
 
-/// Whether the bin holds an item named like `path` that came from its parent folder and was
-/// deleted at or after `since` (Unix seconds, with a few seconds of slack for clock rounding).
-/// The parent is compared as given and canonicalized: `trash` records the canonical parent.
-pub fn in_bin(entries: &[BinEntry], path: &Path, since: i64) -> bool {
+/// Whether `after` holds an item named like `path` that came from its parent folder and is not in
+/// `before` (the bin as it was before the call). An older item with the same name and parent
+/// (delete, recreate the same id, delete again) does not count.
+pub fn in_bin(before: &[BinEntry], after: &[BinEntry], path: &Path) -> bool {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return false;
     };
-    let mut parents = vec![normalized(parent)];
-    if let Ok(canonical) = parent.canonicalize() {
-        parents.push(normalized(&canonical));
+    let parent = normalized(parent);
+    after
+        .iter()
+        .any(|e| e.name == name && normalized(&e.original_parent) == parent && !before.contains(e))
+}
+
+/// `\\?\C:\x` -> `C:\x`, `\\?\UNC\host\share` -> `\\host\share`.
+pub fn strip_verbatim(p: &Path) -> PathBuf {
+    let text = p.to_string_lossy();
+    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
+        PathBuf::from(format!("\\\\{rest}"))
+    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
+        PathBuf::from(rest)
+    } else {
+        p.to_path_buf()
     }
-    entries.iter().any(|e| {
-        e.name == name
-            && e.deleted_at >= since - 10
-            && parents.contains(&normalized(&e.original_parent))
-    })
+}
+
+/// The one path every layer looks at: the parent canonicalized (links resolved, no `\\?\`), the
+/// name joined. The name itself is not resolved.
+pub fn resolve_target(path: &Path) -> std::io::Result<PathBuf> {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return Err(std::io::Error::other("the folder has no parent or no name"));
+    };
+    Ok(strip_verbatim(&parent.canonicalize()?).join(name))
+}
+
+/// Resolves `path` and runs the pre-check on the facts read from the RESOLVED path.
+pub fn checked_target(
+    path: &Path,
+    facts: &dyn Fn(&Path) -> VolumeFacts,
+) -> std::result::Result<PathBuf, RecycleFailure> {
+    let target = resolve_target(path).map_err(|_| RecycleFailure::Refused(BinReason::Unchecked))?;
+    precheck(&facts(&target)).map_err(RecycleFailure::Refused)?;
+    Ok(target)
+}
+
+/// While a shell call runs (also one that was given up on), no second one starts.
+static SHELL_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Held by the thread that calls the shell, until the call has really ended.
+pub struct ShellSlot;
+
+impl ShellSlot {
+    pub fn claim() -> Option<ShellSlot> {
+        SHELL_RUNNING
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            .then_some(ShellSlot)
+    }
+}
+
+impl Drop for ShellSlot {
+    fn drop(&mut self) {
+        SHELL_RUNNING.store(false, Ordering::SeqCst);
+    }
 }
 
 /// The `HRESULT`s of the copy engine for "in use by another process" (source and destination).
@@ -286,17 +357,26 @@ const SHELL_LIMIT: Duration = Duration::from_secs(120);
 /// The trasher the app uses. Blocking: call it from a blocking thread. On failure the error is a
 /// core `Io` error carrying a `RecycleFailure` (`failure_of`).
 pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
-    precheck(&platform::volume_facts(path)).map_err(|r| fail(RecycleFailure::Refused(r)))?;
-    let started = platform::unix_seconds();
-    let target = path.to_path_buf();
-    let outcome = run_guarded(move || trash::delete(&target), SHELL_LIMIT);
+    let target = checked_target(path, &platform::volume_facts).map_err(fail)?;
+    let before =
+        platform::bin_entries().map_err(|_| fail(RecycleFailure::Refused(BinReason::Unchecked)))?;
+    let slot = ShellSlot::claim().ok_or_else(|| fail(RecycleFailure::StillRunning))?;
+    let shell_target = target.clone();
+    let outcome = run_guarded(
+        move || {
+            // Released when the shell call ends, also when the caller gave up on it.
+            let _slot = slot;
+            trash::delete(&shell_target)
+        },
+        SHELL_LIMIT,
+    );
     match outcome {
         Err(GuardError::TimedOut) => Err(fail(RecycleFailure::TimedOut)),
         Err(GuardError::Panicked) => Err(fail(RecycleFailure::Failed(
             "the Recycle Bin call stopped unexpectedly".into(),
         ))),
         Ok((Err(e), declined)) => Err(fail(classify(&e, declined))),
-        Ok((Ok(()), _)) => confirm(path, started),
+        Ok((Ok(()), _)) => confirm(&target, &before),
     }
 }
 
@@ -311,12 +391,13 @@ fn classify(e: &trash::Error, declined: u32) -> RecycleFailure {
     }
 }
 
-/// After a success: the folder must be in the bin. If it is not, say so: never "in the bin".
-fn confirm(path: &Path, started: i64) -> Result<()> {
+/// After a success: the folder must be in the bin as a new item. If it is not, say so: never "in
+/// the bin".
+fn confirm(path: &Path, before: &[BinEntry]) -> Result<()> {
     match platform::bin_entries() {
-        Ok(entries) if in_bin(&entries, path, started) => Ok(()),
+        Ok(after) if in_bin(before, &after, path) => Ok(()),
         Ok(_) => Err(fail(RecycleFailure::Unconfirmed(
-            "no matching item in the Recycle Bin".into(),
+            "no new matching item in the Recycle Bin".into(),
         ))),
         Err(e) => Err(fail(RecycleFailure::Unconfirmed(format!(
             "the Recycle Bin could not be read: {e}"
@@ -345,12 +426,6 @@ mod platform {
 
     pub fn current_thread_id() -> u32 {
         unsafe { GetCurrentThreadId() }
-    }
-
-    pub fn unix_seconds() -> i64 {
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_secs() as i64)
     }
 
     pub fn bin_entries() -> Result<Vec<BinEntry>, String> {
@@ -506,9 +581,6 @@ mod platform {
     pub fn current_thread_id() -> u32 {
         1
     }
-    pub fn unix_seconds() -> i64 {
-        0
-    }
     pub fn bin_entries() -> Result<Vec<BinEntry>, String> {
         Err("the Recycle Bin is read on Windows only".to_string())
     }
@@ -606,12 +678,18 @@ mod tests {
             f(&mut v);
             precheck(&v)
         };
-        assert_eq!(with(|v| v.fixed_drive = None), Err(BinReason::Other));
-        assert_eq!(with(|v| v.nuke_on_delete = None), Err(BinReason::Other));
-        assert_eq!(with(|v| v.no_recycle_policy = None), Err(BinReason::Other));
-        assert_eq!(with(|v| v.max_capacity_mb = None), Err(BinReason::Other));
-        assert_eq!(with(|v| v.folder_bytes = None), Err(BinReason::Other));
-        assert_eq!(precheck(&VolumeFacts::default()), Err(BinReason::Other));
+        assert_eq!(with(|v| v.fixed_drive = None), Err(BinReason::Unchecked));
+        assert_eq!(with(|v| v.nuke_on_delete = None), Err(BinReason::Unchecked));
+        assert_eq!(
+            with(|v| v.no_recycle_policy = None),
+            Err(BinReason::Unchecked)
+        );
+        assert_eq!(
+            with(|v| v.max_capacity_mb = None),
+            Err(BinReason::Unchecked)
+        );
+        assert_eq!(with(|v| v.folder_bytes = None), Err(BinReason::Unchecked));
+        assert_eq!(precheck(&VolumeFacts::default()), Err(BinReason::Unchecked));
     }
 
     #[test]
@@ -649,40 +727,128 @@ mod tests {
     }
 
     #[test]
-    fn the_bin_check_wants_name_parent_and_a_recent_deletion() {
+    fn the_bin_check_wants_name_parent_and_a_new_item() {
         let path = Path::new("C:\\Data\\instances\\9.9");
-        let now = 10_000;
-        let bin = [entry("9.9", "C:\\Data\\instances", now)];
-        assert!(in_bin(&bin, path, now));
+        let ours = entry("9.9", "C:\\Data\\instances", 100);
+        assert!(in_bin(&[], std::slice::from_ref(&ours), path));
         // Case, slashes and a verbatim prefix do not matter.
+        let spelled = entry("9.9", "\\\\?\\c:/data/instances/", 100);
+        assert!(in_bin(&[], &[spelled], path));
+        // Wrong name, wrong parent: not this folder.
+        assert!(!in_bin(
+            &[],
+            &[entry("9.8", "C:\\Data\\instances", 100)],
+            path
+        ));
+        assert!(!in_bin(
+            &[],
+            &[entry("9.9", "C:\\Other\\instances", 100)],
+            path
+        ));
+        assert!(!in_bin(&[], &[], path));
+        assert!(!in_bin(&[], std::slice::from_ref(&ours), Path::new("C:\\")));
+    }
+
+    #[test]
+    fn an_older_item_with_the_same_name_and_parent_does_not_confirm_a_new_delete() {
+        // Delete, recreate the same id, delete again: the first item is in the bin before the
+        // second call, so only an item that appeared during the call counts.
+        let path = Path::new("C:\\Data\\instances\\9.9");
+        let old = entry("9.9", "C:\\Data\\instances", 100);
+        assert!(!in_bin(
+            std::slice::from_ref(&old),
+            std::slice::from_ref(&old),
+            path
+        ));
+        let new = entry("9.9", "C:\\Data\\instances", 105);
         assert!(in_bin(
-            &[entry("9.9", "\\\\?\\c:/data/instances/", now)],
-            path,
-            now
+            std::slice::from_ref(&old),
+            &[old.clone(), new],
+            path
         ));
-        // Wrong name, wrong parent, deleted long before: not this deletion.
-        assert!(!in_bin(
-            &[entry("9.8", "C:\\Data\\instances", now)],
-            path,
-            now
-        ));
-        assert!(!in_bin(
-            &[entry("9.9", "C:\\Other\\instances", now)],
-            path,
-            now
-        ));
-        assert!(!in_bin(
-            &[entry("9.9", "C:\\Data\\instances", now - 3600)],
-            path,
-            now
-        ));
-        assert!(in_bin(
-            &[entry("9.9", "C:\\Data\\instances", now - 5)],
-            path,
-            now
-        ));
-        assert!(!in_bin(&[], path, now));
-        assert!(!in_bin(&bin, Path::new("C:\\"), now));
+    }
+
+    #[test]
+    fn the_verbatim_prefix_is_dropped_in_both_forms() {
+        assert_eq!(
+            strip_verbatim(Path::new("\\\\?\\C:\\Data\\x")),
+            Path::new("C:\\Data\\x")
+        );
+        assert_eq!(
+            strip_verbatim(Path::new("\\\\?\\UNC\\host\\share\\x")),
+            Path::new("\\\\host\\share\\x")
+        );
+        assert_eq!(strip_verbatim(Path::new("C:\\x")), Path::new("C:\\x"));
+    }
+
+    #[test]
+    fn only_one_shell_call_runs_at_a_time() {
+        // Serialized with other users of the one slot by taking it for the whole test.
+        let first = ShellSlot::claim();
+        assert!(first.is_some());
+        assert!(ShellSlot::claim().is_none());
+        drop(first);
+        assert!(ShellSlot::claim().is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn every_layer_looks_at_the_resolved_path_not_at_the_path_through_a_junction() {
+        // <tmp>/real/instances/9.9 reached through the junction <tmp>/link -> <tmp>/real.
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real");
+        std::fs::create_dir_all(real.join("instances/9.9")).unwrap();
+        let link = dir.path().join("link");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success(), "{made:?}");
+        let through = link.join("instances").join("9.9");
+
+        let resolved = resolve_target(&through).unwrap();
+        let wanted = strip_verbatim(&real.canonicalize().unwrap())
+            .join("instances")
+            .join("9.9");
+        assert_eq!(resolved, wanted);
+        assert!(!resolved.to_string_lossy().starts_with("\\\\?\\"));
+        assert!(!resolved.to_string_lossy().contains("link"));
+
+        // The facts function is handed the resolved path, and so is the caller.
+        let asked = std::cell::RefCell::new(Vec::new());
+        let facts = |p: &Path| {
+            asked.borrow_mut().push(p.to_path_buf());
+            good()
+        };
+        assert_eq!(checked_target(&through, &facts).unwrap(), wanted);
+        assert_eq!(*asked.borrow(), std::slice::from_ref(&wanted));
+
+        // A refusing fact on the resolved volume refuses; an unresolvable parent refuses too.
+        let off = |_: &Path| VolumeFacts {
+            nuke_on_delete: Some(1),
+            ..good()
+        };
+        assert_eq!(
+            checked_target(&through, &off),
+            Err(RecycleFailure::Refused(BinReason::BinOff))
+        );
+        assert_eq!(
+            checked_target(&dir.path().join("missing/9.9"), &facts),
+            Err(RecycleFailure::Refused(BinReason::Unchecked))
+        );
+        // The final component is not resolved: a link as the folder itself stays as it is.
+        let final_link = dir.path().join("final");
+        let made = std::process::Command::new("cmd")
+            .args(["/c", "mklink", "/J"])
+            .arg(&final_link)
+            .arg(&real)
+            .output()
+            .unwrap();
+        assert!(made.status.success());
+        let kept = resolve_target(&final_link).unwrap();
+        assert_eq!(kept.file_name().unwrap(), "final");
     }
 
     #[test]
@@ -726,7 +892,12 @@ mod tests {
         assert_eq!(failure_of(&Error::Io(std::io::Error::other("x"))), None);
         assert_eq!(failure_of(&Error::Cancelled), None);
         assert_eq!(RecycleFailure::InUse("x".into()).reason(), BinReason::InUse);
-        assert_eq!(RecycleFailure::TimedOut.reason(), BinReason::Other);
+        assert_eq!(RecycleFailure::TimedOut.reason(), BinReason::Unknown);
+        assert_eq!(RecycleFailure::StillRunning.reason(), BinReason::Unknown);
+        assert_eq!(
+            RecycleFailure::Declined("x".into()).reason(),
+            BinReason::Other
+        );
     }
 
     #[test]

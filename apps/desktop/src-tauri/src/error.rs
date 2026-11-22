@@ -254,6 +254,45 @@ pub fn redact(text: &str) -> String {
     out
 }
 
+/// Replaces every absolute Windows path in `text` (`C:\Users\name\...`, also with doubled
+/// backslashes as a `Debug` text has them) by `...\<last component>`, so a detail shown to the user
+/// or copied into a bug report does not carry the Windows user name. A path ends at `: `, a quote,
+/// a line break or the end of the text.
+pub fn strip_paths(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let starts_path = chars[i].is_ascii_alphabetic()
+            && chars.get(i + 1) == Some(&':')
+            && matches!(chars.get(i + 2), Some('\\') | Some('/'))
+            && (i == 0 || !chars[i - 1].is_ascii_alphanumeric());
+        if !starts_path {
+            out.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        let mut end = i;
+        while end < chars.len() {
+            let c = chars[end];
+            let colon_space = c == ':' && end > i + 1 && chars.get(end + 1) == Some(&' ');
+            if colon_space || matches!(c, '"' | '\'' | '\n' | '\r') {
+                break;
+            }
+            end += 1;
+        }
+        let path: String = chars[i..end].iter().collect();
+        let last = path
+            .rsplit(['\\', '/'])
+            .find(|part| !part.is_empty())
+            .unwrap_or("");
+        out.push_str("...\\");
+        out.push_str(last);
+        i = end;
+    }
+    out
+}
+
 /// Removes the query part of every http(s) URL in a message, so logs and error details never carry
 /// tokens or other parameters. A `?` outside a URL (ordinary prose) stays.
 pub fn strip_query(text: &str) -> String {
@@ -778,6 +817,32 @@ mod mapping_tests {
                 .collect();
             assert_eq!(got, params, "params of {error:?}");
         }
+    }
+
+    #[test]
+    fn paths_in_a_detail_lose_their_user_folder() {
+        let single = "windows error: C:\\Users\\jelec\\AppData\\Local\\Temp\\hengst\\t2: the destination is in use";
+        assert_eq!(
+            strip_paths(single),
+            "windows error: ...\\t2: the destination is in use"
+        );
+        // The `Debug` form of an error doubles every backslash and quotes the text.
+        let doubled = "Os { code: 1, description: \"windows error: C:\\\\Users\\\\jelec\\\\x\\\\t2: in use\" }";
+        let cleaned = strip_paths(doubled);
+        assert!(
+            !cleaned.contains("jelec") && !cleaned.contains("Users"),
+            "{cleaned}"
+        );
+        assert!(cleaned.contains("...\\t2: in use"), "{cleaned}");
+        // Text without a path, and a lone drive letter in prose, stay as they are.
+        assert_eq!(strip_paths("nothing to see: a:b"), "nothing to see: a:b");
+        assert_eq!(strip_paths("C:/Users/jelec/x"), "...\\x");
+        assert_eq!(
+            strip_paths("two C:\\a\\b and D:\\c\\d"),
+            // Paths may contain spaces, so a path runs to its terminator and the text after the
+            // first drive path goes with it. Nothing of a path is ever left.
+            "two ...\\d"
+        );
     }
 
     #[test]

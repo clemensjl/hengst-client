@@ -6,7 +6,7 @@ use crate::dto::instances::{
     LoaderKindDto, LoaderVersionDto, LoaderVersionsDto, LOADER_ORDER,
 };
 use crate::dto::versions::VersionFilter;
-use crate::error::{error_dto, instance_id_error, redact};
+use crate::error::{error_dto, instance_id_error, redact, strip_paths};
 use crate::events::{AppEvent, DataScope};
 use crate::recycle::{failure_of, BinReason, RecycleFailure};
 use crate::state::AppState;
@@ -50,7 +50,7 @@ fn with_id(code: ErrorCode, id: &str, detail: String) -> ErrorDto {
         code,
         params: BTreeMap::from([("id".to_string(), id.to_string())]),
         action: None,
-        detail: redact(&detail),
+        detail: redact(&strip_paths(&detail)),
     }
 }
 

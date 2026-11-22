@@ -37,10 +37,16 @@ async fn fixture() -> Fixture {
     let server = MockServer::builder().start().await;
     mount_mojang(&server).await;
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(
+    let mut state = AppState::new(
         Paths::new(dir.path().join("home")),
         endpoints(&server.uri()),
     );
+    // No test can reach the real Recycle Bin: a test that deletes sets its own trasher.
+    state.trasher = Arc::new(|_| -> CoreResult<()> {
+        Err(Error::Io(std::io::Error::other(
+            "the test fixture has no Recycle Bin",
+        )))
+    });
     let log: Log = Arc::default();
     let sink = log.clone();
     state
@@ -864,9 +870,11 @@ async fn every_recycle_failure_reaches_the_ui_with_its_reason() {
         (RecycleFailure::Refused(BinReason::BinOff), "binOff"),
         (RecycleFailure::Refused(BinReason::NoBin), "noBin"),
         (RecycleFailure::Refused(BinReason::Other), "other"),
+        (RecycleFailure::Refused(BinReason::Unchecked), "unchecked"),
+        (RecycleFailure::StillRunning, "unknown"),
         (RecycleFailure::InUse("x".into()), "inUse"),
         (RecycleFailure::Declined("x".into()), "other"),
-        (RecycleFailure::TimedOut, "other"),
+        (RecycleFailure::TimedOut, "unknown"),
         (RecycleFailure::Failed("x".into()), "other"),
     ] {
         fx.state.trasher = failing_with(failure.clone());
@@ -911,4 +919,37 @@ async fn a_folder_gone_but_not_found_in_the_bin_is_never_reported_as_in_the_bin(
     // The instance is gone, so the list refreshes and the selection no longer names it.
     assert_eq!(selected(&fx), None);
     assert!(fx.events().contains(&instances_changed()));
+}
+
+#[tokio::test]
+async fn the_detail_of_a_recycle_bin_error_carries_no_user_folder() {
+    let mut fx = fixture().await;
+    make(&fx, "A", "9.9");
+    fx.state.trasher = Arc::new(|_| -> CoreResult<()> {
+        Err(Error::Io(std::io::Error::other(
+            "windows error: C:\\Users\\jelec\\AppData\\Local\\Temp\\home\\instances\\9.9: the destination is in use by another process (0x80270028)",
+        )))
+    });
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinFailed);
+    assert!(
+        !dto.detail.contains("jelec") && !dto.detail.contains("Users"),
+        "{}",
+        dto.detail
+    );
+    assert!(
+        dto.detail.contains("...\\9.9: the destination is in use"),
+        "{}",
+        dto.detail
+    );
+}
+
+#[tokio::test]
+async fn the_fixture_cannot_reach_the_real_recycle_bin() {
+    let fx = fixture().await;
+    let missing = fx.dir.path().join("nothing");
+    let err = (fx.state.trasher)(&missing).unwrap_err();
+    assert!(err.to_string().contains("no Recycle Bin"), "{err}");
 }
