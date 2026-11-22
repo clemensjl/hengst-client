@@ -155,6 +155,19 @@ pub fn error_dto(e: &Error) -> ErrorDto {
     }
 }
 
+/// The error for an instance id the web view sent. An id that is not even a folder name (it fails
+/// the id grammar, `UnsafePath`) names no instance: it is "not found", not "the downloaded data
+/// was rejected", and "refresh the list" would not help, so it carries no action.
+pub fn instance_id_error(e: &Error, id: &str) -> ErrorDto {
+    match e {
+        Error::UnsafePath(_) => ErrorDto {
+            action: None,
+            ..error_dto(&Error::InstanceNotFound { id: id.to_string() })
+        },
+        other => error_dto(other),
+    }
+}
+
 /// serde quotes the offending value in its messages (a token in a response, a line of the accounts
 /// file), so a JSON error is reduced to its category and position.
 fn json_detail(e: &serde_json::Error) -> String {
@@ -940,12 +953,13 @@ mod mapping_tests {
             ErrorCode::InstanceLinked => "instanceLinked",
             ErrorCode::RecycleBinPartial => "recycleBinPartial",
             ErrorCode::RecycleBinFailed => "recycleBinFailed",
+            ErrorCode::RecycleBinUnconfirmed => "recycleBinUnconfirmed",
             ErrorCode::InstanceRunning => "instanceRunning",
             ErrorCode::Busy => "busy",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 50] = [
+    const ALL_CODES: [ErrorCode; 51] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -994,6 +1008,7 @@ mod mapping_tests {
         ErrorCode::InstanceLinked,
         ErrorCode::RecycleBinPartial,
         ErrorCode::RecycleBinFailed,
+        ErrorCode::RecycleBinUnconfirmed,
         ErrorCode::InstanceRunning,
         ErrorCode::Busy,
     ];

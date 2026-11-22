@@ -54,11 +54,14 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   instanceLinked: keys("instanceLinked"),
   recycleBinPartial: keys("recycleBinPartial"),
   recycleBinFailed: keys("recycleBinFailed"),
+  recycleBinUnconfirmed: keys("recycleBinUnconfirmed"),
   instanceRunning: keys("instanceRunning"),
   busy: keys("busy"),
 };
 
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
+const REASONS = ["tooLarge", "binOff", "noBin", "inUse", "other"];
+
 const COPY_PARAMS = ["loader", "game", "version", "name"] as const;
 
 /**
@@ -95,6 +98,11 @@ export function describeError(
   let body = t(lookup("body"), values);
   const hint = code === "noLoaderVersions" ? dto.params.hint : undefined;
   if (hint) body = `${body} ${t(`errors.noLoaderVersions.hint.${hint}`)}`;
+  // Why a folder could not go to the Recycle Bin comes first; an unknown reason is left out.
+  const reason = code === "recycleBinFailed" ? dto.params.reason : undefined;
+  if (reason && REASONS.includes(reason)) {
+    body = `${t(`errors.recycleBinFailed.reason.${reason}`)} ${body}`;
+  }
   return { title: t(lookup("title"), values), body, actionLabel: actionLabel(dto.action, t) };
 }
 

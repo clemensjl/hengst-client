@@ -6,8 +6,9 @@ use crate::dto::instances::{
     LoaderKindDto, LoaderVersionDto, LoaderVersionsDto, LOADER_ORDER,
 };
 use crate::dto::versions::VersionFilter;
-use crate::error::{error_dto, redact};
+use crate::error::{error_dto, instance_id_error, redact};
 use crate::events::{AppEvent, DataScope};
+use crate::recycle::{failure_of, BinReason, RecycleFailure};
 use crate::state::AppState;
 use hengst_core::auth::unix_now;
 use hengst_core::download::http_client;
@@ -17,6 +18,7 @@ use hengst_core::manifest::VersionManifest;
 use hengst_core::Error;
 use std::collections::{BTreeMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::State;
 
 fn join_error(_: tauri::Error) -> ErrorDto {
@@ -36,21 +38,19 @@ fn busy() -> ErrorDto {
     }
 }
 
+fn with_reason(code: ErrorCode, id: &str, reason: BinReason, detail: String) -> ErrorDto {
+    let mut dto = with_id(code, id, detail);
+    dto.params
+        .insert("reason".to_string(), reason.key().to_string());
+    dto
+}
+
 fn with_id(code: ErrorCode, id: &str, detail: String) -> ErrorDto {
     ErrorDto {
         code,
         params: BTreeMap::from([("id".to_string(), id.to_string())]),
         action: None,
         detail: redact(&detail),
-    }
-}
-
-/// The error for an instance id the web view sent. An id that is not even a folder name names no
-/// instance, so it is "not found", not "the downloaded data was rejected".
-fn id_error(e: &Error, id: &str) -> ErrorDto {
-    match e {
-        Error::UnsafePath(_) => error_dto(&Error::InstanceNotFound { id: id.to_string() }),
-        other => error_dto(other),
     }
 }
 
@@ -172,7 +172,27 @@ pub async fn loader_versions_impl(
 /// waits for a running create or delete, so it never adopts a folder that is half made. A failing
 /// adoption is logged and does not fail the list.
 pub async fn instances_list_impl(state: &AppState) -> Result<Vec<InstanceDto>, ErrorDto> {
-    let _guard = state.instance_lock.lock().await;
+    instances_list_within(state, LOCK_WAIT).await
+}
+
+/// How long `instances_list` and `instance_select` wait for the instance lock. A create or delete
+/// that hangs (a dialog nobody answers, a slow disk) must not freeze them: they answer `busy`.
+const LOCK_WAIT: Duration = Duration::from_secs(10);
+
+async fn lock_within(
+    state: &AppState,
+    wait: Duration,
+) -> Result<tokio::sync::MutexGuard<'_, ()>, ErrorDto> {
+    tokio::time::timeout(wait, state.instance_lock.lock())
+        .await
+        .map_err(|_| busy())
+}
+
+pub async fn instances_list_within(
+    state: &AppState,
+    wait: Duration,
+) -> Result<Vec<InstanceDto>, ErrorDto> {
+    let _guard = lock_within(state, wait).await?;
     let manifest = match state.versions.get(&state.paths).await {
         Ok(m) => m,
         Err(e) => {
@@ -193,11 +213,13 @@ pub async fn instances_list_impl(state: &AppState) -> Result<Vec<InstanceDto>, E
         (adopted, instances::list(&paths))
     })
     .await;
-    // Adoption writes files, also when the task fails afterwards.
+    // Only a real change is announced: the UI reloads the list on this event, so an event for
+    // "nothing changed" (a failed adoption wrote nothing) would be an endless reload loop. A task
+    // that failed may have written files first.
     let may_have_changed = match &done {
-        Err(_) | Ok((Some(Err(_)), _)) => true,
+        Err(_) => true,
         Ok((Some(Ok(adopted)), _)) => !adopted.is_empty(),
-        Ok((None, _)) => false,
+        Ok((Some(Err(_)) | None, _)) => false,
     };
     if may_have_changed {
         changed(state, DataScope::Instances);
@@ -290,11 +312,22 @@ pub async fn instance_create_impl(
 
 /// Selects an instance that can be read. One that cannot is refused with its own code.
 pub async fn instance_select_impl(state: &AppState, id: String) -> Result<(), ErrorDto> {
+    instance_select_within(state, id, LOCK_WAIT).await
+}
+
+/// Under the instance lock: a select never lands after the delete of the same instance and leaves
+/// a selection that names nothing.
+pub async fn instance_select_within(
+    state: &AppState,
+    id: String,
+    wait: Duration,
+) -> Result<(), ErrorDto> {
+    let _guard = lock_within(state, wait).await?;
     let (paths, wanted) = (state.paths.clone(), id.clone());
     tauri::async_runtime::spawn_blocking(move || instances::load(&paths, &wanted))
         .await
         .map_err(join_error)?
-        .map_err(|e| id_error(&e, &id))?;
+        .map_err(|e| instance_id_error(&e, &id))?;
     let settings = state.settings.clone();
     tauri::async_runtime::spawn_blocking(move || {
         settings.update(|s| {
@@ -309,14 +342,20 @@ pub async fn instance_select_impl(state: &AppState, id: String) -> Result<(), Er
     Ok(())
 }
 
-/// Moves an instance's folder to the Recycle Bin (`AppState::trasher`). Never deletes for good.
+/// Moves an instance's folder to the Recycle Bin (`AppState::trasher`). Never deletes on purpose.
 ///
 /// - The instance the app is preparing or running is refused (`InstanceRunning`). An instance the
-///   CLI started is not known to the app and not covered.
-/// - If the trasher fails with the folder untouched, the error is `RecycleBinFailed`, nothing
-///   changed and no event is sent. Only the trasher's own failure gets that code.
-/// - If it fails after the folder is gone, the instance is gone: success. If it fails halfway,
-///   the error is `RecycleBinPartial`.
+///   CLI started is not known to the app and not covered. Task 15 sets `active_instance`; it must
+///   do that while holding `instance_lock`, or a delete can slip in between the check and the
+///   start.
+/// - If the trasher fails with the folder untouched, the error is `RecycleBinFailed` with a
+///   `reason` param, nothing changed and no event is sent. Only the trasher's own failure gets
+///   that code.
+/// - If it fails after the folder is gone, the instance is gone: success. The one exception is
+///   the trasher's own "gone, but not found in the bin" (`RecycleFailure::Unconfirmed`): the
+///   folder is gone, the selection is cleared and the list refreshes, but the answer is
+///   `RecycleBinUnconfirmed`, never "in the Recycle Bin". If it fails halfway, the error is
+///   `RecycleBinPartial`.
 pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), ErrorDto> {
     let Ok(_guard) = state.instance_lock.try_lock() else {
         return Err(busy());
@@ -334,20 +373,21 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
         ));
     }
     let (paths, trasher, wanted) = (state.paths.clone(), state.trasher.clone(), id.clone());
-    let trash_failure: Arc<Mutex<Option<String>>> = Arc::default();
-    let seen = trash_failure.clone();
+    // What the trasher itself reported, if it failed: its typed failure (if it is one of ours) and
+    // its text.
+    type Recorded = Option<(Option<RecycleFailure>, String)>;
+    let recorded: Arc<Mutex<Recorded>> = Arc::default();
+    let seen = recorded.clone();
     let done = tauri::async_runtime::spawn_blocking(move || {
         instances::delete(&paths, &wanted, &|folder| {
             trasher(folder).inspect_err(|e| {
-                *seen.lock().unwrap_or_else(|p| p.into_inner()) = Some(e.to_string());
+                *seen.lock().unwrap_or_else(|p| p.into_inner()) =
+                    Some((failure_of(e).cloned(), e.to_string()));
             })
         })
     })
     .await;
-    let trash_failure = trash_failure
-        .lock()
-        .unwrap_or_else(|p| p.into_inner())
-        .take();
+    let recorded = recorded.lock().unwrap_or_else(|p| p.into_inner()).take();
     let result = done.map_err(|e| {
         // The task may have moved the folder before it failed.
         changed(state, DataScope::Instances);
@@ -360,9 +400,12 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
             return Err(error_dto(&e));
         }
         Err(e) => {
-            return Err(match trash_failure {
-                Some(detail) => with_id(ErrorCode::RecycleBinFailed, &id, detail),
-                None => id_error(&e, &id),
+            return Err(match recorded {
+                Some((failure, detail)) => {
+                    let reason = failure.map_or(BinReason::Other, |f| f.reason());
+                    with_reason(ErrorCode::RecycleBinFailed, &id, reason, detail)
+                }
+                None => instance_id_error(&e, &id),
             })
         }
     }
@@ -385,6 +428,9 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
             error_dto(&e).detail
         ),
         Err(_) => {}
+    }
+    if let Some((Some(RecycleFailure::Unconfirmed(_)), detail)) = recorded {
+        return Err(with_id(ErrorCode::RecycleBinUnconfirmed, &id, detail));
     }
     Ok(())
 }

@@ -1,6 +1,6 @@
 use crate::dto::error::{ErrorDto, UrlTarget};
 use crate::dto::instances::OpenTarget;
-use crate::error::error_dto;
+use crate::error::{error_dto, instance_id_error};
 use crate::open::{explore_folder, open_folder, open_target, resolve_location};
 use crate::state::AppState;
 use tauri::State;
@@ -25,11 +25,9 @@ pub fn open_url<R: tauri::Runtime>(
 pub async fn open_location(state: State<'_, AppState>, target: OpenTarget) -> Result<(), ErrorDto> {
     let paths = state.paths.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = resolve_location(&paths, &target).map_err(|e| match (&e, &target) {
-            (hengst_core::Error::UnsafePath(_), OpenTarget::Instance { id }) => {
-                error_dto(&hengst_core::Error::InstanceNotFound { id: id.clone() })
-            }
-            _ => error_dto(&e),
+        let dir = resolve_location(&paths, &target).map_err(|e| match &target {
+            OpenTarget::Instance { id } => instance_id_error(&e, id),
+            OpenTarget::DataDir => error_dto(&e),
         })?;
         open_folder(&dir, explore_folder)
     })

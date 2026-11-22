@@ -77,8 +77,15 @@ pub fn open_folder<E: Display>(
 #[cfg(windows)]
 pub fn explore_folder(dir: &Path) -> Result<(), String> {
     use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // The shell wants COM on the calling thread (this runs on a pooled blocking thread that has
+    // none). A thread that is already initialized differently (a negative result) is left as it is
+    // and not uninitialized; otherwise the call is balanced below.
+    let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     let verb: Vec<u16> = "explore".encode_utf16().chain(Some(0)).collect();
     let file: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: both strings are NUL-terminated and outlive the call; the other arguments are null.
@@ -92,6 +99,9 @@ pub fn explore_folder(dir: &Path) -> Result<(), String> {
             SW_SHOWNORMAL,
         )
     } as isize;
+    if com >= 0 {
+        unsafe { CoUninitialize() };
+    }
     // A value above 32 is success; below that it is an error code.
     if result > 32 {
         Ok(())

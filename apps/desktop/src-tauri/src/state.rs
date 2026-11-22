@@ -26,7 +26,9 @@ pub struct AppState {
     /// `instance_delete`: a list never adopts a folder that a create has made but not yet filled.
     pub instance_lock: tokio::sync::Mutex<()>,
     /// The instance the app is preparing or running. Always `None` in 4a; 4b sets it. An instance
-    /// the CLI started is invisible to the app and not covered.
+    /// the CLI started is invisible to the app and not covered. Task 15 must set it while holding
+    /// `instance_lock`: `instance_delete` reads it under that lock, so a start that sets it
+    /// outside the lock can be overtaken by a delete between its check and its start.
     pub active_instance: Mutex<Option<String>>,
     pub trasher: Trasher,
 }

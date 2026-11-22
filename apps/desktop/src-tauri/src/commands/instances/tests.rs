@@ -779,10 +779,13 @@ async fn a_linked_instance_folder_has_its_own_code_and_its_target_stays_untouche
 
 #[test]
 fn id_errors_map_only_the_grammar_failure_to_not_found() {
-    let dto = id_error(&Error::UnsafePath("..\\x".into()), "..\\x");
+    let dto = instance_id_error(&Error::UnsafePath("..\\x".into()), "..\\x");
     assert_eq!(dto.code, ErrorCode::InstanceNotFound);
+    assert_eq!(dto.action, None, "refreshing the list cannot help");
+    // A folder name that names nothing keeps "refresh the list".
+    let dto = instance_id_error(&Error::InstanceNotFound { id: "x".into() }, "x");
     assert_eq!(dto.action, Some(crate::dto::error::ErrorAction::Retry));
-    let dto = id_error(&Error::InstanceLinked { id: "a".into() }, "a");
+    let dto = instance_id_error(&Error::InstanceLinked { id: "a".into() }, "a");
     assert_eq!(dto.code, ErrorCode::InstanceLinked);
     // A path outside the id gate keeps the data-rejected code.
     assert_eq!(
@@ -792,14 +795,120 @@ fn id_errors_map_only_the_grammar_failure_to_not_found() {
 }
 
 #[tokio::test]
-async fn the_state_starts_with_no_active_instance_and_a_real_trasher() {
+async fn the_state_starts_with_no_active_instance() {
+    // The default trasher is the real Recycle Bin one: it is never called by a normal test.
     let state = AppState::new(
         Paths::new(tempfile::tempdir().unwrap().path()),
         Endpoints::default(),
     );
     assert_eq!(*state.active_instance.lock().unwrap(), None);
-    // The default trasher is the Recycle Bin one: it is never called here (a missing path fails
-    // before anything is moved).
-    let missing = std::env::temp_dir().join("hengst-recycle-test-missing-folder");
-    assert!((state.trasher)(&missing).is_err());
+}
+
+#[tokio::test]
+async fn a_failing_adoption_sends_no_event_so_a_reloading_ui_cannot_loop() {
+    let fx = fixture().await;
+    game_versions_impl(
+        &fx.state,
+        VersionFilter {
+            release: true,
+            snapshot: false,
+            beta: false,
+            alpha: false,
+        },
+    )
+    .await
+    .unwrap();
+    // `instances` is a file: reading the folder fails for adopt and for list, nothing changes.
+    std::fs::create_dir_all(fx.paths().root()).unwrap();
+    std::fs::write(fx.paths().root().join("instances"), b"x").unwrap();
+    fx.clear_events();
+    assert!(instances_list_impl(&fx.state).await.is_err());
+    assert!(fx.events().is_empty(), "{:?}", fx.events());
+}
+
+#[tokio::test]
+async fn the_list_gives_up_waiting_for_a_hung_create_or_delete() {
+    let fx = fixture().await;
+    let _held = fx.state.instance_lock.lock().await;
+    let started = std::time::Instant::now();
+    let dto = instances_list_within(&fx.state, Duration::from_millis(150))
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::Busy);
+    assert!(started.elapsed() < Duration::from_secs(5));
+}
+
+#[tokio::test]
+async fn select_waits_for_the_lock_but_not_forever() {
+    let fx = fixture().await;
+    make(&fx, "A", "9.9");
+    let _held = fx.state.instance_lock.lock().await;
+    let dto = instance_select_within(&fx.state, "9.9".into(), Duration::from_millis(150))
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::Busy);
+    assert_eq!(selected(&fx), None);
+}
+
+fn failing_with(failure: crate::recycle::RecycleFailure) -> crate::state::Trasher {
+    Arc::new(move |_| -> CoreResult<()> { Err(Error::Io(std::io::Error::other(failure.clone()))) })
+}
+
+#[tokio::test]
+async fn every_recycle_failure_reaches_the_ui_with_its_reason() {
+    use crate::recycle::{BinReason, RecycleFailure};
+    let mut fx = fixture().await;
+    make(&fx, "A", "9.9");
+    for (failure, reason) in [
+        (RecycleFailure::Refused(BinReason::TooLarge), "tooLarge"),
+        (RecycleFailure::Refused(BinReason::BinOff), "binOff"),
+        (RecycleFailure::Refused(BinReason::NoBin), "noBin"),
+        (RecycleFailure::Refused(BinReason::Other), "other"),
+        (RecycleFailure::InUse("x".into()), "inUse"),
+        (RecycleFailure::Declined("x".into()), "other"),
+        (RecycleFailure::TimedOut, "other"),
+        (RecycleFailure::Failed("x".into()), "other"),
+    ] {
+        fx.state.trasher = failing_with(failure.clone());
+        let dto = instance_delete_impl(&fx.state, "9.9".into())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::RecycleBinFailed, "{failure:?}");
+        assert_eq!(
+            dto.params.get("reason").map(String::as_str),
+            Some(reason),
+            "{failure:?}"
+        );
+        assert!(fx.paths().instance("9.9").join("instance.json").is_file());
+    }
+    // A trasher that is not ours still gets the generic reason.
+    fx.state.trasher = failing_trasher(Arc::default());
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.params.get("reason").map(String::as_str), Some("other"));
+}
+
+#[tokio::test]
+async fn a_folder_gone_but_not_found_in_the_bin_is_never_reported_as_in_the_bin() {
+    use crate::recycle::RecycleFailure;
+    let mut fx = fixture().await;
+    make(&fx, "A", "9.9");
+    select(&fx, Some("9.9"));
+    fx.state.trasher = Arc::new(|p| {
+        // What the shell did: the folder is gone and the bin does not have it.
+        std::fs::remove_dir_all(p)?;
+        Err(Error::Io(std::io::Error::other(
+            RecycleFailure::Unconfirmed("no matching item in the Recycle Bin".into()),
+        )))
+    });
+    fx.clear_events();
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinUnconfirmed);
+    assert!(!fx.paths().instance("9.9").exists());
+    // The instance is gone, so the list refreshes and the selection no longer names it.
+    assert_eq!(selected(&fx), None);
+    assert!(fx.events().contains(&instances_changed()));
 }

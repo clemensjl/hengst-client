@@ -70,8 +70,11 @@ pub enum ErrorCode {
     RecycleBinPartial,
     /// The Recycle Bin did not take the folder (too large for it, a drive without one, the
     /// Windows setting "Don't move files to the Recycle Bin", the folder in use). Nothing was
-    /// deleted, never permanently; `params.id`.
+    /// deleted; `params.id` and `params.reason` (`tooLarge`, `binOff`, `noBin`, `inUse`, `other`).
     RecycleBinFailed,
+    /// The folder is gone, but Windows did not report putting it into the Recycle Bin and the app
+    /// did not find it there: it may have been removed permanently. `params.id`.
+    RecycleBinUnconfirmed,
     /// The instance is being prepared or runs; it cannot be deleted now. `params.id`.
     InstanceRunning,
     /// Another create or delete of an instance is in progress.

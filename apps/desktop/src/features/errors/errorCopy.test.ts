@@ -134,6 +134,7 @@ const ALL_CODES = [
   "instanceLinked",
   "recycleBinPartial",
   "recycleBinFailed",
+  "recycleBinUnconfirmed",
   "instanceRunning",
   "busy",
 ];
@@ -165,7 +166,7 @@ describe("wire codes and copy groups", () => {
         const known = ALL_CODES.includes(group) || NON_CODE_GROUPS.includes(group);
         expect(known, key).toBe(true);
         // A context group sits directly under a code: errors.<code>.<context>.title|body.
-        if (ALL_CODES.includes(group) && !["title", "body", "hint"].includes(second)) {
+        if (ALL_CODES.includes(group) && !["title", "body", "hint", "reason"].includes(second)) {
           expect(CONTEXTS, key).toContain(second);
         }
       }
@@ -349,6 +350,34 @@ describe("copy of DESIGN.md 11.5 and 11.6", () => {
     expect(en(errorKeys.appNotApproved.title)).toBe("Sign-in is not available yet");
     expect(en(errorKeys.appNotApproved.body)).toBe(
       "Mojang has not approved Hengst Client's Microsoft sign-in yet. Until then, accounts cannot be added. Your account is fine, nothing needs to change on your side.",
+    );
+  });
+});
+
+describe("recycleBinFailed reasons", () => {
+  const failed = (reason?: string): ErrorDto => ({
+    code: "recycleBinFailed",
+    params: reason ? { id: "9.9", reason } : { id: "9.9" },
+    action: null,
+    detail: "",
+  });
+
+  it("puts the reason before the generic sentence, in de and en", () => {
+    for (const reason of ["tooLarge", "binOff", "noBin", "inUse", "other"]) {
+      for (const t of [de, en]) {
+        const generic = describeError(failed(), t).body;
+        const body = describeError(failed(reason), t).body;
+        expect(body, reason).toBe(`${t(`errors.recycleBinFailed.reason.${reason}`)} ${generic}`);
+        expect(body.endsWith("."), reason).toBe(true);
+      }
+    }
+  });
+
+  it("ignores a reason this bundle does not know and never adds one to other codes", () => {
+    expect(describeError(failed("surprise"), en).body).toBe(describeError(failed(), en).body);
+    const other: ErrorDto = { ...failed("tooLarge"), code: "recycleBinPartial" };
+    expect(describeError(other, en).body).toBe(
+      describeError({ ...other, params: { id: "9.9" } }, en).body,
     );
   });
 });
