@@ -28,6 +28,7 @@ pub const ALL_TYPES: &[Export] = &[
     instances::InstanceLoaderDto::export_all,
     instances::InstanceStatus::export_all,
     instances::InstanceDto::export_all,
+    instances::InstancesDto::export_all,
     instances::LoaderRequestDto::export_all,
     instances::CreateInstanceRequest::export_all,
     instances::OpenTarget::export_all,

@@ -2,8 +2,8 @@ use crate::accounts::internal;
 use crate::commands::versions::game_versions_impl;
 use crate::dto::error::{ErrorCode, ErrorDto};
 use crate::dto::instances::{
-    CreateInstanceRequest, InstanceDto, InstanceLoaderDto, InstanceStatus, LoaderInfoDto,
-    LoaderKindDto, LoaderVersionDto, LoaderVersionsDto, LOADER_ORDER,
+    CreateInstanceRequest, InstanceDto, InstanceLoaderDto, InstanceStatus, InstancesDto,
+    LoaderInfoDto, LoaderKindDto, LoaderVersionDto, LoaderVersionsDto, LOADER_ORDER,
 };
 use crate::dto::versions::VersionFilter;
 use crate::error::{error_dto, instance_id_error, redact, strip_paths};
@@ -170,8 +170,9 @@ pub async fn loader_versions_impl(
 /// The instances, newest played first. Folders the CLI made are adopted first when the version
 /// list is saved (without it nothing is adopted: whether a name is a game version is unknown). It
 /// waits for a running create or delete, so it never adopts a folder that is half made. A failing
-/// adoption is logged and does not fail the list.
-pub async fn instances_list_impl(state: &AppState) -> Result<Vec<InstanceDto>, ErrorDto> {
+/// adoption is logged and does not fail the list. Entries that could not be read make the answer
+/// `incomplete`.
+pub async fn instances_list_impl(state: &AppState) -> Result<InstancesDto, ErrorDto> {
     instances_list_within(state, LOCK_WAIT).await
 }
 
@@ -191,7 +192,7 @@ async fn lock_within(
 pub async fn instances_list_within(
     state: &AppState,
     wait: Duration,
-) -> Result<Vec<InstanceDto>, ErrorDto> {
+) -> Result<InstancesDto, ErrorDto> {
     let _guard = lock_within(state, wait).await?;
     let manifest = match state.versions.get(&state.paths).await {
         Ok(m) => m,
@@ -235,11 +236,14 @@ pub async fn instances_list_within(
     if listing.incomplete {
         eprintln!("instances: some entries of the instances folder could not be read");
     }
-    Ok(listing
-        .items
-        .iter()
-        .map(|l| listed_dto(l, selected.as_deref()))
-        .collect())
+    Ok(InstancesDto {
+        instances: listing
+            .items
+            .iter()
+            .map(|l| listed_dto(l, selected.as_deref()))
+            .collect(),
+        incomplete: listing.incomplete,
+    })
 }
 
 /// Makes an instance and selects it. The game version must be in the version list, the loader
@@ -450,7 +454,7 @@ pub async fn loader_versions(
 }
 
 #[tauri::command]
-pub async fn instances_list(state: State<'_, AppState>) -> Result<Vec<InstanceDto>, ErrorDto> {
+pub async fn instances_list(state: State<'_, AppState>) -> Result<InstancesDto, ErrorDto> {
     instances_list_impl(&state).await
 }
 

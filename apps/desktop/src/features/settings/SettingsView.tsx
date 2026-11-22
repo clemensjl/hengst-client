@@ -1,11 +1,15 @@
-import { CircleAlertIcon } from "lucide-react";
+import { CircleAlertIcon, FolderOpenIcon } from "lucide-react";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { Delayed } from "@/components/Delayed";
 import { PathText } from "@/components/PathText";
 import { Segments, type SegmentOption } from "@/components/Segments";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { AboutPanel } from "@/features/about/AboutPanel";
+import { describeError } from "@/features/errors/errorCopy";
+import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
+import { api, IpcError } from "@/ipc/client";
 import type { Lang } from "@/i18n";
 import type { ThemeSetting } from "@/theme/theme";
 import { useApp } from "@/stores/app";
@@ -79,6 +83,47 @@ function HelpLine({ failed, slow }: { failed: boolean; slow: boolean }) {
   );
 }
 
+/** DESIGN.md 11.7 "Datenordner": the path, then "Open folder"; a refusal shows inline under it. */
+function OpenDataFolder() {
+  const { t } = useTranslation();
+  const [error, setError] = useState<ErrorDto | null>(null);
+  const busy = useRef(false);
+  const open = async () => {
+    if (busy.current) return;
+    busy.current = true;
+    setError(null);
+    try {
+      await api.openLocation({ kind: "dataDir" });
+    } catch (e) {
+      setError(
+        e instanceof IpcError
+          ? e.dto
+          : { code: "internal", params: {}, action: null, detail: String(e) },
+      );
+    } finally {
+      busy.current = false;
+    }
+  };
+  const copy = error ? describeError(error, t, "folder") : null;
+  return (
+    <div className="mt-4 flex flex-col items-start gap-2">
+      <Button onClick={() => void open()}>
+        <FolderOpenIcon aria-hidden="true" />
+        {t("instances.openFolder")}
+      </Button>
+      {copy && (
+        <div role="alert" className="flex items-start gap-2 text-small">
+          <CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+          <span className="flex flex-col">
+            <span className="text-danger">{copy.title}</span>
+            <span className="text-muted-foreground">{copy.body}</span>
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SettingsSkeleton() {
   return (
     <Delayed>
@@ -146,7 +191,10 @@ export function SettingsView() {
       </Section>
       <Section title={t("settings.dataFolder.title")} titleId={ids[2]}>
         {info.data ? (
-          <PathText path={info.data.dataDir} />
+          <>
+            <PathText path={info.data.dataDir} />
+            <OpenDataFolder />
+          </>
         ) : (
           <Delayed>
             <Skeleton className="h-5 w-80" />

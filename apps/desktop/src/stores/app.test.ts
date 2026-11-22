@@ -172,3 +172,67 @@ describe("accounts", () => {
     expect(calls.filter(([cmd]) => cmd === "accounts_list")).toHaveLength(1);
   });
 });
+
+describe("instances", () => {
+  const row = (id: string) => ({
+    id,
+    name: id,
+    game: "1.21.11",
+    loader: null,
+    memoryMb: null,
+    lastPlayed: null,
+    status: "ready",
+    reason: null,
+    selected: false,
+  });
+
+  it("loads the list and whether it is complete", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "instances_list") return { instances: [row("a")], incomplete: true };
+    });
+    await useApp.getState().loadInstances();
+    const s = useApp.getState();
+    expect(s.instances.status).toBe("ready");
+    expect(s.instances.data?.map((i) => i.id)).toEqual(["a"]);
+    expect(s.instancesIncomplete).toBe(true);
+  });
+
+  it("keeps the shown list on a failed reload and carries the error", async () => {
+    let fail = false;
+    mockIPC((cmd) => {
+      if (cmd !== "instances_list") return;
+      if (fail) throw { code: "busy", params: {}, action: null, detail: "x" };
+      return { instances: [row("a")], incomplete: false };
+    });
+    await useApp.getState().loadInstances();
+    fail = true;
+    await useApp.getState().loadInstances();
+    const s = useApp.getState().instances;
+    expect(s.status).toBe("error");
+    expect(s.error?.code).toBe("busy");
+    expect(s.data?.map((i) => i.id)).toEqual(["a"]);
+  });
+
+  it("an instances change from the backend reloads a list that was loaded before", async () => {
+    let lists = 0;
+    let sink: ((e: unknown) => void) | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "subscribe_events") {
+        sink = (args as { channel: { onmessage: (e: unknown) => void } }).channel.onmessage;
+        return;
+      }
+      if (cmd === "instances_list") {
+        lists += 1;
+        return { instances: [row(`v${lists}`)], incomplete: false };
+      }
+    });
+    await useApp.getState().startEventLoop();
+    // Not loaded yet: nobody shows the list, nothing is fetched.
+    sink!({ event: "dataChanged", data: { scope: "instances" } });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(lists).toBe(0);
+    await useApp.getState().loadInstances();
+    sink!({ event: "dataChanged", data: { scope: "instances" } });
+    await vi.waitFor(() => expect(useApp.getState().instances.data?.[0].id).toBe("v2"));
+  });
+});

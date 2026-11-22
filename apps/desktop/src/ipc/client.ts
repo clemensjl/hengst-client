@@ -5,6 +5,7 @@ import type { CreateInstanceRequest } from "./bindings/CreateInstanceRequest";
 import type { ErrorDto } from "./bindings/ErrorDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
 import type { InstanceDto } from "./bindings/InstanceDto";
+import type { InstancesDto } from "./bindings/InstancesDto";
 import type { Language } from "./bindings/Language";
 import type { LoaderInfoDto } from "./bindings/LoaderInfoDto";
 import type { LoaderKindDto } from "./bindings/LoaderKindDto";
@@ -88,7 +89,8 @@ export const api = {
   /** One request to the loader service; `recommended` is the build the core would pick. */
   loaderVersions: (kind: LoaderKindDto, game: string): Promise<LoaderVersionsDto> =>
     guard(invoke<LoaderVersionsDto>("loader_versions", { kind, game })),
-  instancesList: (): Promise<InstanceDto[]> => guard(invoke<InstanceDto[]>("instances_list")),
+  /** The instances, newest played first, and whether every folder could be read. */
+  instancesList: (): Promise<InstancesDto> => guard(invoke<InstancesDto>("instances_list")),
   /** Sends slugs and versions only, never a display name. Selects the new instance. */
   instanceCreate: (req: CreateInstanceRequest): Promise<InstanceDto> =>
     guard(invoke<InstanceDto>("instance_create", { req })),

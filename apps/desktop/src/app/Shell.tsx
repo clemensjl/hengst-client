@@ -9,6 +9,8 @@ interface Props {
   view: View;
   onSelect: (view: View) => void;
   devBuild: boolean;
+  /** The view's primary action, left of the account chip (DESIGN.md 7.2). */
+  action?: ReactNode;
   children: ReactNode;
 }
 
@@ -30,7 +32,7 @@ function useScrolled(
 }
 
 /** DESIGN.md 7.2: sidebar, then the content column with its 56 px header and the scrolling view. */
-export function Shell({ view, onSelect, devBuild, children }: Props) {
+export function Shell({ view, onSelect, devBuild, action, children }: Props) {
   const { t } = useTranslation();
   const scroller = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
@@ -49,8 +51,8 @@ export function Shell({ view, onSelect, devBuild, children }: Props) {
           {/* A long title wraps to a second line (the header grows) instead of being cut: a tooltip
               would not be reachable by keyboard (DESIGN.md 10.15). */}
           <h1 className="min-w-40 font-display text-display">{title}</h1>
-          {/* The view's primary action (Task 11) goes here, then the account chip. */}
           <div className="ml-auto flex shrink-0 items-center gap-4" data-slot="header-end">
+            {action}
             <AccountChip />
           </div>
         </header>

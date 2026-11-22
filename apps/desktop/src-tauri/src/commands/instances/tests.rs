@@ -372,7 +372,11 @@ async fn list_adopts_cli_folders_when_the_manifest_is_cached() {
     std::fs::create_dir_all(fx.paths().instance("9.9-fabric")).unwrap();
     std::fs::create_dir_all(fx.paths().instance("notes")).unwrap();
     // Without a saved version list nothing is adopted.
-    assert!(instances_list_impl(&fx.state).await.unwrap().is_empty());
+    assert!(instances_list_impl(&fx.state)
+        .await
+        .unwrap()
+        .instances
+        .is_empty());
     assert!(!fx
         .paths()
         .instance("9.9-fabric")
@@ -391,7 +395,7 @@ async fn list_adopts_cli_folders_when_the_manifest_is_cached() {
     )
     .await
     .unwrap();
-    let list = instances_list_impl(&fx.state).await.unwrap();
+    let list = instances_list_impl(&fx.state).await.unwrap().instances;
     assert_eq!(list.len(), 1);
     assert_eq!(list[0].id, "9.9-fabric");
     assert_eq!(list[0].name, "9.9 Fabric");
@@ -401,7 +405,14 @@ async fn list_adopts_cli_folders_when_the_manifest_is_cached() {
     assert!(fx.events().contains(&instances_changed()));
     // A second list adopts nothing and sends nothing.
     fx.clear_events();
-    assert_eq!(instances_list_impl(&fx.state).await.unwrap().len(), 1);
+    assert_eq!(
+        instances_list_impl(&fx.state)
+            .await
+            .unwrap()
+            .instances
+            .len(),
+        1
+    );
     assert!(fx.events().is_empty());
 }
 
@@ -422,7 +433,10 @@ async fn list_shows_every_state_and_marks_the_selection() {
     )
     .unwrap();
     select(&fx, Some("old"));
-    let list = instances_list_impl(&fx.state).await.unwrap();
+    let dto = instances_list_impl(&fx.state).await.unwrap();
+    // Every entry could be read, so the list says it is complete.
+    assert!(!dto.incomplete);
+    let list = dto.instances;
     let by_id = |id: &str| list.iter().find(|i| i.id == id).unwrap();
     assert_eq!(by_id("9.9").status, InstanceStatus::Ready);
     assert!(!by_id("9.9").selected);
@@ -778,7 +792,11 @@ async fn a_linked_instance_folder_has_its_own_code_and_its_target_stays_untouche
         .unwrap_err();
     assert_eq!(dto.code, ErrorCode::InstanceLinked);
     // The list does not show it and does not follow it.
-    assert!(instances_list_impl(&fx.state).await.unwrap().is_empty());
+    assert!(instances_list_impl(&fx.state)
+        .await
+        .unwrap()
+        .instances
+        .is_empty());
     assert_eq!(std::fs::read(&keep).unwrap(), b"keep");
     assert!(outside.join("instance.json").is_file());
 }

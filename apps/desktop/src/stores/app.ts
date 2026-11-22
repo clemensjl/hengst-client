@@ -9,6 +9,8 @@ import type { AccountsDto } from "@/ipc/bindings/AccountsDto";
 import type { AppInfo } from "@/ipc/bindings/AppInfo";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import type { GameVersionsDto } from "@/ipc/bindings/GameVersionsDto";
+import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
+import type { LoaderKindDto } from "@/ipc/bindings/LoaderKindDto";
 import type { SettingsDto } from "@/ipc/bindings/SettingsDto";
 import type { SettingsPatch } from "@/ipc/bindings/SettingsPatch";
 import type { VersionFilter } from "@/ipc/bindings/VersionFilter";
@@ -45,6 +47,24 @@ export type AccountDialog =
   | { kind: "noClientId" }
   | { kind: "remove"; account: AccountDto };
 
+/** What the create dialog keeps when it is closed without creating (DESIGN.md 10.9). */
+export interface InstanceDraft {
+  game: string | null;
+  filter: VersionFilter;
+  loader: LoaderKindDto | "none";
+  loaderVersion: string | null;
+  name: string;
+  /** The user changed the name: it no longer follows the version and the loader. */
+  nameEdited: boolean;
+}
+
+/**
+ * Where focus goes once the instance list shows the change that moved it (DESIGN.md 13): a row
+ * after it was created, a row's action button after a delete, or "Create instance".
+ */
+export type InstanceFocus =
+  { kind: "row"; id: string } | { kind: "action"; id: string } | { kind: "create" };
+
 const ALL_KINDS: VersionFilter = { release: true, snapshot: true, beta: true, alpha: true };
 
 interface AppState {
@@ -57,6 +77,14 @@ interface AppState {
   versionsSummary: Resource<VersionsSummary>;
   accounts: Resource<AccountsDto>;
   accountDialog: AccountDialog | null;
+  instances: Resource<InstanceDto[]>;
+  /** Some folders could not be read: the list may miss instances. */
+  instancesIncomplete: boolean;
+  /** The instance being prepared or running. Always `null` in 4a; 4b sets it from the game state. */
+  activeInstance: string | null;
+  createOpen: boolean;
+  instanceDraft: InstanceDraft | null;
+  instanceFocus: InstanceFocus | null;
   setView: (view: View) => void;
   loadInfo: () => Promise<void>;
   /** Resolves with the answer, rejects with an `IpcError`. */
@@ -79,6 +107,12 @@ interface AppState {
   openNoClientId: () => void;
   openRemoveAccount: (account: AccountDto) => void;
   closeAccountDialog: () => void;
+  /** Loads the instance list; the list shown so far stays while it loads and on a failure. */
+  loadInstances: () => Promise<void>;
+  openCreate: () => void;
+  closeCreate: () => void;
+  setInstanceDraft: (draft: InstanceDraft | null) => void;
+  setInstanceFocus: (focus: InstanceFocus | null) => void;
   /** Subscribes to backend events. Call it before the first load, so no event in between is lost. */
   startEventLoop: () => Promise<void>;
 }
@@ -97,6 +131,12 @@ export const useApp = create<AppState>()((set, get) => ({
   versionsSummary: idle(),
   accounts: idle(),
   accountDialog: null,
+  instances: idle(),
+  instancesIncomplete: false,
+  activeInstance: null,
+  createOpen: false,
+  instanceDraft: null,
+  instanceFocus: null,
 
   setView: (view) => set({ view }),
 
@@ -196,6 +236,23 @@ export const useApp = create<AppState>()((set, get) => ({
   openRemoveAccount: (account) => set({ accountDialog: { kind: "remove", account } }),
   closeAccountDialog: () => set({ accountDialog: null }),
 
+  loadInstances: async () => {
+    set((s) => ({ instances: loading(s.instances) }));
+    try {
+      const answer = await api.instancesList();
+      set({
+        instances: { status: "ready", data: answer.instances },
+        instancesIncomplete: answer.incomplete,
+      });
+    } catch (e) {
+      set((s) => ({ instances: { ...s.instances, status: "error", error: errorOf(e) } }));
+    }
+  },
+  openCreate: () => set({ createOpen: true }),
+  closeCreate: () => set({ createOpen: false }),
+  setInstanceDraft: (draft) => set({ instanceDraft: draft }),
+  setInstanceFocus: (focus) => set({ instanceFocus: focus }),
+
   startEventLoop: () =>
     subscribeEvents((event) => {
       if (event.event === "dataChanged") {
@@ -209,6 +266,9 @@ export const useApp = create<AppState>()((set, get) => ({
             })
             .catch(() => {});
         if (event.data.scope === "accounts") void get().loadAccounts();
+        // Only a list somebody has loaded is kept current.
+        if (event.data.scope === "instances" && get().instances.status !== "idle")
+          void get().loadInstances();
         if (event.data.scope === "versions") {
           set({ versionsStale: null });
           if (versionsFilter) void get().loadVersions(versionsFilter);

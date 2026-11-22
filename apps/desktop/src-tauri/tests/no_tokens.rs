@@ -184,7 +184,7 @@ async fn no_dto_or_event_contains_a_token() {
     let state = AppState::new(paths.clone(), Endpoints::default());
 
     let mut seen: Vec<String> = Vec::new();
-    let list = instances_list_impl(&state).await.unwrap();
+    let list = instances_list_impl(&state).await.unwrap().instances;
     assert_eq!(list.len(), 2);
     seen.push(serde_json::to_string(&list).unwrap());
     seen.push(serde_json::to_string(&loader_kinds_impl()).unwrap());

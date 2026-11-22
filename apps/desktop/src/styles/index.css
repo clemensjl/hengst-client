@@ -446,6 +446,25 @@ html[data-input="keyboard"] *::after {
   }
 }
 
+/* An option of a select or a combobox. The combobox keeps focus in its search field, so the item a
+   key highlighted gets the inset focus outline here, not from :focus-visible (DESIGN.md 9). */
+@utility option-item {
+  &[data-highlighted] {
+    background-color: var(--hover);
+  }
+
+  html[data-input="keyboard"] &[data-highlighted] {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
+  }
+}
+
+/* The checkbox box: the one radius outside the two (DESIGN.md 5: 6 px on a 20 px box reads as a
+   circle). */
+@utility checkbox-box {
+  border-radius: 4px;
+}
+
 /* The separator inside a menu: --border in light, --border-strong in dark (DESIGN.md 10.15). */
 @utility menu-separator {
   background-color: var(--border);

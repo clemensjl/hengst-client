@@ -186,7 +186,7 @@ fn the_main_window_may_call_the_instance_commands_and_others_may_not() {
     assert_eq!(kinds.as_array().unwrap().len(), 5);
     assert_eq!(
         call(&app, "main", "instances_list").unwrap(),
-        serde_json::json!([])
+        serde_json::json!({ "instances": [], "incomplete": false })
     );
     for (cmd, body) in [
         ("instance_select", serde_json::json!({ "id": "nobody" })),

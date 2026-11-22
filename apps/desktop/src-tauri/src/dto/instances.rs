@@ -115,6 +115,15 @@ pub struct InstanceDto {
     pub selected: bool,
 }
 
+/// The answer of `instances_list`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub struct InstancesDto {
+    pub instances: Vec<InstanceDto>,
+    /// Some entries of the instances folder could not be read: the list may miss instances.
+    pub incomplete: bool,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct LoaderRequestDto {

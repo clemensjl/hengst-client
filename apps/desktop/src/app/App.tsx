@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AccountDialogs } from "@/features/accounts/AccountDialogs";
+import { InstancesHeaderAction, InstancesView } from "@/features/instances/InstancesView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import i18n, { pickLanguage, setLanguage } from "@/i18n";
 import type { SettingsNotice } from "@/ipc/bindings/SettingsNotice";
@@ -35,8 +36,13 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
 
   return (
     <TooltipProvider>
-      <Shell view={view} onSelect={setView} devBuild={devBuild}>
-        {view === "settings" ? <SettingsView /> : null /* Task 11 brings the instance list. */}
+      <Shell
+        view={view}
+        onSelect={setView}
+        devBuild={devBuild}
+        action={view === "instances" ? <InstancesHeaderAction /> : null}
+      >
+        {view === "settings" ? <SettingsView /> : <InstancesView />}
       </Shell>
       <AccountDialogs />
       <Toaster theme={resolved} />

@@ -29,7 +29,12 @@ afterEach(() => {
   clearMocks();
 });
 
+const opened: unknown[] = [];
+let openFails: unknown = null;
+
 function backend(update: (patch: unknown) => unknown) {
+  opened.length = 0;
+  openFails = null;
   const patches: unknown[] = [];
   mockIPC((cmd, args) => {
     if (cmd === "app_info")
@@ -41,6 +46,11 @@ function backend(update: (patch: unknown) => unknown) {
       };
     if (cmd === "game_versions")
       return { versions: [], latestRelease: "", latestSnapshot: "", fromCache: true };
+    if (cmd === "open_location") {
+      opened.push((args as { target: unknown }).target);
+      if (openFails) throw openFails;
+      return;
+    }
     if (cmd === "settings_update") {
       patches.push((args as { patch: unknown }).patch);
       return update((args as { patch: unknown }).patch);
@@ -122,5 +132,22 @@ describe("SettingsView", () => {
     // The whole path wraps and stays visible: no truncation, no tooltip.
     expect(path.className).toContain("wrap-anywhere");
     expect(path.className).not.toContain("truncate");
+  });
+
+  it("Open folder opens the data folder; a refusal says so inline with the folder copy", async () => {
+    backend(() => saved);
+    view();
+    const open = await screen.findByRole("button", { name: "Open folder" });
+    fireEvent.click(open);
+    await waitFor(() => expect(opened).toEqual([{ kind: "dataDir" }]));
+    expect(screen.queryByText("The folder could not be opened")).toBeNull();
+    openFails = { code: "openFailed", params: {}, action: null, detail: "x" };
+    fireEvent.click(open);
+    expect(await screen.findByText("The folder could not be opened")).toBeTruthy();
+    expect(
+      screen.getByText(
+        "Windows refused to open it in Explorer. Check that the folder still exists, then try again.",
+      ),
+    ).toBeTruthy();
   });
 });
