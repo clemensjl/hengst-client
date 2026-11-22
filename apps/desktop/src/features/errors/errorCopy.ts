@@ -50,6 +50,8 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   instanceExists: keys("instanceExists"),
   instanceFormatTooNew: keys("instanceFormatTooNew"),
   invalidInstanceName: keys("invalidInstanceName"),
+  instanceUnreadable: keys("instanceUnreadable"),
+  recycleBinPartial: keys("recycleBinPartial"),
 };
 
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */

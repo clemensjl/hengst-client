@@ -90,6 +90,10 @@ pub enum Error {
     InvalidInstanceName(String),
     #[error("instance {id} cannot be read: {reason}")]
     InstanceUnreadable { id: String, reason: String },
+    #[error("instance folder {id} is a link, which the launcher does not follow")]
+    InstanceLinked { id: String },
+    #[error("instance {id} was only partly moved to the Recycle Bin")]
+    InstancePartlyMoved { id: String },
     #[error("the operation was cancelled")]
     Cancelled,
     #[error("Windows Credential Manager error: {0}")]

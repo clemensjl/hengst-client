@@ -35,6 +35,12 @@ fn make(paths: &Paths, name: &str, game: &str) -> Instance {
     create(paths, &new_instance(name, game, None), 1).unwrap()
 }
 
+fn items(paths: &Paths) -> Vec<Listed> {
+    let listing = list(paths).unwrap();
+    assert!(!listing.incomplete);
+    listing.items
+}
+
 fn write_meta(paths: &Paths, id: &str, json: &str) {
     let dir = paths.instance(id);
     std::fs::create_dir_all(&dir).unwrap();
@@ -230,7 +236,7 @@ fn create_refuses_unsafe_or_reserved_game_ids() {
         create(&paths, &new_instance("n", &long, None), 1),
         Err(Error::UnsafePath(_))
     ));
-    assert!(!paths.root().join("instances").exists() || list(&paths).unwrap().is_empty());
+    assert!(!paths.root().join("instances").exists() || items(&paths).is_empty());
 }
 
 #[test]
@@ -292,7 +298,7 @@ fn too_new_instance_is_listed_and_never_written() {
     let (_d, paths) = home();
     let json = r#"{"format": 2, "name": "Future", "game": "1.21.11", "createdAt": 1, "z": [1]}"#;
     write_meta(&paths, "future", json);
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert_eq!(
         listed,
         [Listed::TooNew {
@@ -300,22 +306,7 @@ fn too_new_instance_is_listed_and_never_written() {
             format: 2
         }]
     );
-    let inst = Instance {
-        id: "future".into(),
-        dir: paths.instance("future"),
-        config: InstanceConfig {
-            format: 1,
-            name: "x".into(),
-            game: "1.21.11".into(),
-            loader: None,
-            memory_mb: None,
-            java: None,
-            created_at: 1,
-            last_played: None,
-            extra: Default::default(),
-        },
-    };
-    let err = save(&paths, &inst).unwrap_err();
+    let err = update(&paths, "future", |c| c.name = "x".into()).unwrap_err();
     assert!(
         matches!(&err, Error::InstanceFormatTooNew { id, format: 2 } if id == "future"),
         "{err:?}"
@@ -336,7 +327,7 @@ fn broken_instance_is_listed_not_deleted() {
     let (_d, paths) = home();
     write_meta(&paths, "bad", "{");
     std::fs::create_dir_all(paths.instance("bad").join("saves")).unwrap();
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert!(
         matches!(&listed[..], [Listed::Broken { id, .. }] if id == "bad"),
         "{listed:?}"
@@ -372,7 +363,7 @@ fn damaged_metadata_variants_are_all_broken_without_leaking_values() {
     ] {
         write_meta(&paths, id, json);
     }
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert_eq!(listed.len(), 7);
     for l in &listed {
         let Listed::Broken { reason, .. } = l else {
@@ -389,7 +380,7 @@ fn an_oversized_metadata_file_is_broken_and_not_read_whole() {
     std::fs::create_dir_all(&dir).unwrap();
     let f = std::fs::File::create(dir.join(INSTANCE_FILE)).unwrap();
     f.set_len(100 * 1024 * 1024).unwrap();
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert!(
         matches!(&listed[..], [Listed::Broken { id, reason }] if id == "huge" && reason.contains("larger")),
         "{listed:?}"
@@ -399,7 +390,7 @@ fn an_oversized_metadata_file_is_broken_and_not_read_whole() {
 #[test]
 fn list_survives_strays_and_odd_folders() {
     let (_d, paths) = home();
-    assert!(list(&paths).unwrap().is_empty(), "no instances folder");
+    assert!(items(&paths).is_empty(), "no instances folder");
     make(&paths, "Good", "1.21.11");
     let base = paths.root().join("instances");
     std::fs::write(base.join("stray.txt"), b"x").unwrap();
@@ -414,7 +405,7 @@ fn list_survives_strays_and_odd_folders() {
         // NTFS accepts a lone surrogate; if this volume does not, the case is moot.
         let _ = std::fs::create_dir_all(base.join(name));
     }
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert!(
         matches!(&listed[..], [Listed::Ready(i)] if i.id == "1.21.11"),
         "{listed:?}"
@@ -431,7 +422,7 @@ fn list_handles_many_folders() {
             &format!(r#"{{"format":1,"name":"N{n}","game":"1.21.11","createdAt":1}}"#),
         );
     }
-    assert_eq!(list(&paths).unwrap().len(), 1500);
+    assert_eq!(items(&paths).len(), 1500);
 }
 
 #[test]
@@ -451,8 +442,7 @@ fn list_sorts_by_last_played_then_name() {
             ),
         );
     }
-    let ids: Vec<String> = list(&paths)
-        .unwrap()
+    let ids: Vec<String> = items(&paths)
         .into_iter()
         .map(|l| match l {
             Listed::Ready(i) => i.id,
@@ -561,28 +551,87 @@ fn instance_dir_wants_the_exact_folder_name() {
 }
 
 #[test]
-fn unknown_fields_survive_a_save() {
+fn unknown_fields_survive_an_update() {
     let (_d, paths) = home();
     write_meta(
         &paths,
         "keep",
         r#"{"format":1,"name":"A","game":"1.21.11","createdAt":1,"notes":"x","nested":{"k":[1,2]}}"#,
     );
-    let mut inst = load(&paths, "keep").unwrap();
+    let inst = load(&paths, "keep").unwrap();
     assert_eq!(inst.config.extra["notes"], "x");
-    inst.config.memory_mb = Some(4096);
-    save(&paths, &inst).unwrap();
+    update(&paths, "keep", |c| c.memory_mb = Some(4096)).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&read_meta(&paths, "keep")).unwrap();
     assert_eq!(v["notes"], "x");
     assert_eq!(v["nested"]["k"][1], 2);
     assert_eq!(v["memoryMb"], 4096);
 }
 
+const NESTED: &str = r#"{
+  "format": 1, "name": "A", "game": "1.21.11", "createdAt": 1,
+  "loader": {"kind": "fabric", "version": null,
+             "channel": "beta", "meta": {"a": [1, {"b": 2}], "c": {"d": null}}},
+  "top": {"deep": {"deeper": [true, "x"]}}
+}"#;
+
+fn nested_unknowns_intact(paths: &Paths, id: &str) {
+    let v: serde_json::Value = serde_json::from_slice(&read_meta(paths, id)).unwrap();
+    assert_eq!(v["loader"]["channel"], "beta");
+    assert_eq!(
+        v["loader"]["meta"],
+        serde_json::json!({"a": [1, {"b": 2}], "c": {"d": null}})
+    );
+    assert_eq!(
+        v["top"],
+        serde_json::json!({"deep": {"deeper": [true, "x"]}})
+    );
+}
+
 #[test]
-fn save_keeps_fields_another_writer_added_after_the_load() {
+fn unknown_fields_nested_under_loader_survive_update_and_record_launch() {
     let (_d, paths) = home();
-    let inst = make(&paths, "A", "1.21.11");
-    // Another process (a newer build with the same format) adds a field after our load.
+    write_meta(&paths, "1.21.11-fabric", NESTED);
+    update(&paths, "1.21.11-fabric", |c| c.memory_mb = Some(1024)).unwrap();
+    nested_unknowns_intact(&paths, "1.21.11-fabric");
+    record_launch(&paths, "1.21.11-fabric", 77, Some(&resolved("0.17.3"))).unwrap();
+    nested_unknowns_intact(&paths, "1.21.11-fabric");
+    let v: serde_json::Value =
+        serde_json::from_slice(&read_meta(&paths, "1.21.11-fabric")).unwrap();
+    assert_eq!(v["loader"]["version"], "0.17.3");
+    assert_eq!(v["loader"]["kind"], "fabric");
+    assert_eq!(v["lastPlayed"], 77);
+    // The loader can be changed by the caller; a null replaces the object.
+    update(&paths, "1.21.11-fabric", |c| c.loader = None).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_slice(&read_meta(&paths, "1.21.11-fabric")).unwrap();
+    assert!(v["loader"].is_null());
+    assert_eq!(v["top"]["deep"]["deeper"][1], "x");
+}
+
+#[test]
+fn adoption_leaves_an_existing_file_with_its_nested_fields_alone() {
+    let (_d, paths) = home();
+    write_meta(&paths, "1.21.11-fabric", NESTED);
+    std::fs::create_dir_all(paths.instance("1.20.1")).unwrap();
+    let before = read_meta(&paths, "1.21.11-fabric");
+    let adopted = adopt(&paths, |g| g == "1.21.11" || g == "1.20.1", 5).unwrap();
+    assert_eq!(adopted, ["1.20.1"]);
+    assert_eq!(read_meta(&paths, "1.21.11-fabric"), before);
+}
+
+#[test]
+fn update_works_on_the_file_as_it_is_now_not_on_a_stale_copy() {
+    let (_d, paths) = home();
+    let stale = make(&paths, "A", "1.21.11");
+    record_launch(&paths, "1.21.11", 500, None).unwrap();
+    // A rename built from the old listing must not roll back lastPlayed.
+    update(&paths, &stale.id, |c| c.name = "B".into()).unwrap();
+    let now = load(&paths, "1.21.11").unwrap();
+    assert_eq!(
+        (now.config.name.as_str(), now.config.last_played),
+        ("B", Some(500))
+    );
+    // Fields another writer added are kept too.
     let mut v: serde_json::Value = serde_json::from_slice(&read_meta(&paths, "1.21.11")).unwrap();
     v["added"] = "later".into();
     std::fs::write(
@@ -590,51 +639,80 @@ fn save_keeps_fields_another_writer_added_after_the_load() {
         serde_json::to_vec(&v).unwrap(),
     )
     .unwrap();
-    let mut mine = inst.clone();
-    mine.config.name = "B".into();
-    save(&paths, &mine).unwrap();
+    update(&paths, "1.21.11", |c| c.name = "C".into()).unwrap();
     let v: serde_json::Value = serde_json::from_slice(&read_meta(&paths, "1.21.11")).unwrap();
-    assert_eq!(v["added"], "later");
-    assert_eq!(v["name"], "B");
+    assert_eq!(
+        (v["added"].as_str(), v["name"].as_str()),
+        (Some("later"), Some("C"))
+    );
 }
 
 #[test]
-fn save_renames_validates_and_ignores_the_dir_field() {
-    let (d, paths) = home();
-    let mut inst = make(&paths, "A", "1.21.11");
-    inst.dir = d.path().join("elsewhere");
-    inst.config.name = "  Neu  ".into();
-    save(&paths, &inst).unwrap();
-    assert_eq!(load(&paths, "1.21.11").unwrap().config.name, "Neu");
-    assert!(!d.path().join("elsewhere").exists());
-    inst.config.name = "   ".into();
-    assert!(matches!(
-        save(&paths, &inst),
-        Err(Error::InvalidInstanceName(_))
-    ));
-    assert_eq!(load(&paths, "1.21.11").unwrap().config.name, "Neu");
-    // An id from outside the grammar is refused before any file is touched.
-    inst.config.name = "ok".into();
-    inst.id = "..".into();
-    assert!(matches!(save(&paths, &inst), Err(Error::UnsafePath(_))));
-}
-
-#[test]
-fn save_never_recreates_a_deleted_instance_or_overwrites_damage() {
+fn update_validates_the_name_and_the_id_before_touching_anything() {
     let (_d, paths) = home();
-    let inst = make(&paths, "A", "1.21.11");
+    make(&paths, "A", "1.21.11");
+    update(&paths, "1.21.11", |c| c.name = "  Neu  ".into()).unwrap();
+    assert_eq!(load(&paths, "1.21.11").unwrap().config.name, "Neu");
+    let before = read_meta(&paths, "1.21.11");
+    let r = update(&paths, "1.21.11", |c| c.name = "   ".into());
+    assert!(matches!(r, Err(Error::InvalidInstanceName(_))));
+    assert_eq!(read_meta(&paths, "1.21.11"), before);
+    assert!(matches!(
+        update(&paths, "..", |_| {}),
+        Err(Error::UnsafePath(_))
+    ));
+}
+
+#[test]
+fn update_never_recreates_a_deleted_instance_or_overwrites_damage() {
+    let (_d, paths) = home();
+    make(&paths, "A", "1.21.11");
     write_meta(&paths, "1.21.11", "{ broken");
-    assert!(save(&paths, &inst).is_err());
+    assert!(matches!(
+        update(&paths, "1.21.11", |_| {}),
+        Err(Error::InstanceUnreadable { .. })
+    ));
     assert_eq!(read_meta(&paths, "1.21.11"), b"{ broken");
     std::fs::remove_dir_all(paths.instance("1.21.11")).unwrap();
     assert!(matches!(
-        save(&paths, &inst),
+        update(&paths, "1.21.11", |_| {}),
         Err(Error::InstanceNotFound { .. })
     ));
     assert!(
         !paths.instance("1.21.11").exists(),
-        "save must not create the folder"
+        "update must not create the folder"
     );
+}
+
+#[test]
+fn ids_that_name_no_instance_leave_no_lock_file() {
+    let (_d, paths) = home();
+    make(&paths, "A", "1.21.11");
+    let locks = |paths: &Paths| -> Vec<String> {
+        std::fs::read_dir(paths.tmp())
+            .map(|rd| {
+                rd.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|n| n.starts_with("instance-"))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let known = locks(&paths);
+    std::fs::create_dir_all(paths.instance("cli-only")).unwrap();
+    let bin = Bin::new(paths.root());
+    for id in [
+        "fehlt",
+        "cli-only",
+        "..",
+        "a/b",
+        "CON",
+        "x".repeat(200).as_str(),
+    ] {
+        let _ = update(&paths, id, |_| {});
+        let _ = record_launch(&paths, id, 1, None);
+        let _ = delete(&paths, id, &|p| bin.trash(p));
+    }
+    assert_eq!(locks(&paths), known);
 }
 
 #[test]
@@ -796,7 +874,7 @@ fn a_failed_trash_leaves_everything_in_place_and_never_deletes_for_good() {
     assert_eq!(*calls.borrow(), 1, "no second attempt, no other route");
     assert_eq!(std::fs::read(&level).unwrap(), b"world");
     assert_eq!(read_meta(&paths, "1.21.11"), before);
-    assert_eq!(list(&paths).unwrap().len(), 1);
+    assert_eq!(items(&paths).len(), 1);
 }
 
 #[test]
@@ -874,20 +952,23 @@ fn a_junction_out_of_instances_is_skipped_refused_and_never_followed() {
     let link = paths.instance("evil");
     junction(&link, &outside);
 
-    let listed = list(&paths).unwrap();
+    let listed = items(&paths);
     assert!(
         matches!(&listed[..], [Listed::Ready(i)] if i.id == "1.21.11"),
         "{listed:?}"
     );
     assert!(matches!(
         instance_dir(&paths, "evil"),
-        Err(Error::UnsafePath(_))
+        Err(Error::InstanceLinked { .. })
     ));
-    assert!(matches!(load(&paths, "evil"), Err(Error::UnsafePath(_))));
+    assert!(matches!(
+        load(&paths, "evil"),
+        Err(Error::InstanceLinked { .. })
+    ));
     let bin = Bin::new(d.path());
     assert!(matches!(
         delete(&paths, "evil", &|p| bin.trash(p)),
-        Err(Error::UnsafePath(_))
+        Err(Error::InstanceLinked { .. })
     ));
     assert_eq!(bin.called(), 0);
     assert!(adopt(&paths, |_| true, 1).unwrap().is_empty());
@@ -927,7 +1008,7 @@ fn a_symlinked_metadata_file_is_not_followed() {
     // Creating a file symlink needs a privilege; without it the case cannot be built here.
     if std::os::windows::fs::symlink_file(&secret, paths.instance("x").join(INSTANCE_FILE)).is_ok()
     {
-        assert!(list(&paths).unwrap().is_empty());
+        assert!(items(&paths).is_empty());
         assert!(matches!(
             instance_dir(&paths, "x"),
             Err(Error::InstanceNotFound { .. })
@@ -940,12 +1021,166 @@ fn a_symlinked_metadata_file_is_not_followed() {
 #[test]
 fn a_held_instance_lock_makes_writers_time_out_with_the_core_lock_error() {
     let (_d, paths) = home();
-    let inst = make(&paths, "A", "1.21.11");
+    make(&paths, "A", "1.21.11");
     let held = lock_instance(&paths, "1.21.11", SHORT).unwrap();
     let err = lock_instance(&paths, "1.21.11", SHORT).unwrap_err();
     assert!(matches!(err, Error::LockTimeout { .. }), "{err:?}");
     // The lock file is outside the instance folder, so the folder can still be moved away.
     assert!(!paths.instance("1.21.11").join("instance.lock").exists());
     drop(held);
-    save(&paths, &inst).unwrap();
+    update(&paths, "1.21.11", |_| {}).unwrap();
+}
+
+#[test]
+fn deleting_an_unreadable_instance_moves_the_folder_unchanged() {
+    let (d, paths) = home();
+    write_meta(&paths, "bad", "{ not json");
+    let level = paths.instance("bad").join("saves/w/level.dat");
+    std::fs::create_dir_all(level.parent().unwrap()).unwrap();
+    std::fs::write(&level, b"world").unwrap();
+    let bin = Bin::new(d.path());
+    delete(&paths, "bad", &|p| bin.trash(p)).unwrap();
+    assert_eq!(bin.called(), 1);
+    assert!(!paths.instance("bad").exists());
+    let moved = bin.dir.join("bad");
+    assert_eq!(
+        std::fs::read(moved.join(INSTANCE_FILE)).unwrap(),
+        b"{ not json"
+    );
+    assert_eq!(
+        std::fs::read(moved.join("saves/w/level.dat")).unwrap(),
+        b"world"
+    );
+}
+
+fn instance_with_world(paths: &Paths) -> PathBuf {
+    make(paths, "A", "1.21.11");
+    let dir = paths.instance("1.21.11");
+    std::fs::create_dir_all(dir.join("saves/w")).unwrap();
+    std::fs::write(dir.join("saves/w/level.dat"), b"w").unwrap();
+    std::fs::create_dir_all(dir.join("mods")).unwrap();
+    std::fs::write(dir.join("options.txt"), b"o").unwrap();
+    dir
+}
+
+#[test]
+fn a_trasher_that_removes_part_and_then_fails_gives_the_partly_moved_error() {
+    let (_d, paths) = home();
+    let dir = instance_with_world(&paths);
+    let r = delete(&paths, "1.21.11", &|p| {
+        std::fs::remove_dir_all(p.join("saves"))?;
+        Err(Error::Io(std::io::Error::other("bin full")))
+    });
+    assert!(
+        matches!(&r, Err(Error::InstancePartlyMoved { id }) if id == "1.21.11"),
+        "{r:?}"
+    );
+    assert!(dir.join("options.txt").is_file(), "the rest stays in place");
+}
+
+#[test]
+fn a_trasher_that_moves_everything_and_then_fails_gives_the_partly_moved_error() {
+    let (_d, paths) = home();
+    instance_with_world(&paths);
+    let r = delete(&paths, "1.21.11", &|p| {
+        std::fs::remove_dir_all(p)?;
+        Err(Error::Io(std::io::Error::other("late failure")))
+    });
+    assert!(matches!(r, Err(Error::InstancePartlyMoved { .. })), "{r:?}");
+}
+
+#[test]
+fn a_failure_that_changed_nothing_still_returns_the_original_error() {
+    let (_d, paths) = home();
+    instance_with_world(&paths);
+    // Adding entries is not "missing" entries.
+    let r = delete(&paths, "1.21.11", &|p| {
+        std::fs::write(p.join("new.txt"), b"x")?;
+        Err(Error::Io(std::io::Error::other("refused")))
+    });
+    assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+}
+
+#[test]
+fn partial_detection_is_shallow_and_says_so() {
+    // Documented limit: a failure that removed files below the top level is not noticed.
+    let (_d, paths) = home();
+    instance_with_world(&paths);
+    let r = delete(&paths, "1.21.11", &|p| {
+        std::fs::remove_file(p.join("saves/w/level.dat"))?;
+        Err(Error::Io(std::io::Error::other("refused")))
+    });
+    assert!(matches!(r, Err(Error::Io(_))), "{r:?}");
+}
+
+// Listing
+
+#[test]
+fn a_scan_with_iterator_errors_is_marked_incomplete() {
+    let (d, _paths) = home();
+    std::fs::create_dir_all(d.path().join("a")).unwrap();
+    std::fs::create_dir_all(d.path().join("b")).unwrap();
+    let entry = |n: &str| Ok((std::ffi::OsString::from(n), d.path().join(n)));
+    let bad = || Err(std::io::Error::other("iterator failed"));
+    let (ids, incomplete) = scan(vec![entry("a"), bad(), entry("b")].into_iter());
+    assert_eq!(ids, ["a", "b"]);
+    assert!(incomplete);
+    let (ids, incomplete) = scan(vec![entry("a"), entry("b")].into_iter());
+    assert_eq!((ids.len(), incomplete), (2, false));
+    // An iterator that fails forever ends the scan instead of spinning.
+    let (ids, incomplete) = scan(std::iter::repeat_with(bad));
+    assert!(ids.is_empty() && incomplete);
+}
+
+#[test]
+fn a_clean_listing_is_not_marked_incomplete() {
+    let (_d, paths) = home();
+    make(&paths, "A", "1.21.11");
+    let listing = list(&paths).unwrap();
+    assert_eq!((listing.items.len(), listing.incomplete), (1, false));
+    assert_eq!(
+        list(&Paths::new(paths.root().join("nope"))).unwrap().items,
+        []
+    );
+}
+
+// Adoption
+
+#[test]
+fn adopt_only_treats_a_missing_file_as_no_instance_json() {
+    let (_d, paths) = home();
+    // instance.json is there, as a directory: not "missing", so nothing is written over it.
+    std::fs::create_dir_all(paths.instance("1.21.11").join(INSTANCE_FILE)).unwrap();
+    assert!(adopt(&paths, |_| true, 1).unwrap().is_empty());
+    assert!(paths.instance("1.21.11").join(INSTANCE_FILE).is_dir());
+}
+
+#[test]
+fn adopt_never_replaces_a_file_that_appears_before_the_write() {
+    let (_d, paths) = home();
+    std::fs::create_dir_all(paths.instance("1.21.11")).unwrap();
+    let adopted = adopt_with(&paths, |g| g == "1.21.11", 1, &|dir| {
+        std::fs::write(dir.join(INSTANCE_FILE), b"mine").unwrap();
+    })
+    .unwrap();
+    assert!(adopted.is_empty());
+    assert_eq!(read_meta(&paths, "1.21.11"), b"mine");
+    let left: Vec<_> = std::fs::read_dir(paths.instance("1.21.11"))
+        .unwrap()
+        .collect();
+    assert_eq!(left.len(), 1, "no temp file is left behind");
+}
+
+// Errors
+
+#[test]
+fn link_and_partial_errors_are_distinct_variants() {
+    assert_eq!(
+        Error::InstanceLinked { id: "x".into() }.to_string(),
+        "instance folder x is a link, which the launcher does not follow"
+    );
+    assert_eq!(
+        Error::InstancePartlyMoved { id: "x".into() }.to_string(),
+        "instance x was only partly moved to the Recycle Bin"
+    );
 }

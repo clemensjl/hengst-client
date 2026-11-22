@@ -68,9 +68,17 @@ pub fn error_dto(e: &Error) -> ErrorDto {
         }
         Error::NativesInUse { .. } => (ErrorCode::NativesInUse, None),
         Error::LockTimeout { .. } => (ErrorCode::LockTimeout, Some(Retry)),
-        Error::InstanceNotFound { id } | Error::InstanceUnreadable { id, .. } => {
+        Error::InstanceNotFound { id } => {
             put("id", id.clone());
-            (ErrorCode::InstanceNotFound, None)
+            (ErrorCode::InstanceNotFound, Some(Retry))
+        }
+        Error::InstanceUnreadable { id, .. } | Error::InstanceLinked { id } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceUnreadable, None)
+        }
+        Error::InstancePartlyMoved { id } => {
+            put("id", id.clone());
+            (ErrorCode::RecycleBinPartial, None)
         }
         Error::InstanceExists { id } => {
             put("id", id.clone());
@@ -692,7 +700,7 @@ mod mapping_tests {
             row(
                 Error::InstanceNotFound { id: "9.9".into() },
                 ErrorCode::InstanceNotFound,
-                None,
+                Some(Retry),
                 &[("id", "9.9")],
             ),
             row(
@@ -700,7 +708,19 @@ mod mapping_tests {
                     id: "9.9".into(),
                     reason: "x".into(),
                 },
-                ErrorCode::InstanceNotFound,
+                ErrorCode::InstanceUnreadable,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceLinked { id: "9.9".into() },
+                ErrorCode::InstanceUnreadable,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstancePartlyMoved { id: "9.9".into() },
+                ErrorCode::RecycleBinPartial,
                 None,
                 &[("id", "9.9")],
             ),
@@ -912,10 +932,12 @@ mod mapping_tests {
             ErrorCode::InstanceExists => "instanceExists",
             ErrorCode::InstanceFormatTooNew => "instanceFormatTooNew",
             ErrorCode::InvalidInstanceName => "invalidInstanceName",
+            ErrorCode::InstanceUnreadable => "instanceUnreadable",
+            ErrorCode::RecycleBinPartial => "recycleBinPartial",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 44] = [
+    const ALL_CODES: [ErrorCode; 46] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -960,6 +982,8 @@ mod mapping_tests {
         ErrorCode::InstanceExists,
         ErrorCode::InstanceFormatTooNew,
         ErrorCode::InvalidInstanceName,
+        ErrorCode::InstanceUnreadable,
+        ErrorCode::RecycleBinPartial,
     ];
 
     #[test]

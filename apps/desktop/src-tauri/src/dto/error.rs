@@ -61,6 +61,10 @@ pub enum ErrorCode {
     /// Saved by a newer build; `params.id` and `params.format`.
     InstanceFormatTooNew,
     InvalidInstanceName,
+    /// The instance's file is damaged or cannot be read, or its folder is a link; `params.id`.
+    InstanceUnreadable,
+    /// A failed move to the Recycle Bin took part of the instance with it; `params.id`.
+    RecycleBinPartial,
 }
 
 /// A page the web view may ask the app to open. The addresses are fixed in Rust (`open::resolve_url`);

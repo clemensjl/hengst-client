@@ -115,6 +115,8 @@ const ALL_CODES = [
   "instanceExists",
   "instanceFormatTooNew",
   "invalidInstanceName",
+  "instanceUnreadable",
+  "recycleBinPartial",
 ];
 
 describe("wire codes and copy groups", () => {
