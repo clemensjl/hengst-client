@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
+import { AccountDialogs } from "@/features/accounts/AccountDialogs";
 import { SettingsView } from "@/features/settings/SettingsView";
 import i18n, { pickLanguage, setLanguage } from "@/i18n";
 import type { SettingsNotice } from "@/ipc/bindings/SettingsNotice";
@@ -37,6 +38,7 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
       <Shell view={view} onSelect={setView} devBuild={devBuild}>
         {view === "settings" ? <SettingsView /> : null /* Task 11 brings the instance list. */}
       </Shell>
+      <AccountDialogs />
       <Toaster theme={resolved} />
     </TooltipProvider>
   );

@@ -15,6 +15,7 @@ import {
 } from "./designDoc";
 import { buttonVariants } from "@/components/ui/button";
 import { classConflicts, classLiterals } from "./classConflicts";
+import { cnClassLists } from "./cnCalls";
 import { ALLOWED_SAMPLES, BANNED_CLASSES, bannedIn } from "./gatePatterns";
 import { handWritten } from "./sourceFiles";
 
@@ -96,9 +97,26 @@ describe("tokens", () => {
       "./gatePatterns.ts",
       "./classConflicts.ts",
       "./sourceFiles.ts",
+      "../test/**",
     ]) {
       expect(CSS).toContain(`@source not "${source}";`);
     }
+  });
+
+  it("Tailwind's default color palette is reset before our colors, so bg-white and bg-gray-* do not exist", () => {
+    const inline = themeInline();
+    const reset = inline.search(/--color-\*:\s*initial;/);
+    expect(reset, "--color-*: initial in @theme inline").toBeGreaterThanOrEqual(0);
+    expect(reset).toBeLessThan(inline.indexOf("--color-background:"));
+    // The reset comes first, or it would also remove the tokens declared before it.
+    expect(inline.slice(0, reset)).not.toMatch(/--color-[a-z]/);
+  });
+
+  it("a menu item highlighted by keyboard shows the focus outline inside the item (DESIGN.md 9)", () => {
+    const start = CSS.indexOf("@utility menu-item");
+    const utility = CSS.slice(start, CSS.indexOf("@utility", start + 1));
+    expect(utility).toMatch(/\[data-highlighted\][^}]*background-color:\s*var\(--hover\)/);
+    expect(utility).toMatch(/:focus-visible\s*\{[^}]*outline-offset:\s*-2px/);
   });
 
   it("each theme sets its color-scheme", () => {
@@ -229,8 +247,11 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
   it("holds the expected set of components", () => {
     expect(files.map((f) => f.name).sort()).toEqual(
       [
+        "alert-dialog.tsx",
         "button.tsx",
         "collapsible.tsx",
+        "dialog.tsx",
+        "dropdown-menu.tsx",
         "radio-group.tsx",
         "separator.tsx",
         "skeleton.tsx",
@@ -284,7 +305,7 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
     // `cn` only joins classes: every class list of the generated components, and every button
     // variant with every size, must set each property once per variant.
     for (const { name, text } of files) {
-      for (const list of classLiterals(text)) {
+      for (const list of [...classLiterals(text), ...cnClassLists(text)]) {
         expect(classConflicts(list), `${name}: ${list}`).toEqual([]);
       }
     }
@@ -300,8 +321,11 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
     // Everything outside components/ui that builds class lists (cn calls and plain strings):
     // Badge, Segments, Sidebar, Shell, Boot and the feature views.
     expect(handWritten.length).toBeGreaterThan(10);
+    // The scanner must really find cn calls, or the check below would pass on nothing.
+    expect(handWritten.flatMap(({ text }) => cnClassLists(text)).length).toBeGreaterThan(5);
+    // Also across the arguments of one cn(...) call (cnCalls.ts): `cn("px-4", "px-2")` is a conflict.
     for (const { file, text } of handWritten) {
-      for (const list of classLiterals(text)) {
+      for (const list of [...classLiterals(text), ...cnClassLists(text)]) {
         expect(classConflicts(list), `${file}: ${list}`).toEqual([]);
       }
     }

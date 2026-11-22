@@ -2,11 +2,12 @@ import path from "node:path";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vitest/config";
+import { noBannedUtilities } from "./vite-plugins/noBannedUtilities.ts";
 import { noDevGallery } from "./vite-plugins/noDevGallery.ts";
 import { sonnerStaticStyle } from "./vite-plugins/sonnerStaticStyle.ts";
 
 export default defineConfig({
-  plugins: [sonnerStaticStyle(), react(), tailwindcss(), noDevGallery()],
+  plugins: [sonnerStaticStyle(), react(), tailwindcss(), noDevGallery(), noBannedUtilities()],
   resolve: { alias: { "@": path.resolve(import.meta.dirname, "./src") } },
   clearScreen: false,
   // Pre-bundled dependencies skip plugin transforms; Sonner must pass through sonnerStaticStyle.

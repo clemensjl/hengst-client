@@ -4,6 +4,8 @@ import { START_VIEW, type View } from "@/app/views";
 import i18n from "@/i18n";
 import { api, IpcError } from "@/ipc/client";
 import { subscribeEvents } from "@/ipc/events";
+import type { AccountDto } from "@/ipc/bindings/AccountDto";
+import type { AccountsDto } from "@/ipc/bindings/AccountsDto";
 import type { AppInfo } from "@/ipc/bindings/AppInfo";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import type { GameVersionsDto } from "@/ipc/bindings/GameVersionsDto";
@@ -36,6 +38,13 @@ export interface VersionsSummary {
   latestSnapshot: string;
 }
 
+/** The dialog of the accounts feature that is open, if any (one at a time). */
+export type AccountDialog =
+  /** `resign`: the account that is asked to sign in again. `id` tells one opening from the next. */
+  | { kind: "signIn"; resign: { id: string; name: string } | null; id: number }
+  | { kind: "noClientId" }
+  | { kind: "remove"; account: AccountDto };
+
 const ALL_KINDS: VersionFilter = { release: true, snapshot: true, beta: true, alpha: true };
 
 interface AppState {
@@ -46,6 +55,8 @@ interface AppState {
   /** Why the shown version list may be old: no connection, or another refresh failure. */
   versionsStale: null | "offline" | "other";
   versionsSummary: Resource<VersionsSummary>;
+  accounts: Resource<AccountsDto>;
+  accountDialog: AccountDialog | null;
   setView: (view: View) => void;
   loadInfo: () => Promise<void>;
   /** Resolves with the answer, rejects with an `IpcError`. */
@@ -54,12 +65,28 @@ interface AppState {
   updateSettings: (change: Partial<SettingsPatch>) => Promise<SettingsDto>;
   loadVersions: (filter: VersionFilter) => Promise<void>;
   loadVersionsSummary: () => Promise<void>;
+  loadAccounts: () => Promise<void>;
+  /**
+   * Chooses the account the game starts with. Resolves with `null`, or with the error (the list is
+   * reloaded either way, so it shows what is true).
+   */
+  selectAccount: (id: string) => Promise<ErrorDto | null>;
+  /**
+   * Opens the sign-in dialog, for a new account (`resign` null) or for one that has to sign in
+   * again. A build without a client id gets the no-client-id dialog instead (DESIGN.md 11.6).
+   */
+  openSignIn: (resign: { id: string; name: string } | null) => void;
+  openNoClientId: () => void;
+  openRemoveAccount: (account: AccountDto) => void;
+  closeAccountDialog: () => void;
   /** Subscribes to backend events. Call it before the first load, so no event in between is lost. */
   startEventLoop: () => Promise<void>;
 }
 
 // The filter of the last `loadVersions`, used when an event asks for a reload.
 let versionsFilter: VersionFilter | null = null;
+// Counts the openings of the sign-in dialog; each one is a new sign-in with its own state.
+let signInOpenings = 0;
 
 export const useApp = create<AppState>()((set, get) => ({
   view: START_VIEW,
@@ -68,6 +95,8 @@ export const useApp = create<AppState>()((set, get) => ({
   versions: idle(),
   versionsStale: null,
   versionsSummary: idle(),
+  accounts: idle(),
+  accountDialog: null,
 
   setView: (view) => set({ view }),
 
@@ -132,6 +161,41 @@ export const useApp = create<AppState>()((set, get) => ({
     }
   },
 
+  loadAccounts: async () => {
+    set((s) => ({ accounts: loading(s.accounts) }));
+    try {
+      set({ accounts: { status: "ready", data: await api.accountsList() } });
+    } catch (e) {
+      // The list shown so far stays; the error is what the chip and its menu explain.
+      set((s) => ({ accounts: { ...s.accounts, status: "error", error: errorOf(e) } }));
+    }
+  },
+
+  selectAccount: async (id) => {
+    let failure: ErrorDto | null = null;
+    try {
+      await api.accountSelect(id);
+    } catch (e) {
+      failure = errorOf(e);
+    }
+    await get().loadAccounts();
+    return failure;
+  },
+
+  openSignIn: (resign) => {
+    // `false` is only known once the list is: until then the backend decides (it refuses with
+    // `missingClientId`, which the dialog shows).
+    if (get().accounts.data?.canSignIn === false) {
+      set({ accountDialog: { kind: "noClientId" } });
+      return;
+    }
+    signInOpenings += 1;
+    set({ accountDialog: { kind: "signIn", resign, id: signInOpenings } });
+  },
+  openNoClientId: () => set({ accountDialog: { kind: "noClientId" } }),
+  openRemoveAccount: (account) => set({ accountDialog: { kind: "remove", account } }),
+  closeAccountDialog: () => set({ accountDialog: null }),
+
   startEventLoop: () =>
     subscribeEvents((event) => {
       if (event.event === "dataChanged") {
@@ -144,6 +208,7 @@ export const useApp = create<AppState>()((set, get) => ({
                 toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
             })
             .catch(() => {});
+        if (event.data.scope === "accounts") void get().loadAccounts();
         if (event.data.scope === "versions") {
           set({ versionsStale: null });
           if (versionsFilter) void get().loadVersions(versionsFilter);

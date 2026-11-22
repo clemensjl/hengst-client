@@ -77,6 +77,7 @@ export function Boot() {
       initI18n(settings.language, navigator.language);
       applyTheme(currentTheme(settings.theme));
       void app.loadInfo();
+      void app.loadAccounts();
       setPhase({ kind: "ready", notice: settings.notice });
     } catch {
       initI18n(null, navigator.language);

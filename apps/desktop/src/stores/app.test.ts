@@ -75,3 +75,100 @@ describe("settings events", () => {
     expect(toast).not.toHaveBeenCalled();
   });
 });
+
+const accountsDto = (canSignIn: boolean, names: string[] = []) => ({
+  canSignIn,
+  accounts: names.map((name, i) => ({
+    id: `id-${i}`,
+    name,
+    kind: "microsoft",
+    selected: i === 0,
+    signInRequired: false,
+  })),
+});
+
+describe("accounts", () => {
+  it("loads the list into its resource", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list") return accountsDto(true, ["Mira_K"]);
+    });
+    expect(useApp.getState().accounts.status).toBe("idle");
+    await useApp.getState().loadAccounts();
+    const { accounts } = useApp.getState();
+    expect(accounts.status).toBe("ready");
+    expect(accounts.data?.accounts.map((a) => a.name)).toEqual(["Mira_K"]);
+  });
+
+  it("keeps the old list while a reload is under way and on a failed reload", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list") return accountsDto(true, ["Mira_K"]);
+    });
+    await useApp.getState().loadAccounts();
+    mockIPC(() => {
+      throw { code: "fileSystem", params: {}, action: null, detail: "x" };
+    });
+    await useApp.getState().loadAccounts();
+    const { accounts } = useApp.getState();
+    expect(accounts.status).toBe("error");
+    expect(accounts.error?.code).toBe("fileSystem");
+    expect(accounts.data?.accounts).toHaveLength(1);
+  });
+
+  it("an accounts change from the backend reloads the list", async () => {
+    let list = accountsDto(true, ["Mira_K"]);
+    let sink: ((e: unknown) => void) | undefined;
+    mockIPC((cmd, args) => {
+      if (cmd === "subscribe_events") {
+        sink = (args as { channel: { onmessage: (e: unknown) => void } }).channel.onmessage;
+        return;
+      }
+      if (cmd === "accounts_list") return list;
+    });
+    await useApp.getState().startEventLoop();
+    await useApp.getState().loadAccounts();
+    list = accountsDto(true, ["Mira_K", "Jonas_T"]);
+    sink!({ event: "dataChanged", data: { scope: "accounts" } });
+    await vi.waitFor(() => expect(useApp.getState().accounts.data?.accounts).toHaveLength(2));
+  });
+
+  it("opening the sign-in dialog without a client id opens the no-client-id dialog instead", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list") return accountsDto(false);
+    });
+    await useApp.getState().loadAccounts();
+    useApp.getState().openSignIn(null);
+    expect(useApp.getState().accountDialog).toEqual({ kind: "noClientId" });
+  });
+
+  it("opens the sign-in dialog for a build with a client id, and for a re-sign-in with the account", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list") return accountsDto(true, ["Mira_K"]);
+    });
+    await useApp.getState().loadAccounts();
+    useApp.getState().openSignIn(null);
+    expect(useApp.getState().accountDialog).toMatchObject({ kind: "signIn", resign: null });
+    useApp.getState().closeAccountDialog();
+    expect(useApp.getState().accountDialog).toBeNull();
+    useApp.getState().openSignIn({ id: "id-0", name: "Mira_K" });
+    expect(useApp.getState().accountDialog).toMatchObject({
+      kind: "signIn",
+      resign: { id: "id-0", name: "Mira_K" },
+    });
+  });
+
+  it("opening it before the list is known opens the sign-in dialog (the backend refuses in a build without an id)", () => {
+    useApp.getState().openSignIn(null);
+    expect(useApp.getState().accountDialog).toMatchObject({ kind: "signIn" });
+  });
+
+  it("selecting an account calls the backend with its id and reloads", async () => {
+    const calls: [string, unknown][] = [];
+    mockIPC((cmd, args) => {
+      calls.push([cmd, args]);
+      if (cmd === "accounts_list") return accountsDto(true, ["Mira_K", "Jonas_T"]);
+    });
+    await useApp.getState().selectAccount("id-1");
+    expect(calls).toContainEqual(["account_select", { id: "id-1" }]);
+    expect(calls.filter(([cmd]) => cmd === "accounts_list")).toHaveLength(1);
+  });
+});

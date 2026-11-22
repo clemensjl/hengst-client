@@ -1,13 +1,45 @@
 import { cleanup, render, screen } from "@testing-library/react";
+import { act } from "react";
 import { afterEach, describe, expect, it } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initI18n } from "@/i18n";
+import { useApp } from "@/stores/app";
 import { Shell } from "./Shell";
 
 initI18n("en", "en-US");
 afterEach(cleanup);
 
 describe("Shell", () => {
+  it("the account chip sits in the header: sidebar, then chip, then the content in the tab order", () => {
+    act(() =>
+      useApp.setState({
+        accounts: {
+          status: "ready",
+          data: {
+            canSignIn: true,
+            accounts: [
+              { id: "a", name: "Mira_K", kind: "microsoft", selected: true, signInRequired: false },
+            ],
+          },
+        },
+      }),
+    );
+    const { container } = render(
+      <TooltipProvider>
+        <Shell view="settings" onSelect={() => {}} devBuild={false}>
+          <button type="button">Content action</button>
+        </Shell>
+      </TooltipProvider>,
+    );
+    const focusable = [...container.querySelectorAll("button, a[href], input")].map(
+      (el) => el.getAttribute("aria-label") ?? el.textContent,
+    );
+    expect(focusable).toEqual(["Instances", "Settings", "Account: Mira_K", "Content action"]);
+    const header = container.querySelector("header")!;
+    expect(header.querySelector("[aria-label='Account: Mira_K']")).not.toBeNull();
+    act(() => useApp.setState({ accounts: { status: "idle" } }));
+  });
+
   it("has one h1 with the view title and the tab order sidebar, header, content", () => {
     const { container } = render(
       <TooltipProvider>

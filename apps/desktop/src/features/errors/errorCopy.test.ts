@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { tableRows } from "@/styles/designDoc";
+import { DESIGN, tableRows } from "@/styles/designDoc";
 import i18n, { initI18n } from "@/i18n";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import de_json from "@/i18n/de.json";
@@ -55,6 +55,21 @@ describe("errorKeys", () => {
       for (const t of [de, en]) {
         expect(t(title).endsWith("."), `${title}`).toBe(false);
         expect(t(body).endsWith("."), `${body}`).toBe(true);
+      }
+    }
+  });
+
+  it("context titles end without a full stop and context bodies end with one, in de and en", () => {
+    // errors.<code>.<context>.title|body: the wording that differs by place (sign-in, launch).
+    const contextKeys = Object.keys(en_json).filter((k) =>
+      /^errors\.[a-zA-Z]+\.(signIn|launch)\.(title|body)$/.test(k),
+    );
+    expect(contextKeys.length).toBeGreaterThanOrEqual(10);
+    for (const json of [de_json, en_json] as Record<string, string>[]) {
+      for (const key of contextKeys) {
+        const text = json[key];
+        expect(text, key).toBeDefined();
+        expect(text.endsWith("."), key).toBe(key.endsWith(".body"));
       }
     }
   });
@@ -154,19 +169,38 @@ describe("wire codes and copy groups", () => {
   });
 });
 
+/** The offline panel of DESIGN.md 10.12: title and body, each as the pair [de, en]. */
+function readLaunchOffline() {
+  const line = DESIGN.split("\n").find((l) => l.startsWith("- Offline: if all files are cached"));
+  if (!line) throw new Error("DESIGN.md 10.12 has no offline line any more");
+  const pairs = [...line.matchAll(/"([^"]+)" \/ "([^"]+)"/g)].map((m) => [m[1], m[2]]);
+  // ErrorPanel "Keine Verbindung" / "No connection", body "Für diese ..." / "Files for ...".
+  if (pairs.length < 2) throw new Error(`cannot read the offline texts from: ${line}`);
+  return { title: pairs[0], body: pairs[1] };
+}
+const launchOffline = readLaunchOffline();
+
 describe("error contexts", () => {
+  it("reads the launch wording from DESIGN.md", () => {
+    expect(launchOffline.title).toEqual(["Keine Verbindung", "No connection"]);
+    expect(launchOffline.body[1]).toMatch(/^Files for this version are missing\./);
+  });
+
   it("network and offline are generic by default, the sign-in wording only in the sign-in context", () => {
     for (const code of ["network", "offline"] as const) {
       expect(describeError(dto(code), en).title).toBe("No connection");
       expect(describeError(dto(code), de).title).toBe("Keine Verbindung");
       expect(describeError(dto(code), en, "signIn").title).toBe("Cannot reach Microsoft");
       expect(describeError(dto(code), de, "signIn").title).toBe("Keine Verbindung zu Microsoft");
-      expect(describeError(dto(code), en, "launch").body).toBe(
-        "Files for this version are missing. Check your internet connection and try again.",
-      );
-      expect(describeError(dto(code), de, "launch").body).toBe(
-        "Für diese Version fehlen Dateien. Prüfe die Internetverbindung und versuche es erneut.",
-      );
+      // The launch wording is DESIGN.md 10.12's offline panel, read from there.
+      expect(describeError(dto(code), de, "launch")).toMatchObject({
+        title: launchOffline.title[0],
+        body: launchOffline.body[0],
+      });
+      expect(describeError(dto(code), en, "launch")).toMatchObject({
+        title: launchOffline.title[1],
+        body: launchOffline.body[1],
+      });
       // The generic copy names no service.
       expect(JSON.stringify(describeError(dto(code), en))).not.toMatch(/Microsoft/);
     }

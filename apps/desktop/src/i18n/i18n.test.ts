@@ -5,7 +5,9 @@ import { pickLanguage } from "./index";
 
 const flat = (o: Record<string, string>) => Object.entries(o);
 const params = (s: string) => [...s.matchAll(/\{\{\s*([\w.]+)[^}]*\}\}/g)].map((m) => m[1]).sort();
-const PREFIXES = ["nav.", "settings.", "about.", "errors.", "accounts.", "instances.", "common."];
+const PREFIXES = [
+  ...["nav.", "settings.", "about.", "errors.", "accounts.", "signIn.", "instances.", "common."],
+];
 const both = [...flat(de), ...flat(en)];
 
 describe("translations", () => {

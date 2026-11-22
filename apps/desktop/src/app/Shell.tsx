@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import { AccountChip } from "@/features/accounts/AccountChip";
 import { cn } from "@/lib/utils";
 import { Sidebar } from "./Sidebar";
 import { VIEW_ITEMS, type View } from "./views";
@@ -48,8 +49,10 @@ export function Shell({ view, onSelect, devBuild, children }: Props) {
           {/* A long title wraps to a second line (the header grows) instead of being cut: a tooltip
               would not be reachable by keyboard (DESIGN.md 10.15). */}
           <h1 className="min-w-40 font-display text-display">{title}</h1>
-          {/* The view's primary action and the account chip (Task 8) go here. */}
-          <div className="ml-auto flex shrink-0 items-center gap-4" data-slot="header-end" />
+          {/* The view's primary action (Task 11) goes here, then the account chip. */}
+          <div className="ml-auto flex shrink-0 items-center gap-4" data-slot="header-end">
+            <AccountChip />
+          </div>
         </header>
         <div
           ref={scroller}

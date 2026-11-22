@@ -39,6 +39,7 @@ function backend(settings: () => object, calls: string[] = []) {
     calls.push(cmd);
     if (cmd === "settings_get") return settings();
     if (cmd === "app_info") return info;
+    if (cmd === "accounts_list") return { accounts: [], canSignIn: true };
     return undefined;
   });
   return calls;
@@ -50,6 +51,9 @@ describe("Boot", () => {
     render(<Boot />);
     expect(await screen.findByRole("navigation", { name: "Main navigation" })).toBeTruthy();
     expect(calls.slice(0, 2)).toEqual(["subscribe_events", "settings_get"]);
+    // The account chip in the header has its list as soon as the shell is there.
+    await waitFor(() => expect(calls).toContain("accounts_list"));
+    expect(await screen.findByRole("button", { name: "Sign in" })).toBeTruthy();
     expect(document.documentElement.classList.contains("dark")).toBe(true);
     expect(document.documentElement.lang).toBe("en");
     expect(document.documentElement.hasAttribute("data-ready")).toBe(true);

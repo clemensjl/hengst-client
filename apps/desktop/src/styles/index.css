@@ -11,6 +11,7 @@
 @source not "./gatePatterns.ts";
 @source not "./classConflicts.ts";
 @source not "./sourceFiles.ts";
+@source not "../test/**";
 
 /* Tokens, shadcn mapping, scales and base rules of DESIGN.md. Values come from DESIGN.md 2.1 and
    sections 4, 5 and 8; tokens.test.ts reads that file and fails if this one drifts from it. */
@@ -133,6 +134,11 @@
   --breakpoint-medium: 880px;
   --breakpoint-wide: 1200px;
   --breakpoint-full: 1280px;
+
+  /* Tailwind's default palette is removed too: bg-white, text-black, bg-gray-* and the rest do not
+     exist, so the tokens below are the only colors (vite-plugins/noBannedUtilities.ts checks the
+     production style sheet). Must stay before the first --color token. */
+  --color-*: initial;
 
   --color-background: var(--bg);
   --color-bg: var(--bg);
@@ -355,5 +361,96 @@ html[data-input="keyboard"] *::after {
       transform: none;
       transition-duration: 80ms;
     }
+  }
+}
+
+/* A dialog fades and scales from its center, its overlay only fades (DESIGN.md 8); opened by
+   keyboard it just appears; reduced motion drops the scale. */
+@utility motion-dialog {
+  transform-origin: center;
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-dialog-in);
+  transition-timing-function: var(--ease-out);
+
+  &[data-starting-style] {
+    opacity: 0;
+    transform: scale(0.97);
+  }
+
+  &[data-ending-style] {
+    opacity: 0;
+    transform: scale(0.97);
+    transition-duration: var(--dur-dialog-out);
+  }
+
+  html[data-input="keyboard"] & {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 80ms;
+
+    &[data-starting-style],
+    &[data-ending-style] {
+      transform: none;
+      transition-duration: 80ms;
+    }
+  }
+}
+
+@utility motion-overlay {
+  transition-property: opacity;
+  transition-duration: var(--dur-dialog-in);
+  transition-timing-function: var(--ease-out);
+
+  &[data-starting-style] {
+    opacity: 0;
+  }
+
+  &[data-ending-style] {
+    opacity: 0;
+    transition-duration: var(--dur-dialog-out);
+  }
+
+  html[data-input="keyboard"] & {
+    transition: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    transition-duration: 80ms;
+
+    &[data-ending-style] {
+      transition-duration: 80ms;
+    }
+  }
+}
+
+/* The 1 px outline of a floating layer: --border in light, --border-strong in dark (DESIGN.md 5). */
+@utility layer-outline {
+  border-color: var(--border);
+
+  .dark & {
+    border-color: var(--border-strong);
+  }
+}
+
+/* An item of a menu: the pointer highlight is the --hover fill; an item highlighted by keyboard
+   also shows the focus outline, drawn inside the item (DESIGN.md 9). */
+@utility menu-item {
+  &[data-highlighted] {
+    background-color: var(--hover);
+  }
+
+  &:focus-visible {
+    outline-offset: -2px;
+  }
+}
+
+/* The separator inside a menu: --border in light, --border-strong in dark (DESIGN.md 10.15). */
+@utility menu-separator {
+  background-color: var(--border);
+
+  .dark & {
+    background-color: var(--border-strong);
   }
 }

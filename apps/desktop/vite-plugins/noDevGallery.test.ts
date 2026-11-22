@@ -17,6 +17,18 @@ describe("noDevGallery", () => {
     ).toEqual(["a.js: ErrorGallery", "b.html: gallery-sample-detail"]);
   });
 
+  it("finds the sign-in gallery too: its name, its hash and its sample text", () => {
+    expect(findGalleryMarkers({ "a.js": 'location.hash.startsWith("#sign-in-gallery")' })).toEqual([
+      "a.js: sign-in-gallery",
+    ]);
+    expect(findGalleryMarkers({ "a.js": "function SignInGallery(){}" })).toEqual([
+      "a.js: SignInGallery",
+    ]);
+    expect(findGalleryMarkers({ "b.js": 'detail:"gallery sample: x"' })).toEqual([
+      "b.js: gallery sample:",
+    ]);
+  });
+
   it("fails the build, naming the file and the marker", () => {
     const plugin = noDevGallery();
     const errors: string[] = [];
