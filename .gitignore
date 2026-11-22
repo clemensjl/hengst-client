@@ -12,7 +12,9 @@ mod/dist/
 *.iml
 .vscode/
 out/
-bin/
+# IDE output of the Gradle mod only; crates/*/src/bin/ holds Rust binaries.
+/bin/
+mod/**/bin/
 
 # Desktop app
 apps/desktop/node_modules/

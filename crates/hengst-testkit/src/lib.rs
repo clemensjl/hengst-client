@@ -23,6 +23,20 @@ pub use mojang::{endpoints, mount_mojang};
 
 use wiremock::MockServer;
 
+/// Plays the system browser of a browser sign-in: opens `authorize_url` (the core's
+/// `BrowserLogin::authorize_url`), follows the mock's redirect to the core's loopback listener
+/// (`http://localhost:<port>/?code=..&state=..`, sent with the matching `Host` header, which the
+/// listener requires) and returns the page the launcher answered with. Call it concurrently with
+/// `finish_browser_login`: the page only arrives after the token exchange.
+pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error> {
+    reqwest::Client::new()
+        .get(authorize_url)
+        .send()
+        .await?
+        .text()
+        .await
+}
+
 /// One mock server with both the sign-in chain (accounts A and B) and the Mojang services
 /// mounted: what the end-to-end binary `hengst-mock` serves.
 pub struct Services {
@@ -65,24 +79,12 @@ mod tests {
         }
     }
 
-    /// Plays the browser: follows the authorize URL through the mock and back to the loopback
-    /// listener, and returns the page the launcher showed.
-    async fn browser_visit(url: String) -> String {
-        reqwest::Client::new()
-            .get(url)
-            .send()
-            .await
-            .unwrap()
-            .text()
-            .await
-            .unwrap()
-    }
-
     async fn browser_login(
         auth: &MicrosoftAuth,
     ) -> (hengst_core::auth::flow::LoginSession, String) {
         let login = auth.start_browser_login().await.unwrap();
-        let visit = tokio::spawn(browser_visit(login.authorize_url().to_string()));
+        let url = login.authorize_url().to_string();
+        let visit = tokio::spawn(async move { browser_visit(&url).await.unwrap() });
         let tokens = auth
             .finish_browser_login(login, &pages(), Duration::from_secs(20))
             .await
@@ -177,6 +179,19 @@ mod tests {
             AuthScenario::from_name("slow:250"),
             Some(AuthScenario::Slow(Duration::from_millis(250)))
         );
+        assert_eq!(
+            AuthScenario::from_name("device-pending:3"),
+            Some(AuthScenario::DevicePending(3))
+        );
+        assert_eq!(
+            AuthScenario::from_name("device-slow-down"),
+            Some(AuthScenario::DeviceSlowDown)
+        );
+        assert_eq!(
+            AuthScenario::from_name("device-expired"),
+            Some(AuthScenario::DeviceExpired)
+        );
+        assert_eq!(AuthScenario::from_name("device-pending:x"), None);
         assert_eq!(AuthScenario::from_name("slow:abc"), None);
         assert_eq!(AuthScenario::from_name("nope"), None);
     }

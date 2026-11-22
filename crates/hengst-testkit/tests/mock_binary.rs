@@ -71,18 +71,58 @@ fn mock_binary_prints_its_url() {
     assert!(wait_for_exit(&mut child, Duration::from_secs(5)).success());
 }
 
-#[test]
-fn mock_binary_applies_the_scenario_from_the_environment() {
-    let mut child = spawn(Some("no-xbox"));
+fn http_post_json(addr: &str, path: &str, body: &serde_json::Value) -> String {
+    let body = body.to_string();
+    let mut stream = TcpStream::connect(addr).unwrap();
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    write!(
+        stream,
+        "POST {path} HTTP/1.1
+Host: {addr}
+Content-Type: application/json
+Content-Length: {}
+Connection: close
+
+{body}",
+        body.len()
+    )
+    .unwrap();
+    let mut out = String::new();
+    stream.read_to_string(&mut out).unwrap();
+    out
+}
+
+/// A valid XSTS request for account A: the answer depends on the scenario.
+fn xsts_answer(scenario: &str) -> String {
+    let mut child = spawn(Some(scenario));
     let line = first_line(&mut child);
     let json: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
     let addr = json["url"].as_str().unwrap().trim_start_matches("http://");
-    // An unauthenticated XSTS request is refused with 400 whatever the scenario; the scenario
-    // itself is covered in auth_mock.rs, here only that the binary starts with it.
-    let reply = http_get(addr, "/xsts/authorize");
-    assert!(reply.starts_with("HTTP/1.1 405"), "{reply}");
+    let reply = http_post_json(
+        addr,
+        "/xsts/authorize",
+        &serde_json::json!({
+            "Properties": {"SandboxId": "RETAIL", "UserTokens": [hengst_testkit::PLAYER_A.xbox_user_token()]},
+            "RelyingParty": "rp://api.minecraftservices.com/",
+            "TokenType": "JWT"
+        }),
+    );
     drop(child.stdin.take());
     assert!(wait_for_exit(&mut child, Duration::from_secs(5)).success());
+    reply
+}
+
+#[test]
+fn mock_binary_applies_the_scenario_from_the_environment() {
+    // The same valid request is answered differently depending on the scenario.
+    let ok = xsts_answer("ok");
+    assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+    assert!(ok.contains("test-xsts-"), "{ok}");
+    let no_xbox = xsts_answer("no-xbox");
+    assert!(no_xbox.starts_with("HTTP/1.1 401"), "{no_xbox}");
+    assert!(no_xbox.contains("2148916233"), "{no_xbox}");
 }
 
 #[test]

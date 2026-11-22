@@ -12,10 +12,10 @@ use base64::Engine;
 use hengst_core::auth::AuthEndpoints;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use url::Url;
 use wiremock::matchers::path;
 use wiremock::{Match, Mock, MockServer, Request, Respond, ResponseTemplate};
@@ -79,10 +79,10 @@ impl MockAccount {
         format!("test-xsts-{}", self.uuid)
     }
 
-    /// Xbox user id: digits derived from the UUID, clearly not a real one.
+    /// Xbox user id. Obviously fake text, not the digits of a real id: the core keeps it as an
+    /// opaque string.
     pub fn xuid(&self) -> String {
-        let n = u32::from_str_radix(&self.uuid[..8], 16).unwrap_or(0);
-        format!("2535{n:012}")
+        format!("test-xuid-{}", &self.uuid[..8])
     }
 }
 
@@ -106,16 +106,25 @@ pub enum AuthScenario {
     RefreshExpired,
     /// Every refresh token works once; using it again answers `invalid_grant`.
     RefreshRotates,
-    /// The sign-in services close the connection without an answer.
+    /// The sign-in services close the connection without an answer. The Mojang and Fabric
+    /// mocks are not affected.
     NetworkFailure,
-    /// Everything works, but every answer waits this long.
+    /// Polling a device code answers `authorization_pending` this many times, then succeeds.
+    DevicePending(u32),
+    /// The first poll of a device code answers `slow_down`, the next succeeds.
+    DeviceSlowDown,
+    /// Polling a device code answers `expired_token`.
+    DeviceExpired,
+    /// Everything works, but every answer of the sign-in services waits this long. The Mojang
+    /// and Fabric mocks (`mount_mojang`) are not delayed.
     Slow(Duration),
 }
 
 impl AuthScenario {
     /// The names `hengst-mock` reads from `HENGST_MOCK_SCENARIO`: `ok`, `not-approved`,
     /// `no-xbox`, `declined`, `no-game`, `no-profile`, `refresh-expired`, `refresh-rotates`,
-    /// `network-failure` and `slow:<milliseconds>`.
+    /// `network-failure`, `device-pending:<polls>`, `device-slow-down`, `device-expired` and
+    /// `slow:<milliseconds>`.
     pub fn from_name(name: &str) -> Option<AuthScenario> {
         Some(match name {
             "ok" => AuthScenario::Ok,
@@ -127,9 +136,15 @@ impl AuthScenario {
             "refresh-expired" => AuthScenario::RefreshExpired,
             "refresh-rotates" => AuthScenario::RefreshRotates,
             "network-failure" => AuthScenario::NetworkFailure,
+            "device-slow-down" => AuthScenario::DeviceSlowDown,
+            "device-expired" => AuthScenario::DeviceExpired,
             other => {
-                let ms = other.strip_prefix("slow:")?.parse().ok()?;
-                AuthScenario::Slow(Duration::from_millis(ms))
+                if let Some(polls) = other.strip_prefix("device-pending:") {
+                    AuthScenario::DevicePending(polls.parse().ok()?)
+                } else {
+                    let ms = other.strip_prefix("slow:")?.parse().ok()?;
+                    AuthScenario::Slow(Duration::from_millis(ms))
+                }
             }
         })
     }
@@ -167,6 +182,16 @@ struct CodeGrant {
     client_id: String,
     redirect_uri: String,
     challenge: String,
+    issued: Instant,
+    /// Spent by any redemption attempt, successful or not.
+    used: bool,
+}
+
+struct DeviceGrant {
+    account: usize,
+    client_id: String,
+    issued: Instant,
+    polls: u32,
     used: bool,
 }
 
@@ -174,14 +199,19 @@ struct State {
     scenario: AuthScenario,
     expected_client_id: Option<String>,
     accounts: Vec<MockAccount>,
+    code_lifetime: Duration,
     next_code: usize,
     codes: HashMap<String, CodeGrant>,
     next_device: usize,
-    devices: HashMap<String, usize>,
+    devices: HashMap<String, DeviceGrant>,
+    /// Sign-ins completed per account (index into `accounts`).
+    sign_ins: HashMap<usize, usize>,
     /// Every refresh token handed out (and the seeds), with its account.
     refresh: HashMap<String, usize>,
     revoked: HashSet<String>,
     rotations: usize,
+    /// States and code verifiers the clients sent: secrets the mock only learns from requests.
+    seen: BTreeSet<String>,
     log: Vec<RecordedRequest>,
 }
 
@@ -202,6 +232,34 @@ pub struct AuthHandle {
 }
 
 impl AuthHandle {
+    /// How long authorization codes and device codes stay valid (default two minutes).
+    pub fn set_code_lifetime(&self, lifetime: Duration) {
+        self.shared.lock().code_lifetime = lifetime;
+    }
+
+    /// Every secret value the mock has issued or seen so far, sorted: the players' Minecraft and
+    /// refresh tokens, the derived Microsoft, Xbox and XSTS tokens, rotated and later sign-in
+    /// refresh tokens, authorization codes, device codes, and the `state` and `code_verifier`
+    /// values clients sent. Meant for assertions that none of them leaks into an output; the
+    /// values are fake.
+    pub fn issued_secrets(&self) -> Vec<String> {
+        let st = self.shared.lock();
+        let mut all = st.seen.clone();
+        for a in &st.accounts {
+            all.extend([
+                a.minecraft_token.to_string(),
+                a.refresh_token.to_string(),
+                a.msa_access_token(),
+                a.xbox_user_token(),
+                a.xsts_token(),
+            ]);
+        }
+        all.extend(st.refresh.keys().cloned());
+        all.extend(st.codes.keys().cloned());
+        all.extend(st.devices.keys().cloned());
+        all.into_iter().collect()
+    }
+
     /// Changes the scenario for all following requests.
     pub fn set_scenario(&self, scenario: AuthScenario) {
         self.shared.lock().scenario = scenario;
@@ -346,13 +404,16 @@ pub async fn mount_auth(
             scenario,
             expected_client_id: None,
             accounts: accounts.to_vec(),
+            code_lifetime: Duration::from_secs(120),
             next_code: 1,
             codes: HashMap::new(),
             next_device: 1,
             devices: HashMap::new(),
+            sign_ins: HashMap::new(),
             refresh,
             revoked: HashSet::new(),
             rotations: 0,
+            seen: BTreeSet::new(),
             log: Vec::new(),
         }),
     });
@@ -499,6 +560,9 @@ fn authorize(st: &mut State, req: &Request) -> ResponseTemplate {
         return page(400, "unknown client_id");
     }
     let state = get("state");
+    if !state.is_empty() {
+        st.seen.insert(state.to_string());
+    }
     let challenge = get("code_challenge");
     let mistake = if get("response_type") != "code" {
         Some("response_type must be code")
@@ -540,10 +604,11 @@ fn authorize(st: &mut State, req: &Request) -> ResponseTemplate {
     st.codes.insert(
         code.clone(),
         CodeGrant {
-            account: n - 1,
+            account: (n - 1) % st.accounts.len(),
             client_id: get("client_id").to_string(),
             redirect_uri: get("redirect_uri").to_string(),
             challenge: challenge.to_string(),
+            issued: Instant::now(),
             used: false,
         },
     );
@@ -574,17 +639,52 @@ fn token(st: &mut State, req: &Request, form: &HashMap<String, String>) -> Respo
     }
 }
 
+/// RFC 7636 section 4.1: 43 to 128 characters of `[A-Za-z0-9-._~]`.
+fn valid_verifier(v: &str) -> bool {
+    (43..=128).contains(&v.len())
+        && v.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'.' | b'_' | b'~'))
+}
+
+/// The refresh token a sign-in of `account` returns. The first sign-in gets the account's
+/// documented constant (unless a rotation already used it up); every later one gets a token of
+/// its own, so a client that stored the result of an earlier sign-in is never handed a token
+/// that was already used or revoked.
+fn issue_sign_in_token(st: &mut State, account: usize) -> String {
+    let base = account_for(st, account).refresh_token;
+    let count = st.sign_ins.entry(account).or_insert(0);
+    *count += 1;
+    let n = *count;
+    let token = if n == 1 && !st.revoked.contains(base) {
+        base.to_string()
+    } else {
+        format!("{base}-signin-{n}")
+    };
+    st.refresh.insert(token.clone(), account);
+    token
+}
+
 fn code_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTemplate {
     let get = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
     let Some(code) = form.get("code").filter(|c| !c.is_empty()) else {
         return oauth_error(400, "invalid_request", "code is missing");
     };
+    let verifier = get("code_verifier");
+    if !verifier.is_empty() {
+        st.seen.insert(verifier.to_string());
+    }
     let invalid = |what| oauth_error(400, "invalid_grant", what);
-    let Some(grant) = st.codes.get(code) else {
+    let lifetime = st.code_lifetime;
+    let Some(grant) = st.codes.get_mut(code) else {
         return invalid("unknown code");
     };
     if grant.used {
         return invalid("the code was already redeemed");
+    }
+    // From here on the code is spent, whatever the outcome (RFC 6749 section 10.5).
+    grant.used = true;
+    if grant.issued.elapsed() > lifetime {
+        return invalid("the code expired");
     }
     if grant.client_id != get("client_id") {
         return invalid("client_id differs from the authorize request");
@@ -592,17 +692,15 @@ fn code_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTemplat
     if grant.redirect_uri != get("redirect_uri") {
         return invalid("redirect_uri differs from the authorize request");
     }
-    let verifier = get("code_verifier");
+    if !valid_verifier(verifier) {
+        return invalid("code_verifier must be 43 to 128 characters of [A-Za-z0-9-._~]");
+    }
     if URL_SAFE_NO_PAD.encode(Sha256::digest(verifier.as_bytes())) != grant.challenge {
         return invalid("code_verifier does not match the code_challenge");
     }
     let account = grant.account;
-    if let Some(grant) = st.codes.get_mut(code) {
-        grant.used = true;
-    }
-    let refresh = account_for(st, account).refresh_token;
-    st.refresh.insert(refresh.to_string(), account);
-    tokens_response(st, account, refresh)
+    let refresh = issue_sign_in_token(st, account);
+    tokens_response(st, account, &refresh)
 }
 
 fn refresh_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTemplate {
@@ -649,28 +747,71 @@ fn device_code(st: &mut State, form: &HashMap<String, String>) -> ResponseTempla
     let n = st.next_device;
     st.next_device += 1;
     let device_code = format!("test-device-{n}");
-    st.devices.insert(device_code.clone(), n - 1);
+    st.devices.insert(
+        device_code.clone(),
+        DeviceGrant {
+            account: (n - 1) % st.accounts.len(),
+            client_id: get("client_id").to_string(),
+            issued: Instant::now(),
+            polls: 0,
+            used: false,
+        },
+    );
     ResponseTemplate::new(200).set_body_json(json!({
         "device_code": device_code,
         "user_code": format!("TEST-{n:04}"),
         // The reserved .invalid domain never resolves: nothing can open a real page by accident.
         "verification_uri": "https://example.invalid/link",
-        "expires_in": 900,
+        "expires_in": st.code_lifetime.as_secs(),
         "interval": 0,
     }))
 }
 
 fn device_grant(st: &mut State, form: &HashMap<String, String>) -> ResponseTemplate {
-    let code = form.get("device_code").map(String::as_str).unwrap_or("");
-    let Some(&account) = st.devices.get(code) else {
+    let get = |k: &str| form.get(k).map(String::as_str).unwrap_or("");
+    let lifetime = st.code_lifetime;
+    let scenario = st.scenario;
+    let code = get("device_code");
+    let Some(grant) = st.devices.get_mut(code) else {
         return oauth_error(400, "invalid_grant", "unknown device_code");
     };
-    if st.scenario == AuthScenario::Declined {
-        return oauth_error(400, "authorization_declined", "the user declined");
+    if grant.client_id != get("client_id") || grant.used {
+        return oauth_error(
+            400,
+            "invalid_grant",
+            "the device_code belongs to another client or was already redeemed",
+        );
     }
-    let refresh = account_for(st, account).refresh_token;
-    st.refresh.insert(refresh.to_string(), account);
-    tokens_response(st, account, refresh)
+    if grant.issued.elapsed() > lifetime {
+        return oauth_error(400, "expired_token", "the device_code expired");
+    }
+    grant.polls += 1;
+    let polls = grant.polls;
+    let account = grant.account;
+    match scenario {
+        AuthScenario::Declined => {
+            return oauth_error(400, "authorization_declined", "the user declined")
+        }
+        AuthScenario::DeviceExpired => {
+            return oauth_error(400, "expired_token", "the device_code expired")
+        }
+        AuthScenario::DevicePending(n) if polls <= n => {
+            return oauth_error(
+                400,
+                "authorization_pending",
+                "the user has not finished yet",
+            )
+        }
+        AuthScenario::DeviceSlowDown if polls == 1 => {
+            return oauth_error(400, "slow_down", "polling too fast")
+        }
+        _ => {}
+    }
+    if let Some(grant) = st.devices.get_mut(code) {
+        grant.used = true;
+    }
+    let refresh = issue_sign_in_token(st, account);
+    tokens_response(st, account, &refresh)
 }
 
 // ---- Xbox Live and XSTS ----
@@ -733,7 +874,7 @@ fn xsts(st: &State, req: &Request) -> ResponseTemplate {
             "Identity": "0",
             "XErr": 2148916233u64,
             "Message": "",
-            "Redirect": "https://start.ui.xboxlive.com/CreateAccount",
+            "Redirect": "https://xbox-signup.invalid/CreateAccount",
         }));
     }
     ResponseTemplate::new(200).set_body_json(json!({

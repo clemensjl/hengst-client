@@ -1061,7 +1061,10 @@ git commit -m "test: add hengst-testkit with mock Microsoft, Xbox, Mojang and Fa
 #[tokio::test] async fn remove_deletes_tokens_and_moves_selection() { /* remove(B) -> Liste [A], A selected, Secret für B fehlt */ }
 #[tokio::test] async fn login_events_never_contain_tokens() {
     // alle Events eines Browser- und eines Device-Logins serialisieren;
-    // kein String enthält "mc-token-a", "rt-a", "code-", "state=", "code_verifier"
+    // Geheimnisse kommen aus dem Testkit, nicht aus Literalen: `auth.issued_secrets()` (Handle von `mount_auth`/`Services::auth`) liefert alle bis dahin
+    // ausgegebenen Werte (Minecraft- und Refresh-Tokens der Spieler, abgeleitete Microsoft-, Xbox- und XSTS-Tokens, rotierte Refresh-Tokens,
+    // Autorisierungscodes, Device Codes, `state`, Verifier); der Test prüft zuerst, dass die Liste nicht leer ist und `PLAYER_A.minecraft_token`
+    // und `PLAYER_A.refresh_token` enthält, und dann, dass kein serialisierter String einen davon enthält; zusätzlich nicht "state=" und "code_verifier"
 }
 #[tokio::test] async fn not_approved_login_maps_to_app_not_approved() { /* Szenario NotApproved -> Failed { error.code == AppNotApproved } und Ergebnis Err */ }
 #[tokio::test] async fn second_login_cancels_the_first() {
