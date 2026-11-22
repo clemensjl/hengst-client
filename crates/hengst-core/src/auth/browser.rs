@@ -33,6 +33,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(5);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 /// Connection tasks alive at once; beyond that the oldest one still reading is closed.
 const MAX_CONNECTIONS: usize = 32;
+/// Pause after a failed accept.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 /// Longest `error` code kept from an authorization response.
 const MAX_ERROR_CODE: usize = 64;
 
@@ -46,10 +48,22 @@ pub struct BrowserLoginPages {
     pub failure_body: String,
 }
 
+/// Fresh OS-chosen ports tried before the sign-in gives up on finding one free on both
+/// loopback addresses.
+const BIND_ATTEMPTS: usize = 8;
+
+/// The listening sockets of one sign-in, on the same port.
+struct Listeners {
+    v4: TcpListener,
+    /// `None` only when the machine has no IPv6 loopback.
+    v6: Option<TcpListener>,
+}
+
 /// A started browser sign-in. Owns the listening sockets: dropping it frees the port.
 pub struct BrowserLogin {
-    v4: TcpListener,
-    v6: Option<TcpListener>,
+    /// Shared only so tests can watch the sockets close through a `Weak`.
+    listeners: Arc<Listeners>,
+    port: u16,
     redirect_uri: String,
     authorize_url: String,
     verifier: Secret,
@@ -75,6 +89,12 @@ impl BrowserLogin {
     #[cfg(test)]
     fn state_for_test(&self) -> &str {
         &self.state
+    }
+
+    /// Dead once the listening sockets are closed.
+    #[cfg(test)]
+    fn listeners_probe(&self) -> std::sync::Weak<Listeners> {
+        Arc::downgrade(&self.listeners)
     }
 }
 
@@ -207,8 +227,28 @@ enum Request {
     },
 }
 
+/// Exactly one `Host` header naming a loopback host with this listener's port. Anything else (a
+/// DNS-rebinding page under a foreign name, a missing or repeated header) is refused, so no
+/// other origin can read the listener's answers.
+fn host_is_loopback(headers: &[&str], port: u16) -> bool {
+    let mut hosts = headers.iter().filter_map(|h| {
+        let (name, value) = h.split_once(':')?;
+        name.eq_ignore_ascii_case("host").then_some(value)
+    });
+    let (Some(value), None) = (hosts.next(), hosts.next()) else {
+        return false;
+    };
+    let Some((host, given_port)) = value.trim_matches([' ', '\t']).rsplit_once(':') else {
+        return false;
+    };
+    given_port == port.to_string()
+        && ["localhost", "127.0.0.1", "[::1]"]
+            .iter()
+            .any(|h| host.eq_ignore_ascii_case(h))
+}
+
 /// Classifies the request head (everything up to the empty line).
-fn parse_request(head: &[u8]) -> Request {
+fn parse_request(head: &[u8], port: u16) -> Request {
     let Ok(head) = std::str::from_utf8(head) else {
         return Request::Bad;
     };
@@ -216,7 +256,8 @@ fn parse_request(head: &[u8]) -> Request {
     let Some(line) = lines.next() else {
         return Request::Bad;
     };
-    if lines.count() > MAX_HEADER_LINES {
+    let headers: Vec<&str> = lines.collect();
+    if headers.len() > MAX_HEADER_LINES || !host_is_loopback(&headers, port) {
         return Request::Bad;
     }
     let mut parts = line.split(' ');
@@ -289,13 +330,18 @@ async fn write_reply(stream: &mut TcpStream, reply: &Reply) {
 
 /// One accepted connection: read and classify the request, answer what is not a callback
 /// itself, hand callbacks to the wait loop and write its answer.
-async fn serve(mut stream: TcpStream, loop_tx: mpsc::Sender<Callback>, reading: Arc<AtomicBool>) {
+async fn serve(
+    mut stream: TcpStream,
+    port: u16,
+    loop_tx: mpsc::Sender<Callback>,
+    reading: Arc<AtomicBool>,
+) {
     let head = tokio::time::timeout(READ_TIMEOUT, read_head(&mut stream)).await;
     reading.store(false, Ordering::Relaxed);
     let Ok(Some(head)) = head else {
         return;
     };
-    let (state, code, error) = match parse_request(&head) {
+    let (state, code, error) = match parse_request(&head, port) {
         Request::Bad => return write_reply(&mut stream, &Reply::BadRequest).await,
         Request::NotFound => return write_reply(&mut stream, &Reply::NotFound).await,
         Request::Callback { state, code, error } => (state, code, error),
@@ -333,7 +379,21 @@ impl Connections {
         }
     }
 
-    fn spawn(&mut self, stream: TcpStream, loop_tx: &mpsc::Sender<Callback>) {
+    /// Serves an accepted connection. After an accept error the loop pauses briefly, so an error
+    /// that keeps coming back cannot spin it.
+    async fn accepted(
+        &mut self,
+        conn: std::io::Result<TcpStream>,
+        port: u16,
+        loop_tx: &mpsc::Sender<Callback>,
+    ) {
+        match conn {
+            Ok(stream) => self.spawn(stream, port, loop_tx),
+            Err(_) => tokio::time::sleep(ACCEPT_BACKOFF).await,
+        }
+    }
+
+    fn spawn(&mut self, stream: TcpStream, port: u16, loop_tx: &mpsc::Sender<Callback>) {
         while self.tasks.try_join_next().is_some() {}
         self.reading
             .retain(|(task, reading)| !task.is_finished() && reading.load(Ordering::Relaxed));
@@ -345,7 +405,7 @@ impl Connections {
         let reading = Arc::new(AtomicBool::new(true));
         let task = self
             .tasks
-            .spawn(serve(stream, loop_tx.clone(), reading.clone()));
+            .spawn(serve(stream, port, loop_tx.clone(), reading.clone()));
         self.reading.push_back((task, reading));
     }
 }
@@ -361,6 +421,42 @@ async fn accept(v4: &TcpListener, v6: Option<&TcpListener>) -> std::io::Result<T
     }
 }
 
+/// The IPv6 bind failed because the machine has no IPv6 loopback, not because the port is
+/// taken.
+fn ipv6_unavailable(e: &std::io::Error) -> bool {
+    // WSAEAFNOSUPPORT (10047), WSAEADDRNOTAVAIL (10049); the latter is also `AddrNotAvailable`.
+    e.kind() == std::io::ErrorKind::AddrNotAvailable
+        || (cfg!(windows) && matches!(e.raw_os_error(), Some(10047 | 10049)))
+}
+
+/// Binds `127.0.0.1` on an OS-chosen port and `[::1]` on the same port (`bind_v6` is the
+/// IPv6 step, replaceable in tests). The IPv4 and IPv6 port spaces are separate, so the port
+/// may be taken on `[::1]`: then a browser resolving `localhost` to `::1` would reach another
+/// program. Such a port is given up for a fresh one; only a machine without IPv6 loopback
+/// continues on IPv4 alone.
+async fn bind_loopback<F, Fut>(mut bind_v6: F) -> Result<(Listeners, u16)>
+where
+    F: FnMut(u16) -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<TcpListener>>,
+{
+    for _ in 0..BIND_ATTEMPTS {
+        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|_| AuthError::LoopbackUnavailable)?;
+        let port = v4
+            .local_addr()
+            .map_err(|_| AuthError::LoopbackUnavailable)?
+            .port();
+        match bind_v6(port).await {
+            Ok(v6) => return Ok((Listeners { v4, v6: Some(v6) }, port)),
+            Err(e) if ipv6_unavailable(&e) => return Ok((Listeners { v4, v6: None }, port)),
+            // Taken (or any other failure): drop this IPv4 listener and try a fresh port.
+            Err(_) => {}
+        }
+    }
+    Err(AuthError::LoopbackUnavailable.into())
+}
+
 /// What the one accepted callback carried.
 enum Outcome {
     Code(Secret),
@@ -371,16 +467,17 @@ impl MicrosoftAuth {
     /// Binds the loopback listener and prepares the authorization request. The caller opens
     /// [`BrowserLogin::authorize_url`] in the system browser, then calls
     /// [`MicrosoftAuth::finish_browser_login`].
+    ///
+    /// The authorization URL contains `state` and the PKCE challenge. Do not log it, do not hand
+    /// it to a web view, and do not put it where other users of the machine can read it (for
+    /// example a command line of another process or a shared file); give it to the browser only.
+    ///
+    /// The success page the browser shows means only that the Microsoft step succeeded: the
+    /// Xbox, XSTS and game-services steps of [`MicrosoftAuth::complete_login`] still follow and
+    /// can fail.
     pub async fn start_browser_login(&self) -> Result<BrowserLogin> {
-        let v4 = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
-            .await
-            .map_err(|_| AuthError::LoopbackUnavailable)?;
-        let port = v4
-            .local_addr()
-            .map_err(|_| AuthError::LoopbackUnavailable)?
-            .port();
-        // `localhost` may resolve to ::1 first; without IPv6 the browser falls back to 127.0.0.1.
-        let v6 = TcpListener::bind((Ipv6Addr::LOCALHOST, port)).await.ok();
+        let (listeners, port) =
+            bind_loopback(|port| TcpListener::bind((Ipv6Addr::LOCALHOST, port))).await?;
         let verifier = Secret::new(random_b64(32)?);
         let state = random_b64(16)?;
         let redirect_uri = format!("http://localhost:{port}");
@@ -406,8 +503,8 @@ impl MicrosoftAuth {
         })?
         .into();
         Ok(BrowserLogin {
-            v4,
-            v6,
+            listeners: Arc::new(listeners),
+            port,
             redirect_uri,
             authorize_url,
             verifier,
@@ -425,8 +522,8 @@ impl MicrosoftAuth {
         timeout: Duration,
     ) -> Result<MsaTokens> {
         let BrowserLogin {
-            v4,
-            v6,
+            listeners,
+            port,
             redirect_uri,
             verifier,
             state,
@@ -440,10 +537,8 @@ impl MicrosoftAuth {
         let (outcome, reply, written) = loop {
             tokio::select! {
                 _ = &mut deadline => return Err(AuthError::BrowserLoginTimedOut.into()),
-                conn = accept(&v4, v6.as_ref()) => {
-                    if let Ok(stream) = conn {
-                        connections.spawn(stream, &loop_tx);
-                    }
+                conn = accept(&listeners.v4, listeners.v6.as_ref()) => {
+                    connections.accepted(conn, port, &loop_tx).await;
                 }
                 Some(cb) = callbacks.recv() => {
                     let valid = cb.state.as_deref().is_some_and(|s| same(s, &state));
@@ -477,10 +572,8 @@ impl MicrosoftAuth {
                     tokio::select! {
                         r = &mut exchange => break r,
                         _ = &mut deadline => break Err(AuthError::BrowserLoginTimedOut.into()),
-                        conn = accept(&v4, v6.as_ref()) => {
-                            if let Ok(stream) = conn {
-                                connections.spawn(stream, &loop_tx);
-                            }
+                        conn = accept(&listeners.v4, listeners.v6.as_ref()) => {
+                            connections.accepted(conn, port, &loop_tx).await;
                         }
                         Some(cb) = callbacks.recv() => {
                             let _ = cb.reply.send(Reply::BadRequest);
@@ -523,9 +616,13 @@ impl MicrosoftAuth {
         if resp.status().is_success() {
             return parse_tokens(resp, &url).await;
         }
-        let status = resp.status().as_u16();
+        // An expired or reused code (`invalid_grant`) and the other OAuth errors end this sign-in
+        // like an error in the redirect: only the sanitized code, never the description or body.
         let err = error_code(resp, &url).await?;
-        Err(map_client_error(err, Error::Status { url, status }))
+        let failed = AuthError::BrowserLoginFailed {
+            code: sanitize_code(&err),
+        };
+        Err(map_client_error(err, failed.into()))
     }
 }
 
@@ -566,33 +663,24 @@ mod tests {
     }
 
     async fn auth_with_token_endpoint(calls: u64) -> (MicrosoftAuth, MockServer) {
-        auth_with_slow_token_endpoint(Duration::ZERO, calls).await
-    }
-
-    async fn auth_with_slow_token_endpoint(
-        delay: Duration,
-        calls: u64,
-    ) -> (MicrosoftAuth, MockServer) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
-            .respond_with(token_ok().set_delay(delay))
+            .respond_with(token_ok())
             .expect(calls)
             .mount(&server)
             .await;
         (auth(&server), server)
     }
 
-    async fn auth_with_failing_token_endpoint(delay: Duration) -> (MicrosoftAuth, MockServer) {
+    /// `/token` answers with an OAuth error and a description that must never surface.
+    async fn auth_with_token_error(status: u16, error: &str) -> (MicrosoftAuth, MockServer) {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/token"))
             .respond_with(
-                ResponseTemplate::new(400)
-                    .set_body_json(
-                        json!({"error": "invalid_grant", "error_description": "secret detail"}),
-                    )
-                    .set_delay(delay),
+                ResponseTemplate::new(status)
+                    .set_body_json(json!({"error": error, "error_description": "secret detail"})),
             )
             .expect(1)
             .mount(&server)
@@ -622,17 +710,91 @@ mod tests {
             .unwrap()
     }
 
-    /// Binds the port again within 2 s, retrying every 50 ms.
-    async fn assert_port_free(port: u16) {
-        let start = std::time::Instant::now();
-        loop {
-            match std::net::TcpListener::bind(("127.0.0.1", port)) {
-                Ok(_) => return,
-                Err(e) if start.elapsed() > Duration::from_secs(2) => {
-                    panic!("port {port} still in use: {e}")
-                }
-                Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,
+    /// Waits (up to 10 s) until the login's listening sockets are closed. Checks the login's own
+    /// sockets instead of binding the port again: in a parallel run the OS may hand a just-freed
+    /// port to another test at once.
+    async fn assert_closed(probe: &std::sync::Weak<Listeners>) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while probe.upgrade().is_some() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
             }
+        })
+        .await
+        .expect("the listening sockets are still open");
+    }
+
+    /// A token endpoint that holds its answer until the test releases it.
+    struct Gate {
+        auth: MicrosoftAuth,
+        /// Fires once the exchange request has arrived.
+        received: oneshot::Receiver<()>,
+        release: oneshot::Sender<()>,
+        /// Connections the endpoint accepted.
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    async fn gated_token_endpoint(status: u16, body: serde_json::Value) -> Gate {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let msa = format!("http://127.0.0.1:{}", listener.local_addr().unwrap().port());
+        let (received_tx, received) = oneshot::channel();
+        let (release, released) = oneshot::channel::<()>();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counted = calls.clone();
+        tokio::spawn(async move {
+            let (mut s, _) = listener.accept().await.unwrap();
+            counted.fetch_add(1, Ordering::SeqCst);
+            read_http_request(&mut s).await;
+            let _ = received_tx.send(());
+            let _ = released.await;
+            let body = body.to_string();
+            let answer = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            s.write_all(answer.as_bytes()).await.unwrap();
+            let _ = s.shutdown().await;
+            drop(s);
+            while listener.accept().await.is_ok() {
+                counted.fetch_add(1, Ordering::SeqCst);
+            }
+        });
+        let auth = MicrosoftAuth::new(
+            "test-id".into(),
+            AuthEndpoints {
+                msa,
+                ..AuthEndpoints::default()
+            },
+        );
+        Gate {
+            auth,
+            received,
+            release,
+            calls,
+        }
+    }
+
+    /// Reads a request head and its `Content-Length` body.
+    async fn read_http_request(s: &mut TcpStream) {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let head_end = loop {
+            let n = s.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "request ended early");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(i) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                break i + 4;
+            }
+        };
+        let head = String::from_utf8_lossy(&buf[..head_end]).to_ascii_lowercase();
+        let length: usize = head
+            .lines()
+            .find_map(|l| l.strip_prefix("content-length:"))
+            .map(|v| v.trim().parse().unwrap())
+            .unwrap_or(0);
+        while buf.len() < head_end + length {
+            let n = s.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "body ended early");
+            buf.extend_from_slice(&chunk[..n]);
         }
     }
 
@@ -718,6 +880,7 @@ mod tests {
         let auth = auth(&server);
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         Mock::given(method("POST"))
             .and(path("/token"))
@@ -748,7 +911,7 @@ mod tests {
         let tokens = finish.await.unwrap().unwrap();
         assert_eq!(tokens.access_token.expose(), "at");
         assert_eq!(tokens.refresh_token.expose(), "rt");
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
         let body =
             String::from_utf8(server.received_requests().await.unwrap()[0].body.clone()).unwrap();
         assert!(!body.contains("client_secret"), "{body}");
@@ -914,6 +1077,7 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(10))
@@ -933,7 +1097,7 @@ mod tests {
             matches!(err, Error::Auth(AuthError::LoginDeclined)),
             "{err}"
         );
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
     }
 
     #[tokio::test]
@@ -990,20 +1154,12 @@ mod tests {
         assert_eq!(sanitize_code(&"x".repeat(100)).len(), 64);
     }
 
-    #[tokio::test]
-    async fn invalid_client_on_exchange_maps_to_app_misconfigured() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/token"))
-            .respond_with(ResponseTemplate::new(400).set_body_json(
-                json!({"error": "invalid_client", "error_description": "secret detail"}),
-            ))
-            .expect(1)
-            .mount(&server)
-            .await;
-        let auth = auth(&server);
+    /// One complete run whose code exchange fails with `status` and the OAuth `error`.
+    async fn run_failed_exchange(status: u16, error: &str) -> Error {
+        let (auth, _server) = auth_with_token_error(status, error).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(10))
@@ -1014,14 +1170,37 @@ mod tests {
             .text()
             .await
             .unwrap();
-        assert!(body.contains("FAILURE-TITLE"));
+        assert!(body.contains("FAILURE-TITLE") && !body.contains("SUCCESS-TITLE"));
         let err = finish.await.unwrap().unwrap_err();
-        match &err {
-            Error::Auth(AuthError::AppMisconfigured { code }) => assert_eq!(code, "invalid_client"),
-            other => panic!("unexpected: {other}"),
+        assert!(!format!("{err} {err:?}").contains("secret"), "{err:?}");
+        assert_closed(&probe).await;
+        err
+    }
+
+    #[tokio::test]
+    async fn invalid_client_on_exchange_maps_to_app_misconfigured() {
+        for status in [400, 401] {
+            match run_failed_exchange(status, "invalid_client").await {
+                Error::Auth(AuthError::AppMisconfigured { code }) => {
+                    assert_eq!(code, "invalid_client")
+                }
+                other => panic!("unexpected: {other}"),
+            }
         }
-        assert!(!format!("{err} {err:?}").contains("secret detail"));
-        assert_port_free(port).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_errors_of_the_exchange_map_to_browser_login_failed() {
+        for (error, code) in [
+            ("invalid_grant", "invalid_grant"),
+            ("invalid_request", "invalid_request"),
+            ("<b>bad grant</b>", "bbadgrantb"),
+        ] {
+            match run_failed_exchange(400, error).await {
+                Error::Auth(AuthError::BrowserLoginFailed { code: got }) => assert_eq!(got, code),
+                other => panic!("unexpected for {error}: {other}"),
+            }
+        }
     }
 
     #[tokio::test]
@@ -1062,6 +1241,7 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(1).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(10))
@@ -1074,17 +1254,111 @@ mod tests {
             .unwrap();
         assert_eq!(r.status(), 200);
         assert!(finish.await.unwrap().is_ok());
-        assert_port_free(port).await;
-        assert!(std::net::TcpListener::bind(("::1", port)).is_ok());
+        assert_closed(&probe).await;
     }
 
     #[tokio::test]
     async fn listens_on_loopback_only() {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
-        assert!(login.v4.local_addr().unwrap().ip().is_loopback());
-        if let Some(v6) = &login.v6 {
-            assert!(v6.local_addr().unwrap().ip().is_loopback());
+        let port = redirect_port(&login);
+        let v4 = login.listeners.v4.local_addr().unwrap();
+        assert_eq!(v4.ip(), Ipv4Addr::LOCALHOST);
+        assert_eq!(v4.port(), port);
+        if let Some(v6) = &login.listeners.v6 {
+            let v6 = v6.local_addr().unwrap();
+            assert_eq!(v6.ip(), Ipv6Addr::LOCALHOST);
+            assert_eq!(v6.port(), port);
+        }
+    }
+
+    fn ipv6_available() -> bool {
+        std::net::TcpListener::bind(("::1", 0)).is_ok()
+    }
+
+    #[tokio::test]
+    async fn a_port_taken_on_ipv6_is_given_up_for_a_fresh_one() {
+        if !ipv6_available() {
+            eprintln!("skipped: ::1 cannot be bound on this machine");
+            return;
+        }
+        // A squatter takes [::1] on exactly the port the first attempt got, before the listener
+        // binds it: a real "address in use" from the OS, no luck involved.
+        let mut tried = Vec::new();
+        let mut squatters = Vec::new();
+        let (listeners, port) = bind_loopback(|p| {
+            tried.push(p);
+            if tried.len() == 1 {
+                squatters.push(std::net::TcpListener::bind(("::1", p)));
+            }
+            TcpListener::bind((Ipv6Addr::LOCALHOST, p))
+        })
+        .await
+        .unwrap();
+        assert_eq!(tried.len(), 2, "{tried:?}");
+        assert_ne!(port, tried[0]);
+        assert_eq!(port, tried[1]);
+        assert_eq!(listeners.v4.local_addr().unwrap().port(), port);
+        let v6 = listeners
+            .v6
+            .as_ref()
+            .expect("the second port is free on IPv6");
+        assert_eq!(v6.local_addr().unwrap().port(), port);
+        drop(squatters);
+    }
+
+    #[tokio::test]
+    async fn every_port_taken_on_ipv6_means_loopback_unavailable() {
+        let mut tried = 0;
+        let err = bind_loopback(|_| {
+            tried += 1;
+            async { Err(std::io::Error::from(std::io::ErrorKind::AddrInUse)) }
+        })
+        .await
+        .err()
+        .expect("no listeners");
+        assert!(
+            matches!(err, Error::Auth(AuthError::LoopbackUnavailable)),
+            "{err}"
+        );
+        assert_eq!(tried, BIND_ATTEMPTS);
+        // Any other failure counts like a taken port.
+        let err = bind_loopback(|_| async {
+            Err(std::io::Error::from(std::io::ErrorKind::PermissionDenied))
+        })
+        .await
+        .err()
+        .expect("no listeners");
+        assert!(
+            matches!(err, Error::Auth(AuthError::LoopbackUnavailable)),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_machine_without_ipv6_proceeds_on_ipv4_only() {
+        let unavailable = [
+            std::io::Error::from(std::io::ErrorKind::AddrNotAvailable),
+            #[cfg(windows)]
+            std::io::Error::from_raw_os_error(10047), // WSAEAFNOSUPPORT
+            #[cfg(windows)]
+            std::io::Error::from_raw_os_error(10049), // WSAEADDRNOTAVAIL
+        ];
+        for e in unavailable {
+            let kind = e.kind();
+            let raw = e.raw_os_error();
+            let mut e = Some(e);
+            let mut tried = 0;
+            let (listeners, port) = bind_loopback(|_| {
+                tried += 1;
+                let e = e.take().unwrap();
+                async move { Err(e) }
+            })
+            .await
+            .unwrap();
+            assert_eq!(tried, 1, "{kind:?} {raw:?}");
+            assert!(listeners.v6.is_none());
+            assert_eq!(listeners.v4.local_addr().unwrap().port(), port);
         }
     }
 
@@ -1166,13 +1440,13 @@ mod tests {
     async fn times_out_without_redirect() {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
-        let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let err = auth
             .finish_browser_login(login, &pages(), Duration::from_millis(200))
             .await
             .unwrap_err();
         assert!(matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)));
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
     }
 
     #[tokio::test]
@@ -1180,46 +1454,52 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let finish = tokio::spawn(async move {
-            auth.finish_browser_login(login, &pages(), Duration::from_secs(2))
+            auth.finish_browser_login(login, &pages(), Duration::from_secs(5))
                 .await
         });
         let first = callback(port, "code=abc&state=wrong").await;
         let second = callback(port, "code=abc").await;
         assert_eq!(first.status(), 400);
         assert_eq!(second.status(), 400);
-        assert!(
-            !finish.is_finished(),
-            "a rejected callback must not end the wait"
-        );
+        // Only the deadline ends the wait with a timeout: a rejected callback that ended it
+        // would show up as another result.
         let err = finish.await.unwrap().unwrap_err();
         assert!(matches!(err, Error::Auth(AuthError::BrowserLoginTimedOut)));
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
     }
 
     #[tokio::test]
     async fn second_callback_is_refused() {
-        let (auth, server) = auth_with_slow_token_endpoint(Duration::from_millis(500), 1).await;
+        let gate = gated_token_endpoint(
+            200,
+            json!({"access_token": "at", "refresh_token": "rt", "expires_in": 3600}),
+        )
+        .await;
+        let auth = gate.auth;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
-            auth.finish_browser_login(login, &pages(), Duration::from_secs(10))
+            auth.finish_browser_login(login, &pages(), Duration::from_secs(60))
                 .await
         });
         let first = tokio::spawn({
             let s = state.clone();
             async move { callback(port, &format!("code=abc&state={s}")).await }
         });
-        // Wait until the exchange is running.
-        while server.received_requests().await.unwrap().is_empty() {
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
+        // The exchange is running and held until the release below.
+        tokio::time::timeout(Duration::from_secs(30), gate.received)
+            .await
+            .unwrap()
+            .unwrap();
         let second = callback(port, &format!("code=other&state={state}")).await;
         assert_eq!(second.status(), 400, "only one valid callback is accepted");
+        gate.release.send(()).unwrap();
         assert_eq!(first.await.unwrap().status(), 200);
         assert!(finish.await.unwrap().is_ok());
-        // wiremock checks on drop: exactly one /token call.
+        assert_eq!(gate.calls.load(Ordering::SeqCst), 1, "exactly one exchange");
     }
 
     #[tokio::test]
@@ -1227,6 +1507,7 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(1).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(10))
@@ -1239,33 +1520,58 @@ mod tests {
             200
         );
         assert!(finish.await.unwrap().is_ok());
-        assert!(TcpStream::connect(("127.0.0.1", port)).await.is_err());
+        // The listening sockets are gone the moment the login returns, so nothing more can
+        // connect to this login.
+        assert!(probe.upgrade().is_none());
     }
 
     #[tokio::test]
     async fn success_page_is_sent_only_after_the_exchange() {
-        let (auth, _server) = auth_with_failing_token_endpoint(Duration::from_millis(300)).await;
+        let gate = gated_token_endpoint(
+            400,
+            json!({"error": "invalid_grant", "error_description": "secret detail"}),
+        )
+        .await;
+        let auth = gate.auth;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let state = login.state_for_test().to_string();
         let finish = tokio::spawn(async move {
-            auth.finish_browser_login(login, &pages(), Duration::from_secs(5))
+            auth.finish_browser_login(login, &pages(), Duration::from_secs(60))
                 .await
         });
-        let started = std::time::Instant::now();
-        let body = callback(port, &format!("code=abc&state={state}"))
+        let mut browser = tokio::spawn(async move {
+            callback(port, &format!("code=abc&state={state}"))
+                .await
+                .text()
+                .await
+                .unwrap()
+        });
+        tokio::time::timeout(Duration::from_secs(30), gate.received)
             .await
-            .text()
-            .await
+            .unwrap()
             .unwrap();
+        // While the exchange is held, the browser gets no answer. (A wrong implementation can
+        // only pass this by luck, never fail it by load.)
         assert!(
-            started.elapsed() >= Duration::from_millis(300),
+            tokio::time::timeout(Duration::from_millis(200), &mut browser)
+                .await
+                .is_err(),
             "the browser answer waits for the token exchange"
         );
+        gate.release.send(()).unwrap();
+        let body = browser.await.unwrap();
         assert!(body.contains("FAILURE-TITLE") && !body.contains("SUCCESS-TITLE"));
         let err = finish.await.unwrap().unwrap_err();
-        assert!(!format!("{err} {err:?}").contains("secret detail"));
-        assert_port_free(port).await;
+        match &err {
+            Error::Auth(AuthError::BrowserLoginFailed { code }) => {
+                assert_eq!(code, "invalid_grant")
+            }
+            other => panic!("unexpected: {other}"),
+        }
+        assert!(!format!("{err} {err:?}").contains("secret"));
+        assert_closed(&probe).await;
     }
 
     #[tokio::test]
@@ -1283,13 +1589,15 @@ mod tests {
         for _ in 0..40 {
             stalled.push(TcpStream::connect(("127.0.0.1", port)).await.unwrap());
         }
-        let started = std::time::Instant::now();
-        let r = callback(port, &format!("code=abc&state={state}")).await;
+        // The read timeout of the stalled connections is 5 s; the real redirect must not wait
+        // for it (a generous bound below that, not a speed measurement).
+        let r = tokio::time::timeout(
+            READ_TIMEOUT - Duration::from_millis(500),
+            callback(port, &format!("code=abc&state={state}")),
+        )
+        .await
+        .expect("the stalled connections must not delay the redirect");
         assert_eq!(r.status(), 200);
-        assert!(
-            started.elapsed() < Duration::from_secs(2),
-            "the 5 s read timeout of a stalled connection must not delay the redirect"
-        );
         assert!(finish.await.unwrap().is_ok());
         drop(stalled);
     }
@@ -1299,6 +1607,7 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(30))
                 .await
@@ -1316,7 +1625,82 @@ mod tests {
         assert!(!finish.is_finished(), "a slow client does not end the wait");
         finish.abort();
         let _ = finish.await;
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
+    }
+
+    fn head_with_host(host: Option<&str>, extra: &str) -> Vec<u8> {
+        let mut r = String::from("GET /favicon.ico HTTP/1.1\r\n");
+        if let Some(host) = host {
+            r.push_str(&format!("Host: {host}\r\n"));
+        }
+        r.push_str(extra);
+        r.push_str("\r\n");
+        r.into_bytes()
+    }
+
+    #[tokio::test]
+    async fn only_loopback_host_headers_with_the_right_port_are_served() {
+        let (auth, _server) = auth_with_token_endpoint(1).await;
+        let login = auth.start_browser_login().await.unwrap();
+        let port = redirect_port(&login);
+        let state = login.state_for_test().to_string();
+        let finish = tokio::spawn(async move {
+            auth.finish_browser_login(login, &pages(), Duration::from_secs(30))
+                .await
+        });
+        // Accepted: answered for what the request is (404 for this path).
+        for host in [
+            format!("localhost:{port}"),
+            format!("LocalHost:{port}"),
+            format!("127.0.0.1:{port}"),
+            format!("[::1]:{port}"),
+            format!(" localhost:{port} "),
+        ] {
+            let answer = raw(port, &head_with_host(Some(&host), "")).await;
+            assert!(answer.starts_with("HTTP/1.1 404 "), "{host}: {answer}");
+        }
+        let lower_case_name =
+            format!("GET /favicon.ico HTTP/1.1\r\nhost: localhost:{port}\r\n\r\n");
+        let answer = raw(port, lower_case_name.as_bytes()).await;
+        assert!(answer.starts_with("HTTP/1.1 404 "), "{answer}");
+        // Refused with the uniform 400.
+        let other_port = port.wrapping_add(1);
+        for (host, extra) in [
+            (Some(format!("evil.example:{port}")), String::new()),
+            (
+                Some(format!("localhost.evil.example:{port}")),
+                String::new(),
+            ),
+            (Some(format!("localhost:{other_port}")), String::new()),
+            (Some(format!("localhost:0{port}")), String::new()),
+            (Some("localhost".to_string()), String::new()),
+            (Some(format!("::1:{port}")), String::new()),
+            (Some(format!("user@localhost:{port}")), String::new()),
+            (None, String::new()),
+            (
+                Some(format!("localhost:{port}")),
+                format!("Host: localhost:{port}\r\n"),
+            ),
+        ] {
+            let answer = raw(port, &head_with_host(host.as_deref(), &extra)).await;
+            assert!(
+                answer.starts_with("HTTP/1.1 400 "),
+                "{host:?} {extra:?}: {answer}"
+            );
+            assert!(answer.ends_with("Bad Request"), "{answer}");
+        }
+        // A valid callback under a foreign host is refused and does not use up the state.
+        let foreign =
+            format!("GET /?code=abc&state={state} HTTP/1.1\r\nHost: evil.example:{port}\r\n\r\n");
+        let answer = raw(port, foreign.as_bytes()).await;
+        assert!(answer.starts_with("HTTP/1.1 400 "), "{answer}");
+        assert_eq!(
+            callback(port, &format!("code=abc&state={state}"))
+                .await
+                .status(),
+            200
+        );
+        assert!(finish.await.unwrap().is_ok());
     }
 
     #[tokio::test]
@@ -1324,6 +1708,7 @@ mod tests {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
         let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         let finish = tokio::spawn(async move {
             auth.finish_browser_login(login, &pages(), Duration::from_secs(300))
                 .await
@@ -1334,15 +1719,15 @@ mod tests {
         let _held = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         finish.abort(); // cancelled like login_cancel
         let _ = finish.await;
-        assert_port_free(port).await; // a new listener can bind the port right away
+        assert_closed(&probe).await; // a new listener can bind the port right away
     }
 
     #[tokio::test]
     async fn dropping_an_unfinished_login_frees_the_port() {
         let (auth, _server) = auth_with_token_endpoint(0).await;
         let login = auth.start_browser_login().await.unwrap();
-        let port = redirect_port(&login);
+        let probe = login.listeners_probe();
         drop(login);
-        assert_port_free(port).await;
+        assert_closed(&probe).await;
     }
 }
