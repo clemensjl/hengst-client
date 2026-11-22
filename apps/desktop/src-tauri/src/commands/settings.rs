@@ -1,3 +1,4 @@
+use crate::accounts::internal;
 use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
 use crate::dto::settings::{Patch, SettingsDto, SettingsPatch};
 use crate::error::error_dto;
@@ -83,10 +84,13 @@ fn update_blocking(
             Ok(())
         })
         .map_err(|e| error_dto(&e))?;
+    // An update that found the file damaged reset it; the notice goes out with this answer. It is
+    // taken before the event, so the reload the event causes does not announce it a second time.
+    let notice = settings.take_notice();
     events.emit(AppEvent::DataChanged {
         scope: DataScope::Settings,
     });
-    Ok(SettingsDto::new(saved, None))
+    Ok(SettingsDto::new(saved, notice))
 }
 
 pub fn settings_update_impl(
@@ -114,11 +118,7 @@ pub async fn settings_update<R: Runtime>(
     let dto =
         tauri::async_runtime::spawn_blocking(move || update_blocking(&settings, &events, patch))
             .await
-            .map_err(|e| {
-                error_dto(&hengst_core::Error::Io(std::io::Error::other(
-                    e.to_string(),
-                )))
-            })??;
+            .map_err(|_| internal("a background task failed"))??;
     if theme_changed {
         // The settings are already saved in the new theme; a failing title bar must not undo that.
         if let Err(e) = crate::startup::apply_window_theme(&window, dto.theme) {
@@ -238,18 +238,19 @@ mod tests {
         assert_eq!(settings_get_impl(&state).unwrap().notice, None);
         std::fs::remove_dir(dir.path().join("settings.json")).unwrap();
         std::fs::write(dir.path().join("settings.json"), "{").unwrap();
-        settings_update_impl(&state, theme_patch(Theme::Dark)).unwrap();
-        // The event that makes the web view ask again is the one every update emits.
+        let answer = settings_update_impl(&state, theme_patch(Theme::Dark)).unwrap();
+        assert_eq!(answer.notice, Some(SettingsNotice::Reset));
+        // The update's own answer carries the notice (a failed reload afterwards cannot lose it) ...
         assert_eq!(
             *log.lock().unwrap(),
             [AppEvent::DataChanged {
                 scope: DataScope::Settings
             }]
         );
+        // ... and the reload the event causes finds nothing left to announce.
         let after = settings_get_impl(&state).unwrap();
-        assert_eq!(after.notice, Some(SettingsNotice::Reset));
+        assert_eq!(after.notice, None);
         assert_eq!(after.theme, Theme::Dark);
-        assert_eq!(settings_get_impl(&state).unwrap().notice, None);
     }
 
     #[test]

@@ -42,7 +42,7 @@ describe("ipc client", () => {
     });
   });
 
-  it("loginStart passes the method and the channel, no texts, and returns the op", async () => {
+  it("loginStart passes the method, the language and the channel, no texts, and returns the op", async () => {
     let seen: [string, string[]] | undefined;
     mockIPC((cmd, args) => {
       const a = args as { channel: { onmessage?: (e: LoginEvent) => void } };
@@ -51,8 +51,8 @@ describe("ipc client", () => {
       return 7;
     });
     const events: LoginEvent[] = [];
-    const op = await api.loginStart("browser", (e) => events.push(e));
-    expect(seen).toEqual(["login_start", ["method", "channel"]]);
+    const op = await api.loginStart("browser", "de", (e) => events.push(e));
+    expect(seen).toEqual(["login_start", ["method", "language", "channel"]]);
     expect(op).toBe(7);
     expect(events[0]).toEqual({ event: "started", data: { op: 7 } });
   });
@@ -81,7 +81,7 @@ describe("ipc client", () => {
     mockIPC(() => {
       throw { code: "invalidInput", params: { field: "op" }, action: null, detail: "x" };
     });
-    await expect(api.loginStart("deviceCode", () => {})).rejects.toMatchObject({
+    await expect(api.loginStart("deviceCode", "en", () => {})).rejects.toMatchObject({
       dto: { code: "invalidInput" },
     });
   });

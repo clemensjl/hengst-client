@@ -3,6 +3,7 @@ import type { AccountsDto } from "./bindings/AccountsDto";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { ErrorDto } from "./bindings/ErrorDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
+import type { Language } from "./bindings/Language";
 import type { LoginEvent } from "./bindings/LoginEvent";
 import type { LoginMethod } from "./bindings/LoginMethod";
 import type { SettingsDto } from "./bindings/SettingsDto";
@@ -57,14 +58,19 @@ export const api = {
   accountSelect: (id: string): Promise<void> => guard(invoke<void>("account_select", { id })),
   accountRemove: (id: string): Promise<void> => guard(invoke<void>("account_remove", { id })),
   /**
-   * Starts a sign-in (the browser page texts are fixed in Rust); `onEvent` gets that sign-in's events and nobody else's. The first event is
+   * Starts a sign-in; `onEvent` gets that sign-in's events and nobody else's. The first event is
    * `started` with the operation id, which can arrive before this resolves. A sign-in that runs
-   * is cancelled by a new one.
+   * is cancelled by a new one. `language` is the language the app shows: it only picks which of
+   * the two fixed page texts the browser shows afterwards (the texts stay in Rust).
    */
-  loginStart: (method: LoginMethod, onEvent: (e: LoginEvent) => void): Promise<number> => {
+  loginStart: (
+    method: LoginMethod,
+    language: Language,
+    onEvent: (e: LoginEvent) => void,
+  ): Promise<number> => {
     const channel = new Channel<LoginEvent>();
     channel.onmessage = onEvent;
-    return guard(invoke<number>("login_start", { method, channel }));
+    return guard(invoke<number>("login_start", { method, language, channel }));
   },
   /** `true` if the sign-in was still running; its channel then gets `cancelled`. */
   loginCancel: (op: number): Promise<boolean> => guard(invoke<boolean>("login_cancel", { op })),

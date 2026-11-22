@@ -39,9 +39,6 @@ tauri-plugin-single-instance = "=2.5.5"
 tokio.workspace = true
 ts-rs = "=12.0.1"
 
-[target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Globalization"] }
-
 [dev-dependencies]
 hengst-testkit = { path = "../../../crates/hengst-testkit" }
 static_assertions = "1.1"

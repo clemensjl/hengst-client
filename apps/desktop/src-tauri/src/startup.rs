@@ -8,6 +8,7 @@ use hengst_core::launch::Endpoints;
 use hengst_core::paths::Paths;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use tauri::webview::PageLoadEvent;
 use tauri::window::Color;
 use tauri::{
     AppHandle, LogicalSize, Manager, Monitor, PhysicalPosition, Url, WebviewUrl, WebviewWindow,
@@ -203,6 +204,16 @@ pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &Windo
     }
 }
 
+/// A page that (re)loads starts without the sign-in the old page was watching: when the web view
+/// starts loading a document, every running operation that can still be cancelled is cancelled.
+/// The hook belongs to the window and not to `subscribe_events`, so a later re-subscribe of the
+/// same page (or any other command) can never cancel a sign-in.
+pub fn cancel_operations_on_page_load<R: tauri::Runtime>(app: &AppHandle<R>, event: PageLoadEvent) {
+    if matches!(event, PageLoadEvent::Started) {
+        app.state::<AppState>().operations.cancel_all();
+    }
+}
+
 fn create_window(
     app: &AppHandle,
     args: &StartupArgs,
@@ -238,6 +249,9 @@ fn create_window(
         .zoom_hotkeys_enabled(true)
         .devtools(cfg!(debug_assertions))
         .on_navigation(move |url| navigation_allowed(url, dev_url.as_ref()))
+        .on_page_load(|window, payload| {
+            cancel_operations_on_page_load(window.app_handle(), payload.event());
+        })
         .build()?;
     apply_window_theme(&window, theme)?;
 

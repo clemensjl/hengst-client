@@ -1983,22 +1983,43 @@ mod tests {
                 .await
         });
         // An answered request proves the wait is running; a held-open connection must not keep
-        // the port either. Under heavy load a request can run into the connection's own read
-        // timeout before the wait loop got scheduled: asking again is part of waiting for it.
+        // the port either. The listener was bound by `start_browser_login`, before the address
+        // existed, so the kernel queues this connection even if the wait loop has not been
+        // scheduled yet: a refused or reset first request is NOT a race this code can explain.
+        // The test therefore asks once, and a failure prints what happened (error kind, message,
+        // the whole source chain) instead of being retried away.
         let answered = tokio::time::timeout(Duration::from_secs(20), async {
-            loop {
-                let asked = client()
-                    .get(format!("http://127.0.0.1:{port}/?code=abc&state=wrong"))
-                    .send()
-                    .await;
-                if let Ok(response) = asked {
-                    return response.status();
-                }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
+            client()
+                .get(format!("http://127.0.0.1:{port}/?code=abc&state=wrong"))
+                .send()
+                .await
         })
         .await
-        .expect("the wait loop answers");
+        .expect("the wait loop answers within 20 s");
+        let answered = match answered {
+            Ok(response) => response.status(),
+            Err(e) => {
+                let mut chain = String::new();
+                let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&e);
+                while let Some(err) = source {
+                    chain.push_str(&format!(
+                        "
+  caused by: {err} ({err:?})"
+                    ));
+                    source = err.source();
+                }
+                println!(
+                    "first callback request failed: connect={} timeout={} request={} body={}{chain}",
+                    e.is_connect(),
+                    e.is_timeout(),
+                    e.is_request(),
+                    e.is_body(),
+                );
+                panic!(
+                    "the first callback request to the bound port failed (unexplained, see the                      output above): {e}"
+                );
+            }
+        };
         assert_eq!(answered, 400);
         let _held = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         finish.abort(); // cancelled like login_cancel

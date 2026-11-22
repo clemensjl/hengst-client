@@ -1,8 +1,9 @@
-use crate::accounts::{internal, login_pages, page_language};
+use crate::accounts::{internal, login_pages};
 use crate::dto::accounts::{AccountsDto, LoginEvent, LoginMethod, OperationId};
 use crate::dto::error::ErrorDto;
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventSink};
+use crate::settings::Language;
 use crate::state::AppState;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -40,29 +41,34 @@ pub async fn account_select(state: State<'_, AppState>, id: String) -> Result<()
 }
 
 /// Signs an account out: its tokens and its entry go.
-#[tauri::command]
-pub async fn account_remove(state: State<'_, AppState>, id: String) -> Result<(), ErrorDto> {
+pub async fn account_remove_impl(state: &AppState, id: String) -> Result<(), ErrorDto> {
     let accounts = state.accounts.clone();
-    let removed = tauri::async_runtime::spawn_blocking(move || accounts.remove(&id))
-        .await
-        .map_err(join_error)?;
-    // A refused sign-out may still have flagged the entry: the list changed either way.
+    let removed = tauri::async_runtime::spawn_blocking(move || accounts.remove(&id)).await;
+    // A refused sign-out may still have flagged the entry, and a blocking task that failed or
+    // panicked may have changed the file before it did: the list changed either way.
     state.events.emit(AppEvent::DataChanged {
         scope: DataScope::Accounts,
     });
-    removed.map_err(|e| error_dto(&e))
+    removed.map_err(join_error)?.map_err(|e| error_dto(&e))
+}
+
+#[tauri::command]
+pub async fn account_remove(state: State<'_, AppState>, id: String) -> Result<(), ErrorDto> {
+    account_remove_impl(&state, id).await
 }
 
 /// Starts a sign-in and returns at once; the progress arrives on `channel`, which gets `Started`
 /// with the operation id first. A running sign-in is cancelled. The texts of the page the browser
-/// shows afterwards are fixed in Rust, in the language of the settings.
+/// shows afterwards are fixed in Rust; `language` (the language the app resolved for itself, a
+/// closed choice of German or English) only picks which table.
 #[tauri::command]
 pub async fn login_start(
     state: State<'_, AppState>,
     method: LoginMethod,
+    language: Language,
     channel: Channel<LoginEvent>,
 ) -> Result<OperationId, ErrorDto> {
-    let pages = login_pages(page_language(state.settings.get().language));
+    let pages = login_pages(language);
     let sink: EventSink<LoginEvent> = Arc::new(move |e| {
         let _ = channel.send(e);
     });

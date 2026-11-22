@@ -38,6 +38,26 @@ async function backend(settingsAnswers: ReturnType<typeof dto>[]) {
   return (e: unknown) => sink!(e);
 }
 
+describe("settings update", () => {
+  it("shows the reset toast from the update's own answer, so a failed reload cannot lose it", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "settings_update") return dto("reset");
+    });
+    await useApp.getState().updateSettings({ theme: "dark" });
+    expect(toast).toHaveBeenCalledWith("Settings were damaged and have been reset", {
+      id: "settings-reset",
+    });
+  });
+
+  it("an update without a notice shows no toast", async () => {
+    mockIPC((cmd) => {
+      if (cmd === "settings_update") return dto(null);
+    });
+    await useApp.getState().updateSettings({ theme: "dark" });
+    expect(toast).not.toHaveBeenCalled();
+  });
+});
+
 describe("settings events", () => {
   it("a reset notice that arrives with a settings change is shown as the reset toast", async () => {
     const send = await backend([dto("reset")]);

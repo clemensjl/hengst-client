@@ -153,30 +153,6 @@ pub fn login_pages(language: Language) -> BrowserLoginPages {
     }
 }
 
-/// The page language: the setting, else the language of Windows.
-pub fn page_language(setting: Option<Language>) -> Language {
-    setting.unwrap_or_else(system_language)
-}
-
-#[cfg(windows)]
-fn system_language() -> Language {
-    use windows_sys::Win32::Globalization::GetUserDefaultLocaleName;
-    let mut buffer = [0u16; 85];
-    // SAFETY: the buffer is 85 UTF-16 units, the size the call is told.
-    let len = unsafe { GetUserDefaultLocaleName(buffer.as_mut_ptr(), buffer.len() as i32) };
-    let name = String::from_utf16_lossy(&buffer[..(len.max(1) as usize - 1)]);
-    if name.to_ascii_lowercase().starts_with("de") {
-        Language::De
-    } else {
-        Language::En
-    }
-}
-
-#[cfg(not(windows))]
-fn system_language() -> Language {
-    Language::En
-}
-
 // ---- operations ----
 
 /// The kind of a running operation. Browser and device-code sign-in share `Login`, so "use a code
@@ -279,6 +255,12 @@ impl Operations {
         }
     }
 
+    /// How many operations are in the table.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        lock(&self.inner).running.len()
+    }
+
     /// Cancels everything that can still be cancelled (the window is closing).
     pub fn cancel_all(&self) {
         let entries: Vec<Entry> = {
@@ -373,7 +355,10 @@ impl OpOut {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let forwarder = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
-                sink(event);
+                // A panicking sink loses that one event; it must not end the forwarder, because
+                // the queue would then refuse every later event and the operation would believe
+                // it had ended without a terminal event ever being sent.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(event)));
             }
         });
         (
@@ -645,10 +630,43 @@ fn dto(e: Error) -> ErrorDto {
     error_dto(&e)
 }
 
+/// Held by the task of a sign-in. If the task ends in any way other than by deciding its own
+/// terminal event (a panic, or being dropped after the commit point, which `cancel` refuses to
+/// do), the operation still leaves the table and its channel gets `Failed` with the `internal`
+/// code. `cancel` removes the entry first and sends `Cancelled` itself, so then nothing is sent.
+struct EndGuard {
+    ops: Operations,
+    op: OperationId,
+    out: OpOut,
+    armed: bool,
+}
+
+impl EndGuard {
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for EndGuard {
+    fn drop(&mut self) {
+        if self.armed && self.ops.finish(self.op) {
+            self.out.end(LoginEvent::Failed {
+                error: internal("the sign-in task ended without a result"),
+            });
+        }
+    }
+}
+
 impl Accounts {
     /// The task of one sign-in: the steps, then the one terminal event if this task owns it.
     async fn drive(self: Arc<Self>, c: LoginCtx) {
         self.diag(&format!("sign-in {}: started ({:?})", c.op.0, c.method));
+        let mut guard = EndGuard {
+            ops: c.ops.clone(),
+            op: c.op,
+            out: c.out.clone(),
+            armed: true,
+        };
         let (result, committed) = self.sign_in(&c).await;
         match result {
             // `cancel` was first and has sent `Cancelled`.
@@ -678,6 +696,7 @@ impl Accounts {
                 }
             }
         }
+        guard.disarm();
     }
 
     /// `Ok(None)`: cancelled meanwhile. The flag says whether saving had started.

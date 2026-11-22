@@ -149,7 +149,10 @@ fn the_main_window_may_call_all_six_account_commands_and_others_may_not() {
     for (cmd, body) in [
         ("account_select", serde_json::json!({ "id": "nobody" })),
         ("account_remove", serde_json::json!({ "id": "nobody" })),
-        ("login_start", serde_json::json!({ "method": "browser" })),
+        (
+            "login_start",
+            serde_json::json!({ "method": "browser", "language": "en" }),
+        ),
     ] {
         let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
         assert!(!err.to_string().contains("not allowed"), "{cmd}: {err}");

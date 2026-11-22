@@ -95,6 +95,9 @@ export const useApp = create<AppState>()((set, get) => ({
   updateSettings: async (change) => {
     const data = await api.settingsUpdate(change);
     set({ settings: { status: "ready", data } });
+    // An update that found the file damaged resets it and says so in its own answer: the follow-up
+    // reload (which may fail) is not needed to learn it. The id keeps a second delivery to one toast.
+    if (data.notice === "reset") toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
     return data;
   },
 

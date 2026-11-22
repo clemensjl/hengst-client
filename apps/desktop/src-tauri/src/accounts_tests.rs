@@ -22,6 +22,8 @@ struct TestStore {
     release: AtomicBool,
     /// `set` panics (a blocking task that fails).
     panic_set: AtomicBool,
+    /// `delete` panics, after `panic_delete_from` calls went through (1 = the first panics).
+    panic_delete_from: AtomicUsize,
 }
 
 struct Shared(Arc<TestStore>);
@@ -49,6 +51,11 @@ impl SecretStore for Shared {
 
     fn delete(&self, key: &str) -> Result<()> {
         let n = self.0.deletes.fetch_add(1, Ordering::SeqCst) + 1;
+        let panic_from = self.0.panic_delete_from.load(Ordering::SeqCst);
+        if panic_from != 0 && n >= panic_from {
+            // The first secret is gone when the second delete panics: the file may be half changed.
+            panic!("the test store panics on delete");
+        }
         let from = self.0.refuse_delete_from.load(Ordering::SeqCst);
         if from != 0 && n >= from {
             return Err(Error::CredentialStore("refused by the test".into()));
@@ -748,9 +755,6 @@ fn the_browser_page_is_fixed_text_in_both_languages_and_never_claims_a_finished_
         assert!(!text.contains("Sie ") && !text.contains("Ihr"), "{text}");
     }
     assert_ne!(de.success_body, en.success_body);
-    // The setting decides; the system language only fills in when there is none.
-    assert_eq!(page_language(Some(Language::De)), Language::De);
-    assert_eq!(page_language(Some(Language::En)), Language::En);
 }
 
 #[test]
@@ -963,12 +967,20 @@ async fn a_destroyed_window_cancels_the_operations() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn subscribing_after_a_page_load_cancels_the_sign_in_nobody_watches() {
+async fn a_page_load_cancels_the_sign_in_nobody_watches_and_subscribing_does_not() {
+    use tauri::test::{mock_builder, mock_context, noop_assets};
+    use tauri::webview::PageLoadEvent;
+    use tauri::Manager;
     let dir = tempfile::tempdir().unwrap();
     let state = crate::state::AppState::new(
         Paths::new(dir.path()),
         hengst_core::launch::Endpoints::default(),
     );
+    let app = mock_builder()
+        .manage(state)
+        .build(mock_context(noop_assets()))
+        .unwrap();
+    let state = app.state::<crate::state::AppState>();
     let cancelled = Arc::new(AtomicUsize::new(0));
     let counted = cancelled.clone();
     let id = state.operations.start(
@@ -978,9 +990,150 @@ async fn subscribing_after_a_page_load_cancels_the_sign_in_nobody_watches() {
         }),
         |_| tokio::spawn(std::future::pending::<()>()).abort_handle(),
     );
+    // A re-subscribe (the same page asking again) leaves the sign-in alone.
     crate::commands::app::subscribe_events_impl(&state, Arc::new(|_| {}));
+    crate::commands::app::subscribe_events_impl(&state, Arc::new(|_| {}));
+    assert_eq!(cancelled.load(Ordering::SeqCst), 0);
+    // A finished load is not a reload either.
+    crate::startup::cancel_operations_on_page_load(app.handle(), PageLoadEvent::Finished);
+    assert_eq!(cancelled.load(Ordering::SeqCst), 0);
+    crate::startup::cancel_operations_on_page_load(app.handle(), PageLoadEvent::Started);
     assert_eq!(cancelled.load(Ordering::SeqCst), 1);
     assert!(!state.operations.cancel(id));
+}
+
+// ---- the end of an operation that does not end by itself ----
+
+fn guarded_operation(
+    ops: &Operations,
+    events: &Events,
+    body: impl FnOnce(Operations, OperationId, EndGuard) -> tokio::task::JoinHandle<()>,
+) -> OperationId {
+    let (out, _forwarder) = OpOut::new(sink_into(events));
+    let on_cancel: Box<dyn Fn() + Send + Sync> = {
+        let out = out.clone();
+        Box::new(move || {
+            out.end(LoginEvent::Cancelled);
+        })
+    };
+    let ops_for_task = ops.clone();
+    ops.start(OpKind::Login, on_cancel, move |op| {
+        out.progress(LoginEvent::Started { op });
+        let guard = EndGuard {
+            ops: ops_for_task.clone(),
+            op,
+            out,
+            armed: true,
+        };
+        body(ops_for_task, op, guard).abort_handle()
+    })
+}
+
+fn failed_internal(e: &LoginEvent) -> bool {
+    matches!(e, LoginEvent::Failed { error } if error.code == ErrorCode::Internal)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_that_panics_after_the_commit_point_still_ends_with_an_internal_failure() {
+    let (ops, events): (Operations, Events) = Default::default();
+    let id = guarded_operation(&ops, &events, |ops, op, guard| {
+        tokio::spawn(async move {
+            let _guard = guard;
+            assert!(ops.try_commit(op));
+            panic!("the task panics after it started saving");
+        })
+    });
+    let seen = wait_terminal(&events).await;
+    assert!(matches!(seen.first(), Some(LoginEvent::Started { op }) if *op == id));
+    assert_eq!(
+        seen.len(),
+        2,
+        "Started and exactly one terminal event: {seen:?}"
+    );
+    assert!(failed_internal(&seen[1]), "{seen:?}");
+    assert_eq!(ops.len(), 0, "the operation left the table");
+    assert!(!ops.cancel(id));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_task_dropped_after_the_commit_point_ends_with_an_internal_failure() {
+    let (ops, events): (Operations, Events) = Default::default();
+    let mut abort = None;
+    let committed = Arc::new(AtomicBool::new(false));
+    let flag = committed.clone();
+    let id = guarded_operation(&ops, &events, |ops, op, guard| {
+        let task = tokio::spawn(async move {
+            let _guard = guard;
+            assert!(ops.try_commit(op));
+            flag.store(true, Ordering::SeqCst);
+            std::future::pending::<()>().await;
+        });
+        abort = Some(task.abort_handle());
+        task
+    });
+    until("the operation is committed", || {
+        committed.load(Ordering::SeqCst)
+    })
+    .await;
+    // `cancel` refuses a committed operation, so only the drop itself can end it.
+    assert!(!ops.cancel(id));
+    abort.unwrap().abort();
+    let seen = wait_terminal(&events).await;
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(failed_internal(&seen[1]), "{seen:?}");
+    assert_eq!(ops.len(), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_cancelled_operation_sends_cancelled_and_its_dropped_task_adds_nothing() {
+    let (ops, events): (Operations, Events) = Default::default();
+    let id = guarded_operation(&ops, &events, |_, _, guard| {
+        tokio::spawn(async move {
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        })
+    });
+    assert!(ops.cancel(id));
+    let seen = wait_terminal(&events).await;
+    // The abort drops the guard soon after; give it the time to (wrongly) send something.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(snapshot(&events), seen);
+    assert!(matches!(
+        seen.as_slice(),
+        [LoginEvent::Started { .. }, LoginEvent::Cancelled]
+    ));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_panicking_sink_does_not_strand_the_operation() {
+    let h = Harness::new(AuthScenario::Ok, Browser::Visits).await;
+    let panics = Arc::new(AtomicUsize::new(0));
+    let counted = panics.clone();
+    let sink: EventSink<LoginEvent> = Arc::new(move |_| {
+        counted.fetch_add(1, Ordering::SeqCst);
+        panic!("the sink panics on every event");
+    });
+    h.accounts.start_login(
+        &h.ops,
+        &h.hub,
+        LoginMethod::Browser,
+        pages(),
+        h.settings.clone(),
+        sink,
+    );
+    until(
+        "the account is saved and the operation has left the table",
+        || h.ops.len() == 0 && !h.microsoft().is_empty(),
+    )
+    .await;
+    assert!(
+        panics.load(Ordering::SeqCst) >= 2,
+        "the sink was asked more than once"
+    );
+    assert_eq!(h.selected().as_deref(), Some("E2EPlayer"));
+    // And the next sign-in works as usual.
+    let next = h.run(LoginMethod::Browser).await;
+    assert!(matches!(next.last(), Some(LoginEvent::SignedIn { .. })));
 }
 
 // ---- re-signing in ----
@@ -1070,6 +1223,73 @@ fn a_refusing_second_delete_flags_the_entry_and_a_later_sign_out_completes() {
     assert!(!store.has(PLAYER_B.uuid, SecretKind::Minecraft));
     let file = load_accounts_file(&paths.accounts_file()).unwrap();
     assert_eq!(file.accounts.len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_sign_out_whose_blocking_task_panics_is_internal_and_still_announces_the_change() {
+    let (dir, paths, accounts, store) = seeded(&[PLAYER_A, PLAYER_B]);
+    store.panic_delete_from.store(2, Ordering::SeqCst);
+    let state = crate::state::AppState::with_accounts(
+        Paths::new(dir.path()),
+        hengst_core::launch::Endpoints::default(),
+        accounts,
+    );
+    let seen: Arc<Mutex<Vec<AppEvent>>> = Arc::default();
+    let log = seen.clone();
+    state
+        .events
+        .subscribe(Arc::new(move |e| lock(&log).push(e)));
+    let e = crate::commands::accounts::account_remove_impl(&state, PLAYER_B.uuid.to_string())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        e.code,
+        ErrorCode::Internal,
+        "a failed task is not a file system error"
+    );
+    assert_eq!(
+        *lock(&seen),
+        [AppEvent::DataChanged {
+            scope: DataScope::Accounts
+        }],
+        "the list may have changed, so the web view is told"
+    );
+    // The first secret of B was deleted before the panic: the file and the secrets are half-way.
+    assert!(
+        !store.has(PLAYER_B.uuid, SecretKind::Minecraft)
+            || !store.has(PLAYER_B.uuid, SecretKind::Refresh)
+    );
+    assert_eq!(
+        load_accounts_file(&paths.accounts_file())
+            .unwrap()
+            .accounts
+            .len(),
+        2
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_successful_sign_out_announces_the_change_once() {
+    let (dir, _paths, accounts, _store) = seeded(&[PLAYER_A]);
+    let state = crate::state::AppState::with_accounts(
+        Paths::new(dir.path()),
+        hengst_core::launch::Endpoints::default(),
+        accounts,
+    );
+    let seen: Arc<Mutex<Vec<AppEvent>>> = Arc::default();
+    let log = seen.clone();
+    state
+        .events
+        .subscribe(Arc::new(move |e| lock(&log).push(e)));
+    crate::commands::accounts::account_remove_impl(&state, PLAYER_A.uuid.to_string())
+        .await
+        .unwrap();
+    assert_eq!(
+        *lock(&seen),
+        [AppEvent::DataChanged {
+            scope: DataScope::Accounts
+        }]
+    );
 }
 
 #[test]

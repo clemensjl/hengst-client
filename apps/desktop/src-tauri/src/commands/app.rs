@@ -20,11 +20,10 @@ pub fn app_info(state: State<'_, AppState>) -> Result<AppInfo, ErrorDto> {
     Ok(app_info_impl(&state))
 }
 
-/// Replaces any earlier subscription: the backend keeps one subscriber. The front end subscribes
-/// once when it boots, so a page that (re)loads starts without a sign-in nobody watches any more:
-/// every running operation is cancelled here.
+/// Replaces any earlier subscription: the backend keeps one subscriber. Operations are not touched
+/// here: a page that reloads cancels them through the window's page-load hook
+/// (`startup::cancel_operations_on_page_load`).
 pub fn subscribe_events_impl(state: &AppState, sink: crate::events::EventSink<AppEvent>) {
-    state.operations.cancel_all();
     state.events.subscribe(sink);
 }
 
