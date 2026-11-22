@@ -295,7 +295,7 @@ describe("InstancesView delete", () => {
     expect(toast).not.toHaveBeenCalled();
   });
 
-  it.each(["binOff", "noBin", "inUse", "unchecked", "unknown", "other"])(
+  it.each(["binOff", "noBin", "inUse", "unchecked", "other"])(
     "the reason %s is named in the panel",
     async (reason) => {
       const backend = await setup(three());
@@ -333,6 +333,28 @@ describe("InstancesView delete", () => {
     // The selection moved on to a readable instance.
     await waitFor(() => expect(backend.of("instance_select")).toEqual([{ id: "a" }]));
   });
+
+  it.each([
+    ["recycleBinUnknown", "The result is unknown"],
+    ["recycleBinPending", "An earlier delete is still running"],
+  ] as const)(
+    "%s makes no claim that nothing was deleted, offers only closing and reloads the list",
+    async (code, title) => {
+      const backend = await setup(three());
+      backend.deleteFails = err(code, { id: "a" });
+      const menu = await openMenu("Alpha");
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+      const lists = backend.count("instances_list");
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+      const panel = await within(dialog()).findByRole("alert");
+      expect(within(panel).getByText(title)).toBeTruthy();
+      expect(panel.textContent).not.toMatch(/nothing was deleted/i);
+      expect(within(dialog()).queryByRole("button", { name: "Move to Recycle Bin" })).toBeNull();
+      expect(within(dialog()).getByRole("button", { name: "Close" })).toBeTruthy();
+      expect(toast).not.toHaveBeenCalled();
+      await waitFor(() => expect(backend.count("instances_list")).toBeGreaterThan(lists));
+    },
+  );
 
   it("a partial move says to check both places and offers only closing", async () => {
     const backend = await setup(three());

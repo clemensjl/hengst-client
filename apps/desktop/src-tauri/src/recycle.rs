@@ -30,8 +30,8 @@
 //!
 //! Known limits: the `RecycleBinSize` policy and the legacy global `NukeOnDelete` are not read
 //! (layers 2 and 3 cover them); `trash::os_limited::list` fails as a whole when one item of the bin
-//! cannot be read, which ends as `Unconfirmed` (safe, but the user may see it for a folder that is
-//! in the bin). After a time-out the shell thread keeps running: a later move is refused until it
+//! cannot be read, which refuses the move before anything happens (`Refused(Unchecked)`: the bin is
+//! listed before the call). After a time-out the shell thread keeps running: a later move is refused until it
 //! has ended, and its outcome is reported as unknown.
 
 use hengst_core::{Error, Result};
@@ -55,8 +55,6 @@ pub enum BinReason {
     Other,
     /// The Recycle Bin settings could not be checked, so Windows was never asked.
     Unchecked,
-    /// The outcome is not known (the shell call timed out or is still running).
-    Unknown,
 }
 
 impl BinReason {
@@ -68,7 +66,6 @@ impl BinReason {
             BinReason::InUse => "inUse",
             BinReason::Other => "other",
             BinReason::Unchecked => "unchecked",
-            BinReason::Unknown => "unknown",
         }
     }
 }
@@ -84,8 +81,10 @@ pub enum RecycleFailure {
     InUse(String),
     /// Windows asked to delete permanently and the app declined (the shell reported failure).
     Declined(String),
-    /// The shell call did not finish in time; it may still be running.
+    /// The shell call did not finish in time; it may still be running. The outcome is unknown.
     TimedOut,
+    /// The shell call stopped unexpectedly (its thread panicked). The outcome is unknown.
+    Aborted(String),
     /// An earlier shell call has not ended yet (after a time-out); nothing was started.
     StillRunning,
     /// The shell reported another failure.
@@ -100,7 +99,6 @@ impl RecycleFailure {
         match self {
             RecycleFailure::Refused(r) => *r,
             RecycleFailure::InUse(_) => BinReason::InUse,
-            RecycleFailure::TimedOut | RecycleFailure::StillRunning => BinReason::Unknown,
             _ => BinReason::Other,
         }
     }
@@ -120,6 +118,7 @@ impl std::fmt::Display for RecycleFailure {
                 "Windows asked to delete the folder permanently instead of moving it to the Recycle Bin; the app declined: {d}"
             ),
             RecycleFailure::TimedOut => write!(f, "the Recycle Bin call did not finish in time"),
+            RecycleFailure::Aborted(d) => write!(f, "the Recycle Bin call stopped unexpectedly: {d}"),
             RecycleFailure::StillRunning => {
                 write!(f, "an earlier Recycle Bin call is still running")
             }
@@ -227,16 +226,20 @@ pub fn in_bin(before: &[BinEntry], after: &[BinEntry], path: &Path) -> bool {
         .any(|e| e.name == name && normalized(&e.original_parent) == parent && !before.contains(e))
 }
 
-/// `\\?\C:\x` -> `C:\x`, `\\?\UNC\host\share` -> `\\host\share`.
-pub fn strip_verbatim(p: &Path) -> PathBuf {
+/// `\\?\C:\x` -> `C:\x`, `\\?\UNC\host\share` -> `\\host\share`, a path without the prefix
+/// as it is. Any other verbatim form (`\\?\Volume{..}\`, `\\?\GLOBALROOT`, a device path) has no
+/// plain spelling the volume lookup could use: `None`, which refuses.
+pub fn strip_verbatim(p: &Path) -> Option<PathBuf> {
     let text = p.to_string_lossy();
-    if let Some(rest) = text.strip_prefix("\\\\?\\UNC\\") {
-        PathBuf::from(format!("\\\\{rest}"))
-    } else if let Some(rest) = text.strip_prefix("\\\\?\\") {
-        PathBuf::from(rest)
-    } else {
-        p.to_path_buf()
+    let Some(rest) = text.strip_prefix("\\\\?\\") else {
+        return Some(p.to_path_buf());
+    };
+    if let Some(unc) = rest.strip_prefix("UNC\\") {
+        return Some(PathBuf::from(format!("\\\\{unc}")));
     }
+    let mut chars = rest.chars();
+    let drive = chars.next().is_some_and(|c| c.is_ascii_alphabetic());
+    (drive && chars.next() == Some(':')).then(|| PathBuf::from(rest))
 }
 
 /// The one path every layer looks at: the parent canonicalized (links resolved, no `\\?\`), the
@@ -245,7 +248,10 @@ pub fn resolve_target(path: &Path) -> std::io::Result<PathBuf> {
     let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
         return Err(std::io::Error::other("the folder has no parent or no name"));
     };
-    Ok(strip_verbatim(&parent.canonicalize()?).join(name))
+    let canonical = parent.canonicalize()?;
+    let plain = strip_verbatim(&canonical)
+        .ok_or_else(|| std::io::Error::other("the folder is on a volume that has no plain path"))?;
+    Ok(plain.join(name))
 }
 
 /// Resolves `path` and runs the pre-check on the facts read from the RESOLVED path.
@@ -372,9 +378,9 @@ pub fn move_to_recycle_bin(path: &Path) -> Result<()> {
     );
     match outcome {
         Err(GuardError::TimedOut) => Err(fail(RecycleFailure::TimedOut)),
-        Err(GuardError::Panicked) => Err(fail(RecycleFailure::Failed(
-            "the Recycle Bin call stopped unexpectedly".into(),
-        ))),
+        Err(GuardError::Panicked) => {
+            Err(fail(RecycleFailure::Aborted("its thread panicked".into())))
+        }
         Ok((Err(e), declined)) => Err(fail(classify(&e, declined))),
         Ok((Ok(()), _)) => confirm(&target, &before),
     }
@@ -770,15 +776,22 @@ mod tests {
 
     #[test]
     fn the_verbatim_prefix_is_dropped_in_both_forms() {
+        let plain = |t: &str| strip_verbatim(Path::new(t));
+        assert_eq!(plain("\\\\?\\C:\\Data\\x"), Some("C:\\Data\\x".into()));
         assert_eq!(
-            strip_verbatim(Path::new("\\\\?\\C:\\Data\\x")),
-            Path::new("C:\\Data\\x")
+            plain("\\\\?\\UNC\\host\\share\\x"),
+            Some("\\\\host\\share\\x".into())
         );
-        assert_eq!(
-            strip_verbatim(Path::new("\\\\?\\UNC\\host\\share\\x")),
-            Path::new("\\\\host\\share\\x")
-        );
-        assert_eq!(strip_verbatim(Path::new("C:\\x")), Path::new("C:\\x"));
+        assert_eq!(plain("C:\\x"), Some("C:\\x".into()));
+        // Forms with no plain spelling are refused, not turned into a relative path.
+        for odd in [
+            "\\\\?\\Volume{a0dd90d6-f1fa-457b-ba89-8eb6e88c31d5}\\x",
+            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume3\\x",
+            "\\\\?\\",
+            "\\\\?\\1:\\x",
+        ] {
+            assert_eq!(plain(odd), None, "{odd}");
+        }
     }
 
     #[test]
@@ -810,11 +823,15 @@ mod tests {
 
         let resolved = resolve_target(&through).unwrap();
         let wanted = strip_verbatim(&real.canonicalize().unwrap())
+            .unwrap()
             .join("instances")
             .join("9.9");
         assert_eq!(resolved, wanted);
         assert!(!resolved.to_string_lossy().starts_with("\\\\?\\"));
-        assert!(!resolved.to_string_lossy().contains("link"));
+        // Not the path through the junction (compared as a path: the temp folder's own name may
+        // contain any text).
+        assert_ne!(resolved, through);
+        assert!(!resolved.starts_with(&link));
 
         // The facts function is handed the resolved path, and so is the caller.
         let asked = std::cell::RefCell::new(Vec::new());
@@ -892,8 +909,6 @@ mod tests {
         assert_eq!(failure_of(&Error::Io(std::io::Error::other("x"))), None);
         assert_eq!(failure_of(&Error::Cancelled), None);
         assert_eq!(RecycleFailure::InUse("x".into()).reason(), BinReason::InUse);
-        assert_eq!(RecycleFailure::TimedOut.reason(), BinReason::Unknown);
-        assert_eq!(RecycleFailure::StillRunning.reason(), BinReason::Unknown);
         assert_eq!(
             RecycleFailure::Declined("x".into()).reason(),
             BinReason::Other

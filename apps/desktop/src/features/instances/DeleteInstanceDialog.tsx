@@ -25,9 +25,17 @@ const errorOf = (e: unknown): ErrorDto =>
 /**
  * Outcomes after which the folder is gone or changed: there is nothing left to move, so the
  * dialog offers only closing. `recycleBinUnconfirmed`: gone, but not confirmed in the bin;
- * `recycleBinPartial`: partly moved; `instanceNotFound`: it was already gone.
+ * `recycleBinUnknown`: no result, the folder may be gone or partly moved; `recycleBinPending`:
+ * an earlier delete has not ended, trying again would only say so; `recycleBinPartial`: partly
+ * moved; `instanceNotFound`: it was already gone.
  */
-const SETTLED = ["recycleBinUnconfirmed", "recycleBinPartial", "instanceNotFound"];
+const SETTLED = [
+  "recycleBinUnconfirmed",
+  "recycleBinUnknown",
+  "recycleBinPending",
+  "recycleBinPartial",
+  "instanceNotFound",
+];
 
 /** After the folder went away: if it was the selection, the fallback of DESIGN.md 10.2 is saved. */
 async function settleSelection(wasSelected: boolean) {

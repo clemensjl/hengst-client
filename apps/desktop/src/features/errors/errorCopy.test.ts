@@ -135,6 +135,8 @@ const ALL_CODES = [
   "recycleBinPartial",
   "recycleBinFailed",
   "recycleBinUnconfirmed",
+  "recycleBinUnknown",
+  "recycleBinPending",
   "instanceRunning",
   "busy",
 ];
@@ -363,15 +365,7 @@ describe("recycleBinFailed reasons", () => {
   });
 
   it("puts the reason before the generic sentence, in de and en", () => {
-    for (const reason of [
-      "tooLarge",
-      "binOff",
-      "noBin",
-      "inUse",
-      "other",
-      "unchecked",
-      "unknown",
-    ]) {
+    for (const reason of ["tooLarge", "binOff", "noBin", "inUse", "other", "unchecked"]) {
       for (const t of [de, en]) {
         const generic = describeError(failed(), t).body;
         const body = describeError(failed(reason), t).body;
@@ -386,6 +380,36 @@ describe("recycleBinFailed reasons", () => {
     const other: ErrorDto = { ...failed("tooLarge"), code: "recycleBinPartial" };
     expect(describeError(other, en).body).toBe(
       describeError({ ...other, params: { id: "9.9" } }, en).body,
+    );
+  });
+});
+
+describe("outcomes that do not claim that nothing was deleted", () => {
+  it("recycleBinUnknown and recycleBinPending never say so, in de and en", () => {
+    for (const code of ["recycleBinUnknown", "recycleBinPending"] as const) {
+      for (const t of [de, en]) {
+        const { title, body } = describeError(
+          { code, params: { id: "9.9", reason: "tooLarge" }, action: null, detail: "" },
+          t,
+        );
+        expect(`${title} ${body}`).not.toMatch(/nothing was deleted|es wurde nichts gelöscht/i);
+        // A reason belongs to recycleBinFailed only.
+        expect(body).not.toBe(
+          `${t("errors.recycleBinFailed.reason.tooLarge")} ${t(`errors.${code}.body`)}`,
+        );
+      }
+    }
+  });
+
+  it("the pending outcome tells to restart and check both places", () => {
+    const pending: ErrorDto = {
+      code: "recycleBinPending",
+      params: { id: "9.9" },
+      action: null,
+      detail: "",
+    };
+    expect(describeError(pending, en).body).toBe(
+      "An earlier delete has not finished. Restart the app and check the folder and the Recycle Bin.",
     );
   });
 });

@@ -38,6 +38,20 @@ fn busy() -> ErrorDto {
     }
 }
 
+/// The answer when the trasher failed and the folder was not shown to be gone.
+fn trasher_error(id: &str, failure: Option<&RecycleFailure>, detail: String) -> ErrorDto {
+    match failure {
+        Some(RecycleFailure::StillRunning) => with_id(ErrorCode::RecycleBinPending, id, detail),
+        Some(RecycleFailure::TimedOut | RecycleFailure::Aborted(_)) => {
+            with_id(ErrorCode::RecycleBinUnknown, id, detail)
+        }
+        other => {
+            let reason = other.map_or(BinReason::Other, |f| f.reason());
+            with_reason(ErrorCode::RecycleBinFailed, id, reason, detail)
+        }
+    }
+}
+
 fn with_reason(code: ErrorCode, id: &str, reason: BinReason, detail: String) -> ErrorDto {
     let mut dto = with_id(code, id, detail);
     dto.params
@@ -358,8 +372,11 @@ pub async fn instance_select_within(
 /// - If it fails after the folder is gone, the instance is gone: success. The one exception is
 ///   the trasher's own "gone, but not found in the bin" (`RecycleFailure::Unconfirmed`): the
 ///   folder is gone, the selection is cleared and the list refreshes, but the answer is
-///   `RecycleBinUnconfirmed`, never "in the Recycle Bin". If it fails halfway, the error is
-///   `RecycleBinPartial`.
+///   `RecycleBinUnconfirmed`, never "in the Recycle Bin". The same holds for every other typed
+///   failure of the trasher with the folder gone (`RecycleBinUnknown` after a time-out or a
+///   stopped call). A time-out or stopped call with the folder still there is `RecycleBinUnknown`
+///   too (the list reloads), and an earlier call still running is `RecycleBinPending` (nothing
+///   was started). If it fails halfway, the error is `RecycleBinPartial`.
 pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), ErrorDto> {
     let Ok(_guard) = state.instance_lock.try_lock() else {
         return Err(busy());
@@ -406,11 +423,18 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
         Err(e) => {
             return Err(match recorded {
                 Some((failure, detail)) => {
-                    let reason = failure.map_or(BinReason::Other, |f| f.reason());
-                    with_reason(ErrorCode::RecycleBinFailed, &id, reason, detail)
+                    let unknown = matches!(
+                        failure,
+                        Some(RecycleFailure::TimedOut | RecycleFailure::Aborted(_))
+                    );
+                    if unknown {
+                        // The folder may have changed: the list must look again.
+                        changed(state, DataScope::Instances);
+                    }
+                    trasher_error(&id, failure.as_ref(), detail)
                 }
                 None => instance_id_error(&e, &id),
-            })
+            });
         }
     }
     let (settings, gone) = (state.settings.clone(), id.clone());
@@ -433,8 +457,20 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
         ),
         Err(_) => {}
     }
-    if let Some((Some(RecycleFailure::Unconfirmed(_)), detail)) = recorded {
-        return Err(with_id(ErrorCode::RecycleBinUnconfirmed, &id, detail));
+    // The folder is gone. A trasher that failed with a typed failure first has not shown that the
+    // folder is in the bin (it may have been removed for good): never claim it. An untyped error
+    // from a trasher that is not ours is taken as the core takes it: gone is gone.
+    if let Some((Some(failure), detail)) = recorded {
+        let unknown = matches!(
+            failure,
+            RecycleFailure::TimedOut | RecycleFailure::Aborted(_)
+        );
+        let code = if unknown {
+            ErrorCode::RecycleBinUnknown
+        } else {
+            ErrorCode::RecycleBinUnconfirmed
+        };
+        return Err(with_id(code, &id, detail));
     }
     Ok(())
 }

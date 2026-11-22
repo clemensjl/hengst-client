@@ -821,22 +821,22 @@ mod mapping_tests {
 
     #[test]
     fn paths_in_a_detail_lose_their_user_folder() {
-        let single = "windows error: C:\\Users\\jelec\\AppData\\Local\\Temp\\hengst\\t2: the destination is in use";
+        let single = "windows error: C:\\Users\\someone\\AppData\\Local\\Temp\\hengst\\t2: the destination is in use";
         assert_eq!(
             strip_paths(single),
             "windows error: ...\\t2: the destination is in use"
         );
         // The `Debug` form of an error doubles every backslash and quotes the text.
-        let doubled = "Os { code: 1, description: \"windows error: C:\\\\Users\\\\jelec\\\\x\\\\t2: in use\" }";
+        let doubled = "Os { code: 1, description: \"windows error: C:\\\\Users\\\\someone\\\\x\\\\t2: in use\" }";
         let cleaned = strip_paths(doubled);
         assert!(
-            !cleaned.contains("jelec") && !cleaned.contains("Users"),
+            !cleaned.contains("someone") && !cleaned.contains("Users"),
             "{cleaned}"
         );
         assert!(cleaned.contains("...\\t2: in use"), "{cleaned}");
         // Text without a path, and a lone drive letter in prose, stay as they are.
         assert_eq!(strip_paths("nothing to see: a:b"), "nothing to see: a:b");
-        assert_eq!(strip_paths("C:/Users/jelec/x"), "...\\x");
+        assert_eq!(strip_paths("C:/Users/someone/x"), "...\\x");
         assert_eq!(
             strip_paths("two C:\\a\\b and D:\\c\\d"),
             // Paths may contain spaces, so a path runs to its terminator and the text after the
@@ -1019,12 +1019,14 @@ mod mapping_tests {
             ErrorCode::RecycleBinPartial => "recycleBinPartial",
             ErrorCode::RecycleBinFailed => "recycleBinFailed",
             ErrorCode::RecycleBinUnconfirmed => "recycleBinUnconfirmed",
+            ErrorCode::RecycleBinUnknown => "recycleBinUnknown",
+            ErrorCode::RecycleBinPending => "recycleBinPending",
             ErrorCode::InstanceRunning => "instanceRunning",
             ErrorCode::Busy => "busy",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 51] = [
+    const ALL_CODES: [ErrorCode; 53] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -1074,6 +1076,8 @@ mod mapping_tests {
         ErrorCode::RecycleBinPartial,
         ErrorCode::RecycleBinFailed,
         ErrorCode::RecycleBinUnconfirmed,
+        ErrorCode::RecycleBinUnknown,
+        ErrorCode::RecycleBinPending,
         ErrorCode::InstanceRunning,
         ErrorCode::Busy,
     ];

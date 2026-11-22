@@ -48,7 +48,13 @@ fn call_with(
 
 fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
     let dir = tempfile::tempdir().unwrap();
-    let state = AppState::new(Paths::new(dir.path()), Endpoints::default());
+    let mut state = AppState::new(Paths::new(dir.path()), Endpoints::default());
+    // A delete reaching the command must never reach the real Recycle Bin.
+    state.trasher = std::sync::Arc::new(|_| {
+        Err(hengst_core::Error::Io(std::io::Error::other(
+            "the test has no Recycle Bin",
+        )))
+    });
     // The opener plugin is registered, so a denied call proves the ACL, not a missing plugin.
     let app = mock_builder()
         .plugin(tauri_plugin_opener::init())

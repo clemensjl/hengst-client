@@ -55,11 +55,13 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   recycleBinPartial: keys("recycleBinPartial"),
   recycleBinFailed: keys("recycleBinFailed"),
   recycleBinUnconfirmed: keys("recycleBinUnconfirmed"),
+  recycleBinUnknown: keys("recycleBinUnknown"),
+  recycleBinPending: keys("recycleBinPending"),
   instanceRunning: keys("instanceRunning"),
   busy: keys("busy"),
 };
 
-const REASONS = ["tooLarge", "binOff", "noBin", "inUse", "other", "unchecked", "unknown"];
+const REASONS = ["tooLarge", "binOff", "noBin", "inUse", "other", "unchecked"];
 
 /** The params the copy interpolates; everything else in `params` is technical and stays in the details. */
 const COPY_PARAMS = ["loader", "game", "version", "name"] as const;

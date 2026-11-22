@@ -889,10 +889,8 @@ async fn every_recycle_failure_reaches_the_ui_with_its_reason() {
         (RecycleFailure::Refused(BinReason::NoBin), "noBin"),
         (RecycleFailure::Refused(BinReason::Other), "other"),
         (RecycleFailure::Refused(BinReason::Unchecked), "unchecked"),
-        (RecycleFailure::StillRunning, "unknown"),
         (RecycleFailure::InUse("x".into()), "inUse"),
         (RecycleFailure::Declined("x".into()), "other"),
-        (RecycleFailure::TimedOut, "unknown"),
         (RecycleFailure::Failed("x".into()), "other"),
     ] {
         fx.state.trasher = failing_with(failure.clone());
@@ -945,7 +943,7 @@ async fn the_detail_of_a_recycle_bin_error_carries_no_user_folder() {
     make(&fx, "A", "9.9");
     fx.state.trasher = Arc::new(|_| -> CoreResult<()> {
         Err(Error::Io(std::io::Error::other(
-            "windows error: C:\\Users\\jelec\\AppData\\Local\\Temp\\home\\instances\\9.9: the destination is in use by another process (0x80270028)",
+            "windows error: C:\\Users\\someone\\AppData\\Local\\Temp\\home\\instances\\9.9: the destination is in use by another process (0x80270028)",
         )))
     });
     let dto = instance_delete_impl(&fx.state, "9.9".into())
@@ -953,7 +951,7 @@ async fn the_detail_of_a_recycle_bin_error_carries_no_user_folder() {
         .unwrap_err();
     assert_eq!(dto.code, ErrorCode::RecycleBinFailed);
     assert!(
-        !dto.detail.contains("jelec") && !dto.detail.contains("Users"),
+        !dto.detail.contains("someone") && !dto.detail.contains("Users"),
         "{}",
         dto.detail
     );
@@ -970,4 +968,72 @@ async fn the_fixture_cannot_reach_the_real_recycle_bin() {
     let missing = fx.dir.path().join("nothing");
     let err = (fx.state.trasher)(&missing).unwrap_err();
     assert!(err.to_string().contains("no Recycle Bin"), "{err}");
+}
+
+#[tokio::test]
+async fn a_typed_failure_with_the_folder_gone_is_never_reported_as_in_the_bin() {
+    use crate::recycle::RecycleFailure;
+    for failure in [
+        RecycleFailure::Declined("x".into()),
+        RecycleFailure::Failed("x".into()),
+        RecycleFailure::InUse("x".into()),
+    ] {
+        let mut fx = fixture().await;
+        make(&fx, "A", "9.9");
+        select(&fx, Some("9.9"));
+        let f = failure.clone();
+        fx.state.trasher = Arc::new(move |p| {
+            // The shell removed the folder and still reported a failure.
+            std::fs::remove_dir_all(p)?;
+            Err(Error::Io(std::io::Error::other(f.clone())))
+        });
+        fx.clear_events();
+        let dto = instance_delete_impl(&fx.state, "9.9".into())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::RecycleBinUnconfirmed, "{failure:?}");
+        assert_eq!(selected(&fx), None, "{failure:?}");
+        assert!(fx.events().contains(&instances_changed()), "{failure:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_timed_out_or_stopped_call_is_unknown_and_a_pending_one_started_nothing() {
+    use crate::recycle::RecycleFailure;
+    let mut fx = fixture().await;
+    make(&fx, "A", "9.9");
+    for failure in [
+        RecycleFailure::TimedOut,
+        RecycleFailure::Aborted("x".into()),
+    ] {
+        fx.state.trasher = failing_with(failure.clone());
+        fx.clear_events();
+        let dto = instance_delete_impl(&fx.state, "9.9".into())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::RecycleBinUnknown, "{failure:?}");
+        assert!(fx.events().contains(&instances_changed()), "{failure:?}");
+        assert!(
+            !dto.params.contains_key("reason"),
+            "no \"nothing was deleted\" claim"
+        );
+    }
+    fx.state.trasher = failing_with(RecycleFailure::StillRunning);
+    fx.clear_events();
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinPending);
+    assert!(fx.events().is_empty());
+    // A time-out after which the folder is gone is unknown as well, and the list refreshes.
+    fx.state.trasher = Arc::new(|p| {
+        std::fs::remove_dir_all(p)?;
+        Err(Error::Io(std::io::Error::other(RecycleFailure::TimedOut)))
+    });
+    fx.clear_events();
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinUnknown);
+    assert!(fx.events().contains(&instances_changed()));
 }
