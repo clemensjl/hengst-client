@@ -1709,18 +1709,25 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             setEnabled(ctx, core, id, true);
             waitText(ctx, core, id, s -> !s.isEmpty(), 3_000, id + " shows a text before the rule");
         }
-        world.getServer().runCommand("gamerule reduced_debug_info true");
-        waitUntil(ctx, mc -> mc.showOnlyReducedInfo(), 5_000, "the client sees reduced debug info");
-        for (String id : ids) {
-            waitText(ctx, core, id, String::isEmpty, 2_000, id + " empty under reduced debug info");
+        try {
+            world.getServer().runCommand("gamerule reduced_debug_info true");
+            waitUntil(ctx, mc -> mc.showOnlyReducedInfo(), 5_000, "the client sees reduced debug info");
+            for (String id : ids) {
+                waitText(ctx, core, id, String::isEmpty, 2_000, id + " empty under reduced debug info");
+            }
+        } finally {
+            // Also after a failed wait: the world must not stay with the rule on.
+            world.getServer().runCommand("gamerule reduced_debug_info false");
         }
-        world.getServer().runCommand("gamerule reduced_debug_info false");
-        waitUntil(ctx, mc -> !mc.showOnlyReducedInfo(), 5_000, "reduced debug info cleared");
-        for (String id : ids) {
-            waitText(ctx, core, id, s -> !s.isEmpty(), 3_000, id + " shows a text again after the rule");
-        }
-        for (int i = 0; i < ids.length; i++) {
-            setEnabled(ctx, core, ids[i], was[i]);
+        try {
+            waitUntil(ctx, mc -> !mc.showOnlyReducedInfo(), 5_000, "reduced debug info cleared");
+            for (String id : ids) {
+                waitText(ctx, core, id, s -> !s.isEmpty(), 3_000, id + " shows a text again after the rule");
+            }
+        } finally {
+            for (int i = 0; i < ids.length; i++) {
+                setEnabled(ctx, core, ids[i], was[i]);
+            }
         }
         ctx.runOnClient(HengstClientGameTest::clearChat);         // the two command feedback lines
         pass("reduced debug info: coordinates, direction and speed empty while the gamerule is on, back when it is off");
