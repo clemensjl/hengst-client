@@ -13,6 +13,7 @@ use crate::args::{Account, AccountKind};
 use crate::gamelog::{Entry, LogLine, LogTime, Parser, Stream};
 use crate::launch::Prepared;
 use crate::secret::REDACTED;
+use memchr::memmem::Finder;
 use std::fmt;
 use std::sync::Arc;
 
@@ -49,8 +50,9 @@ const MIN_FRAGMENT: usize = 8;
 /// of a secret can survive on either side of such a break.
 #[derive(Clone)]
 pub struct Redactor {
-    /// Every form of every secret, longest first, each at least `MIN_SECRET_LEN` bytes.
-    patterns: Vec<Vec<u8>>,
+    /// Every form of every secret, longest first, each at least `MIN_SECRET_LEN` bytes, as a
+    /// searcher built once.
+    patterns: Vec<Finder<'static>>,
 }
 
 impl fmt::Debug for Redactor {
@@ -76,15 +78,16 @@ impl Redactor {
     }
 
     pub(crate) fn new(secrets: &[&str]) -> Redactor {
-        let mut patterns: Vec<Vec<u8>> = Vec::new();
+        let mut forms: Vec<Vec<u8>> = Vec::new();
         for s in secrets.iter().filter(|s| s.len() >= MIN_SECRET_LEN) {
             for form in encodings(s) {
-                if !patterns.contains(&form) {
-                    patterns.push(form);
+                if !forms.contains(&form) {
+                    forms.push(form);
                 }
             }
         }
-        patterns.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        forms.sort_by_key(|p| std::cmp::Reverse(p.len()));
+        let patterns = forms.iter().map(|f| Finder::new(f).into_owned()).collect();
         Redactor { patterns }
     }
 
@@ -101,7 +104,7 @@ impl Redactor {
     }
 
     fn longest(&self) -> usize {
-        self.patterns.first().map_or(0, Vec::len)
+        self.patterns.first().map_or(0, |f| f.needle().len())
     }
 
     /// How much of one line the reader keeps: enough that every secret starting before the cut at
@@ -135,9 +138,10 @@ impl Redactor {
             .rposition(|b| !b.is_ascii_whitespace())
             .map_or(start, |i| i + 1);
         let seg = &line[start..end];
-        for p in &self.patterns {
+        for finder in &self.patterns {
+            let p = finder.needle();
             let mut from = 0;
-            while let Some(i) = find(&line[from..], p) {
+            while let Some(i) = finder.find(&line[from..]) {
                 spans.push((from + i, from + i + p.len()));
                 from += i + 1;
             }
@@ -229,12 +233,12 @@ fn encodings(s: &str) -> Vec<Vec<u8>> {
     ]
 }
 
-/// The first position of `needle` in `hay`.
+/// The first position of `needle` in `hay` (one-off searches; the patterns have their `Finder`).
 fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
-    if needle.is_empty() || needle.len() > hay.len() {
+    if needle.is_empty() {
         return None;
     }
-    hay.windows(needle.len()).position(|w| w == needle)
+    memchr::memmem::find(hay, needle)
 }
 
 /// `line` up to `limit` with every span starting before `limit` replaced as a whole.
@@ -440,23 +444,26 @@ fn create_game_log(
     Err(std::io::ErrorKind::AlreadyExists.into())
 }
 
-/// Deletes all but the newest `keep` launcher log files of `instance` in `dir`. Touches only
-/// regular files whose name `game_log_key` accepts for this instance; links, folders and every
-/// other file stay. Best effort.
-fn prune_game_logs(dir: &std::path::Path, instance: &str, keep: usize) {
+/// Deletes all but the newest `keep` launcher log files of `instance` in `dir`, counting
+/// `current` (the file this run just created) as one of them and never deleting it, also when its
+/// name is older than the rest (the clock went back). Touches only regular files whose name
+/// `game_log_key` accepts for this instance; links, folders and every other file stay. Best effort.
+fn prune_game_logs(dir: &std::path::Path, instance: &str, keep: usize, current: &std::path::Path) {
+    let current = current.file_name();
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let mut logs: Vec<_> = entries
         .flatten()
         .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter(|e| Some(e.file_name().as_os_str()) != current)
         .filter_map(|e| {
             let key = game_log_key(e.file_name().to_str()?, instance)?;
             Some((key, e.path()))
         })
         .collect();
     logs.sort();
-    let excess = logs.len().saturating_sub(keep);
+    let excess = logs.len().saturating_sub(keep.saturating_sub(1));
     for (_, path) in logs.into_iter().take(excess) {
         let _ = std::fs::remove_file(path);
     }
@@ -470,6 +477,7 @@ mod windows {
     use crate::process::Job;
     use crate::{Error, Result};
     use std::io;
+    use std::os::windows::io::{FromRawHandle, OwnedHandle};
     use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::sync::Mutex;
@@ -478,6 +486,7 @@ mod windows {
     use windows_sys::core::BOOL;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, SYSTEMTIME};
     use windows_sys::Win32::System::SystemInformation::{GetLocalTime, GetSystemTime};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
     use windows_sys::Win32::UI::WindowsAndMessaging::{
         EnumWindows, GetClassNameW, GetWindow, GetWindowThreadProcessId, IsWindowVisible,
         PostMessageW, GW_OWNER, SC_CLOSE, WM_SYSCOMMAND,
@@ -535,7 +544,7 @@ mod windows {
             .and_then(|()| create_game_log(&p.game_log_dir, &p.instance, &stamp))
             .ok();
 
-        let job = Job::new()?;
+        let job = Job::new_detached()?;
         let mut cmd = Command::new(&p.java);
         cmd.args(&p.args)
             .current_dir(&p.game_dir)
@@ -554,7 +563,7 @@ mod windows {
         };
         let (log_path, file) = match log {
             Some((path, file)) => {
-                prune_game_logs(&p.game_log_dir, &p.instance, KEEP_GAME_LOGS);
+                prune_game_logs(&p.game_log_dir, &p.instance, KEEP_GAME_LOGS, &path);
                 (Some(path), Some(std::io::BufWriter::new(file)))
             }
             None => (None, None),
@@ -566,11 +575,42 @@ mod windows {
             file,
             utc_offset,
         }));
-        // Anything failing from here on must not leave the game running unwatched.
-        let fail = |job: &Job, e: io::Error| -> Error {
-            job.terminate(FORCE_STOP_EXIT_CODE);
+        // Anything failing from here on must not leave the game running unwatched. The job is
+        // detached, so dropping it would not end the game: terminate it, else kill the child.
+        let fail = |job: &Job, child: &mut std::process::Child, e: io::Error| -> Error {
+            if job.try_terminate(FORCE_STOP_EXIT_CODE).is_err() {
+                let _ = child.kill();
+            }
             e.into()
         };
+        // The waiter thread starts first and gets the child only once everything else runs, so
+        // the child is still at hand here when a thread cannot be started.
+        let (start_tx, start_rx) =
+            std::sync::mpsc::channel::<(std::process::Child, Vec<std::thread::JoinHandle<()>>)>();
+        let (tx, exit) = watch::channel(None);
+        let waiter = std::thread::Builder::new()
+            .name("hengst-game-wait".into())
+            .spawn(move || {
+                let Ok((mut child, readers)) = start_rx.recv() else {
+                    return;
+                };
+                let status = child.wait();
+                let deadline = Instant::now() + READER_GRACE;
+                while readers.iter().any(|r| !r.is_finished()) && Instant::now() < deadline {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                for reader in readers.into_iter().filter(|r| r.is_finished()) {
+                    let _ = reader.join();
+                }
+                tx.send_replace(Some(
+                    status
+                        .map(|s| s.code().unwrap_or(-1))
+                        .map_err(|e| (e.kind(), e.to_string())),
+                ));
+            });
+        if let Err(e) = waiter {
+            return Err(fail(&job, &mut child, e));
+        }
         let mut readers = Vec::new();
         let pipes: [(Option<Box<dyn io::Read + Send>>, Stream); 2] = [
             (
@@ -593,29 +633,15 @@ mod windows {
             let (redactor, emitter) = (redactor.clone(), emitter.clone());
             let reader = std::thread::Builder::new()
                 .name(format!("hengst-game-{stream:?}").to_lowercase())
-                .spawn(move || pump(pipe, stream, &redactor, &emitter))
-                .map_err(|e| fail(&job, e))?;
-            readers.push(reader);
+                .spawn(move || pump(pipe, stream, &redactor, &emitter));
+            match reader {
+                Ok(reader) => readers.push(reader),
+                // Dropping `start_tx` with the error ends the waiter without a result.
+                Err(e) => return Err(fail(&job, &mut child, e)),
+            }
         }
-        let (tx, exit) = watch::channel(None);
-        std::thread::Builder::new()
-            .name("hengst-game-wait".into())
-            .spawn(move || {
-                let status = child.wait();
-                let deadline = Instant::now() + READER_GRACE;
-                while readers.iter().any(|r| !r.is_finished()) && Instant::now() < deadline {
-                    std::thread::sleep(Duration::from_millis(20));
-                }
-                for reader in readers.into_iter().filter(|r| r.is_finished()) {
-                    let _ = reader.join();
-                }
-                tx.send_replace(Some(
-                    status
-                        .map(|s| s.code().unwrap_or(-1))
-                        .map_err(|e| (e.kind(), e.to_string())),
-                ));
-            })
-            .map_err(|e| fail(&job, e))?;
+        // The waiter only ends after `recv`, so the send cannot fail; it owns the child now.
+        let _ = start_tx.send((child, readers));
         Ok(GameProcess {
             pid,
             job,
@@ -667,8 +693,10 @@ mod windows {
         /// Asks the game to close as if its window's close button was pressed: posts
         /// `WM_SYSCOMMAND`/`SC_CLOSE` to the top-level windows of the processes in its job (the
         /// game window belongs to the java process). Visible windows get it; when a process
-        /// shows none (yet), its hidden unowned windows do. Owned windows (dialogs) and the input
-        /// method windows Windows adds to every GUI thread are left out. Returns how many windows
+        /// shows none (yet), its hidden unowned windows do. Owned windows (dialogs), input method
+        /// windows and GLFW's helper window are left out (`SKIPPED_CLASSES`), and so is every window
+        /// whose process is not in the job when it is checked on an open handle (a reused process
+        /// id). Returns how many windows
         /// it was posted to: 0 when the game has ended or has no window, so it cannot be asked.
         /// Does not wait. Safe to call any number of times, also after the end.
         pub fn request_stop(&self) -> Result<usize> {
@@ -676,17 +704,15 @@ mod windows {
             if pids.is_empty() {
                 return Ok(0);
             }
-            let windows = top_level_windows(&pids);
-            let visible: Vec<HWND> = windows.iter().filter(|w| w.1).map(|w| w.0).collect();
-            let targets = if visible.is_empty() {
-                windows.iter().map(|w| w.0).collect()
-            } else {
-                visible
-            };
             let mut posted = 0;
-            for hwnd in targets {
+            for target in stop_targets(&self.job, &pids) {
+                // The window must still belong to the process checked above; that process cannot
+                // end and hand its id on while `target.process` holds it open.
+                if window_pid(target.hwnd) != target.pid {
+                    continue;
+                }
                 // SAFETY: plain call; a window that is gone by now makes it fail, nothing else.
-                if unsafe { PostMessageW(hwnd, WM_SYSCOMMAND, SC_CLOSE as usize, 0) } != 0 {
+                if unsafe { PostMessageW(target.hwnd, WM_SYSCOMMAND, SC_CLOSE as usize, 0) } != 0 {
                     posted += 1;
                 }
             }
@@ -700,19 +726,71 @@ mod windows {
         }
     }
 
+    /// An unowned top-level window, its process and whether it is visible.
+    pub(super) struct Window {
+        pub(super) hwnd: HWND,
+        pid: u32,
+        visible: bool,
+    }
+
+    /// A window `request_stop` may post to: its process is open (so its id cannot be reused) and
+    /// was checked to be in the game's job.
+    pub(super) struct Target {
+        pub(super) hwnd: HWND,
+        pid: u32,
+        #[allow(dead_code)] // held open, never read
+        process: OwnedHandle,
+    }
+
+    /// Classes never asked to close: the input method windows Windows adds to every GUI thread,
+    /// and GLFW's hidden helper window (its default handler would destroy it while the game
+    /// window stays). The GLFW case follows GLFW's source and is not verified against a real game.
+    const SKIPPED_CLASSES: [&str; 3] = ["IME", "MSCTFIME UI", "GLFW3 Helper"];
+
+    /// The windows of `pids` to post the close request to: the visible ones, or the hidden ones
+    /// when none is visible; each only if its process is in `job` right now. The ids come from the
+    /// job's list, but a process can end and its id go to an unrelated process before the windows
+    /// are enumerated, so membership is checked again on an open handle.
+    pub(super) fn stop_targets(job: &Job, pids: &[u32]) -> Vec<Target> {
+        let windows = top_level_windows(pids);
+        let any_visible = windows.iter().any(|w| w.visible);
+        windows
+            .into_iter()
+            .filter(|w| w.visible || !any_visible)
+            .filter_map(|w| {
+                // SAFETY: plain call; the result is checked before it is owned.
+                let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, w.pid) };
+                if h.is_null() {
+                    return None;
+                }
+                // SAFETY: `h` is a valid process handle that nothing else owns.
+                let process = unsafe { OwnedHandle::from_raw_handle(h) };
+                job.contains(&process).ok()?.then_some(Target {
+                    hwnd: w.hwnd,
+                    pid: w.pid,
+                    process,
+                })
+            })
+            .collect()
+    }
+
+    fn window_pid(hwnd: HWND) -> u32 {
+        let mut pid = 0;
+        // SAFETY: `pid` is a writable u32 for the duration of the call.
+        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        pid
+    }
+
     struct Search<'a> {
         pids: &'a [u32],
-        /// Unowned top-level windows of those processes and whether each is visible.
-        found: Vec<(HWND, bool)>,
+        found: Vec<Window>,
     }
 
     unsafe extern "system" fn collect(hwnd: HWND, lparam: LPARAM) -> BOOL {
         // SAFETY: `lparam` is the `&mut Search` `top_level_windows` passed, alive for the whole
         // enumeration, which calls back on this thread only.
         let search = unsafe { &mut *(lparam as *mut Search) };
-        let mut pid = 0;
-        // SAFETY: `pid` is a writable u32 for the duration of the call.
-        unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
+        let pid = window_pid(hwnd);
         // SAFETY: plain calls on a window handle Windows just handed out.
         if !search.pids.contains(&pid) || !unsafe { GetWindow(hwnd, GW_OWNER) }.is_null() {
             return 1;
@@ -721,16 +799,17 @@ mod windows {
         // SAFETY: the buffer and its length in u16 match.
         let n = unsafe { GetClassNameW(hwnd, class.as_mut_ptr(), class.len() as i32) };
         let class = String::from_utf16_lossy(&class[..n.max(0) as usize]);
-        if class == "IME" || class == "MSCTFIME UI" {
+        if SKIPPED_CLASSES.contains(&class.as_str()) {
             return 1;
         }
         // SAFETY: plain call.
         let visible = unsafe { IsWindowVisible(hwnd) } != 0;
-        search.found.push((hwnd, visible));
+        search.found.push(Window { hwnd, pid, visible });
         1
     }
 
-    fn top_level_windows(pids: &[u32]) -> Vec<(HWND, bool)> {
+    /// Unowned top-level windows of these processes, without `SKIPPED_CLASSES`.
+    pub(super) fn top_level_windows(pids: &[u32]) -> Vec<Window> {
         let mut search = Search {
             pids,
             found: Vec::new(),
@@ -1011,7 +1090,12 @@ mod tests {
             touch(name);
         }
         std::fs::create_dir(dir.path().join("1.21.11-20000101-000000.log")).unwrap();
-        prune_game_logs(dir.path(), "1.21.11", KEEP_GAME_LOGS);
+        prune_game_logs(
+            dir.path(),
+            "1.21.11",
+            KEEP_GAME_LOGS,
+            &dir.path().join(&mine[11]),
+        );
         let left: std::collections::BTreeSet<String> = std::fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().into_string().unwrap())
@@ -1030,6 +1114,61 @@ mod tests {
         }
         assert!(dir.path().join("1.21.11-20000101-000000.log").is_dir());
         assert_eq!(left.len(), KEEP_GAME_LOGS + others.len() + 1);
+    }
+
+    #[test]
+    fn pruning_never_removes_the_file_of_the_current_run() {
+        // The clock went back: the current run's file is older by name than ten others.
+        let dir = tempfile::tempdir().unwrap();
+        let touch = |name: &str| {
+            let path = dir.path().join(name);
+            std::fs::write(&path, b"x").unwrap();
+            path
+        };
+        let others: Vec<std::path::PathBuf> = (0..10)
+            .map(|i| touch(&format!("a-202611{:02}-120000.log", 10 + i)))
+            .collect();
+        let current = touch("a-20200101-000000.log");
+        prune_game_logs(dir.path(), "a", KEEP_GAME_LOGS, &current);
+        assert!(current.is_file());
+        assert!(!others[0].exists());
+        assert!(others[1..].iter().all(|p| p.is_file()));
+    }
+
+    /// A hidden top-level window of this test process, which is in no job of the test: stands in
+    /// for a process that took over the id of an ended job member.
+    #[cfg(windows)]
+    #[test]
+    fn a_window_of_a_process_outside_the_job_is_never_targeted() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
+        let class: Vec<u16> = "STATIC".encode_utf16().chain([0]).collect();
+        // SAFETY: a predefined class, no parent; created without WS_VISIBLE and never shown.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class.as_ptr(),
+                class.as_ptr(),
+                0,
+                0,
+                0,
+                10,
+                10,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null(),
+            )
+        };
+        assert!(!hwnd.is_null());
+        let own = std::process::id();
+        // Control: by process id alone the window would be a target.
+        let found = self::windows::top_level_windows(&[own]);
+        let job = crate::process::Job::new_detached().unwrap();
+        let targets = self::windows::stop_targets(&job, &[own]);
+        // SAFETY: this thread's own window.
+        unsafe { DestroyWindow(hwnd) };
+        assert!(found.iter().any(|w| w.hwnd == hwnd));
+        assert!(targets.iter().all(|t| t.hwnd != hwnd));
     }
 
     #[test]

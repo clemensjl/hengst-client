@@ -15,11 +15,21 @@
 //!   closes it, after which the script goes on; with `ignore-close` it prints `CLOSE IGNORED` and
 //!   keeps running until it is killed.
 //! - `exit <code>`.
+//!
+//! Whatever the script does, fake-java exits with 124 after 120 s.
 
 use std::io::Write;
 use std::time::Duration;
 
+/// fake-java ends itself after this long in every mode, so a test binary that was killed before
+/// it could stop its game leaves no (invisible) window process behind for good.
+const LIFETIME: Duration = Duration::from_secs(120);
+
 fn main() {
+    std::thread::spawn(|| {
+        std::thread::sleep(LIFETIME);
+        std::process::exit(124);
+    });
     let args: Vec<String> = std::env::args().skip(1).collect();
     let script = std::fs::read_to_string("fake-java.txt").unwrap_or_else(|_| "args".into());
     for line in script.lines() {

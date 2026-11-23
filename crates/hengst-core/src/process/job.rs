@@ -1,4 +1,5 @@
-//! A Windows job object that terminates every process in it when its last handle closes.
+//! A Windows job object: with kill-on-close it terminates every process in it when its last handle
+//! closes; detached (for the game) it only groups them for terminating and listing.
 
 use std::io;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
@@ -10,7 +11,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JobObjectBasicProcessIdList,
     JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
     TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
@@ -103,7 +104,7 @@ pub(crate) const SPAWN_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_SUSPENDED;
 
 /// A job object. With kill-on-close (`new_kill_on_close`): when the `Job` is dropped, or the
 /// launcher process ends in any way (also killed, or Ctrl+C in the CLI), Windows closes the handle
-/// and terminates every process in the job. Without it (`new`, for the game): the processes
+/// and terminates every process in the job. Detached (`new_detached`, for the game): the processes
 /// outlive the handle, the job only groups them for `terminate` and `process_ids`. Processes
 /// started by a process in the job are in it too (no breakaway is allowed), so a processor's
 /// helpers die with it.
@@ -122,8 +123,9 @@ impl Job {
         Ok(Self::create()?)
     }
 
-    /// A new, unnamed job object without limits: closing it leaves its processes running.
-    pub fn new() -> Result<Job> {
+    /// A new, unnamed job object without kill-on-close: dropping it leaves its processes
+    /// running. Only for processes that must outlive the launcher (the game).
+    pub fn new_detached() -> Result<Job> {
         Ok(Self::create_with(false)?)
     }
 
@@ -185,8 +187,9 @@ impl Job {
         Ok(child)
     }
 
-    /// Terminates every process in the job with exit code `code`. A failure is ignored: the
-    /// processes still die when the job is dropped.
+    /// Terminates every process in the job with exit code `code`. A failure is ignored: in a
+    /// kill-on-close job the processes still die when the job is dropped. A detached job gives no
+    /// such guarantee; use `try_terminate` there.
     pub fn terminate(&self, code: u32) {
         let _ = self.try_terminate(code);
     }
@@ -196,6 +199,20 @@ impl Job {
     pub fn try_terminate(&self, code: u32) -> io::Result<()> {
         // SAFETY: the handle is valid for the duration of the call (owned by `self`).
         check(unsafe { TerminateJobObject(self.handle.as_raw_handle(), code) })
+    }
+
+    /// Whether the process behind `process` (a process handle) is in this job.
+    pub fn contains(&self, process: &impl AsRawHandle) -> io::Result<bool> {
+        let mut result = 0;
+        // SAFETY: both handles are valid for the duration of the call; `result` is writable.
+        check(unsafe {
+            IsProcessInJob(
+                process.as_raw_handle(),
+                self.handle.as_raw_handle(),
+                &mut result,
+            )
+        })?;
+        Ok(result != 0)
     }
 
     /// The ids of the processes in the job right now (none once they have all ended).
@@ -397,7 +414,7 @@ pub(crate) mod tests {
 
     #[test]
     fn plain_job_lists_its_processes_and_lets_them_outlive_it() {
-        let job = Job::new().unwrap();
+        let job = Job::new_detached().unwrap();
         let mut child = job
             .spawn(powershell("Start-Sleep 60").stdout(Stdio::null()))
             .unwrap();
@@ -411,7 +428,7 @@ pub(crate) mod tests {
 
     #[test]
     fn terminating_an_ended_job_succeeds_and_lists_nothing() {
-        let job = Job::new().unwrap();
+        let job = Job::new_detached().unwrap();
         let mut child = job
             .spawn(powershell("exit 3").stdout(Stdio::null()))
             .unwrap();

@@ -249,8 +249,9 @@ pub(crate) mod tests {
 
     /// The child is created with `CREATE_NO_WINDOW` (`SPAWN_FLAGS`, the only flags `Job::spawn`
     /// sets), and a real child started through the runner has no console window at all
-    /// (`GetConsoleWindow()` is NULL; without the flag it would share the runner's console, also
-    /// under ConPTY or a headless runner, where that window is merely hidden).
+    /// (`GetConsoleWindow()` is NULL; without the flag it would share the runner's console when
+    /// the runner has one, also a hidden ConPTY one, and get a new console of its own when the
+    /// runner has none).
     #[test]
     fn no_console_window_flag_is_set() {
         use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;

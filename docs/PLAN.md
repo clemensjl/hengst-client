@@ -177,6 +177,16 @@ Priorität: **M** = MVP (v0.1), **1** = v1.0, **S** = später.
 - Keine Telemetrie. Absturzberichte nur manuell.
 - CurseForge-API-Key wird nicht im Klartext ins Repo gelegt (Build-Secret in GitHub Actions); Forks müssen eigenen Key beantragen.
 
+### Spielausgabe und Schwärzung (Phase 4)
+
+Der Kern (`game.rs`) liest stdout und stderr des Spiels zeilenweise und schwärzt jede Zeile, bevor sie den Lesethread verlässt, also bevor sie Live-Log, Launcher-Logdatei (`logs/game/<Instanz>-<Zeitstempel>.log`) oder Fehlermeldungen erreicht. Geheim ist nur das Minecraft-Zugriffstoken des Microsoft-Kontos.
+
+- Erfasst: das Token im Klartext, JSON-maskiert (auch mit `\/` und in Gsons HTML-sicherer Form wie `=`) und prozentkodiert (Hex in Groß- und Kleinbuchstaben), auch wenn es über zwei Lesevorgänge verteilt ankommt. Zerbricht ein Zeilenumbruch das Token, werden ein Präfix am Zeilenende, ein Suffix am Zeilenanfang und eine Zeile, die nur aus einem Innenstück besteht, ab 8 Byte geschwärzt; je Zeilenumbruch können höchstens 7 Byte auf jeder Seite stehen bleiben. Zeilen über 8 KiB werden erst geschwärzt, dann gekürzt, nie mitten im Token.
+- Nicht erfasst: das Token in Base64 oder als XML-Entitäten (`&#x41;`), Teilstücke mitten in einer Zeile, ein Token, das in viele Stücke unter 8 Byte umbrochen ist, und Zeilenenden nur aus `\r` (sie gelten für die Bruchprüfung nicht als Zeilengrenze).
+- Die XUID steht im Klartext in Live-Log und Logdateien (sie ist eine Kennung, kein Zugangsschlüssel, wie UUID und Spielername). Wer Logs an Fehlerberichte hängt, gibt sie damit preis.
+- Das Spiel erbt die Umgebungsvariablen des Launchers ungeschwärzt.
+- Das Spiel läuft in einem eigenen Job-Objekt ohne kill-on-close und überlebt das Schließen des Launchers. Läuft der Launcher selbst in einem äußeren Job mit kill-on-close (etwa in manchen Terminals), endet das Spiel trotzdem mit dem Launcher.
+
 ## 9. Recht und Plattformregeln
 
 - **Microsoft/Mojang:** Neue Azure-Apps brauchen die Freigabe für die Minecraft-API, sonst 403. Antrag dauert Tage bis Wochen, daher sofort stellen.
