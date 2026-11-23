@@ -70,6 +70,30 @@ describe("ipc client", () => {
     expect(long.startsWith("yyyy")).toBe(true);
   });
 
+  it.each([
+    [
+      "could not read C:\\Users\\O'Brien\\AppData\\settings.json: access denied",
+      "could not read ...\\settings.json: access denied",
+    ],
+    [
+      "could not read 'C:\\Users\\O'Brien\\AppData\\settings.json': access denied",
+      "could not read '...\\settings.json': access denied",
+    ],
+    [
+      'could not read "C:\\Users\\O\'Brien\\AppData\\settings.json": access denied',
+      'could not read "...\\settings.json": access denied',
+    ],
+  ])("an apostrophe in a user name does not end the path: %s", async (text, want) => {
+    mockIPC(() => {
+      throw text;
+    });
+    const detail = await api.appInfo().then(
+      () => "",
+      (e: { dto: { detail: string } }) => e.dto.detail,
+    );
+    expect(detail).toBe(want);
+  });
+
   it("loginStart passes the method, the language and the channel, no texts, and returns the op", async () => {
     let seen: [string, string[]] | undefined;
     mockIPC((cmd, args) => {

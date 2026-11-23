@@ -51,12 +51,37 @@ function redactDetail(text: string): string {
     .replace(/(bearer\s+)([^\s;,)"']+)/gi, (all, prefix: string, word: string) =>
       // The word "bearer" in prose ("the bearer of ...") has no token after it.
       word.length >= 16 || /[\d.\-_/+=]/.test(word) ? `${prefix}***` : all,
-    )
-    .replace(
-      /(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\{2,}(?=[^\s"'\\]))[^"'\n\r]*?(?=: |["'\n\r]|$)/g,
-      (path) => `...\\${path.split(/[\\/]/).filter(Boolean).pop() ?? ""}`,
     );
-  return out.length > DETAIL_LIMIT ? `${out.slice(0, DETAIL_LIMIT - 1)}…` : out;
+  const stripped = stripPaths(out);
+  return stripped.length > DETAIL_LIMIT ? `${stripped.slice(0, DETAIL_LIMIT - 1)}…` : stripped;
+}
+
+/**
+ * As `strip_paths` in `error.rs`: a path runs to `: `, a line break, the end of the text, or the
+ * quote that opened it when no letter or digit follows that quote (`O'Brien` stays inside).
+ */
+function stripPaths(text: string): string {
+  const start = /(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\{2,}(?=[^\s"'\\]))/g;
+  let out = "";
+  let from = 0;
+  for (let m = start.exec(text); m; m = start.exec(text)) {
+    const i = m.index;
+    const before = text[i - 1];
+    const opener = before === '"' || before === "'" ? before : null;
+    let end = i + m[0].length;
+    while (end < text.length) {
+      const c = text[end];
+      const next = text[end + 1] ?? "";
+      if (c === "\n" || c === "\r" || (c === ":" && next === " ")) break;
+      if (c === opener && !/[\p{L}\p{N}]/u.test(next)) break;
+      end++;
+    }
+    const last = text.slice(i, end).split(/[\\/]/).filter(Boolean).pop() ?? "";
+    out += `${text.slice(from, i)}...\\${last}`;
+    from = end;
+    start.lastIndex = end;
+  }
+  return out + text.slice(from);
 }
 
 /** Every rejection of `invoke` becomes an `IpcError`; a non-DTO value is wrapped as `internal`. */

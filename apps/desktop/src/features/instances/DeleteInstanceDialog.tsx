@@ -37,11 +37,13 @@ const SETTLED = [
   "instanceNotFound",
 ];
 
-/** Outcomes after which the folder is worth a look: nothing moved, or what is left is unclear. */
+/**
+ * Outcomes after which the folder is worth a look: nothing moved, or what is left is unclear. Not
+ * `recycleBinUnconfirmed`: the folder is gone there, so opening it is a dead end.
+ */
 const OPEN_FOLDER = [
   "recycleBinFailed",
   "recycleBinUnknown",
-  "recycleBinUnconfirmed",
   "recycleBinPartial",
   "recycleBinPending",
 ];

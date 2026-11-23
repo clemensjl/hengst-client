@@ -51,7 +51,8 @@ async function waitForOurListener(port: number, ms: number): Promise<void> {
   }
 }
 
-const driverRunning = () => !!tauriDriver && tauriDriver.exitCode === null && !driverError;
+const driverRunning = () =>
+  !!tauriDriver && tauriDriver.exitCode === null && tauriDriver.signalCode === null && !driverError;
 
 /**
  * Stops the whole run. WDIO only logs errors thrown in worker hooks and carries on, so this ends
@@ -67,7 +68,8 @@ async function abortRun(reason: string, withSession: boolean): Promise<never> {
     // The exit code below still fails the run.
   }
   // Only a driver that still runs: the PID of one that exited may belong to another process now.
-  if (tauriDriver?.pid && tauriDriver.exitCode === null) killTree(tauriDriver.pid);
+  if (tauriDriver?.pid && tauriDriver.exitCode === null && tauriDriver.signalCode === null)
+    killTree(tauriDriver.pid);
   if (withSession) await browser.deleteSession().catch(() => {});
   if (mock && mock.process.exitCode === null) mock.process.kill();
   if (home) removeHome(home);
@@ -176,7 +178,8 @@ export const config: WebdriverIO.Config = {
   },
 
   afterSession: async () => {
-    if (tauriDriver?.pid && tauriDriver.exitCode === null) killTree(tauriDriver.pid);
+    if (tauriDriver?.pid && tauriDriver.exitCode === null && tauriDriver.signalCode === null)
+      killTree(tauriDriver.pid);
     tauriDriver = undefined;
     if (mock) await stopMock(mock);
     mock = undefined;

@@ -29,9 +29,18 @@ jobs:
       - run: cargo test -p hengst-desktop
       # The release configuration `tauri build` compiles (the placeholder dist is enough to check it).
       - run: cargo check --release -p hengst-desktop --features custom-protocol
-      # The e2e feature must never compile into a release build.
+      # The e2e feature must never compile into a release build, and it must fail for that reason.
       - shell: bash
-        run: "! cargo check --release -p hengst-desktop --features custom-protocol,e2e"
+        run: |
+          if out=$(cargo check --release -p hengst-desktop --features custom-protocol,e2e 2>&1); then
+            echo "the e2e feature compiled in a release build"
+            exit 1
+          fi
+          if ! echo "$out" | grep -F 'the `e2e` feature is for debug builds only'; then
+            echo "$out"
+            echo "the release build failed, but not because of the e2e guard"
+            exit 1
+          fi
 
   msrv:
     # The core and the CLI promise Rust 1.89; the desktop crate needs 1.90 and is left out.

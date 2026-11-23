@@ -353,8 +353,9 @@ describe("InstancesView delete", () => {
     ).toBeTruthy();
     expect(toast).not.toHaveBeenCalled();
     await waitFor(() => expect(backend.count("instances_list")).toBeGreaterThan(lists));
-    // Nothing is left to move: only closing is offered.
+    // Nothing is left to move: only closing is offered, and no folder to open.
     expect(within(dialog()).queryByRole("button", { name: "Move to Recycle Bin" })).toBeNull();
+    expect(within(panel).queryByRole("button", { name: "Open folder" })).toBeNull();
     fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     // The selection moved on to a readable instance.
@@ -383,7 +384,7 @@ describe("InstancesView delete", () => {
     },
   );
 
-  it.each(["recycleBinUnknown", "recycleBinUnconfirmed", "recycleBinPartial", "recycleBinPending"])(
+  it.each(["recycleBinUnknown", "recycleBinPartial", "recycleBinPending"])(
     "%s offers Open folder to check what is left",
     async (code) => {
       const backend = await setup(three());

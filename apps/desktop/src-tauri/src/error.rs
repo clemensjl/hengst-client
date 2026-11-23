@@ -265,7 +265,8 @@ pub fn redact(text: &str) -> String {
 /// `\\server\share\...`, a verbatim path `\\?\...`, also with doubled backslashes as a `Debug`
 /// text has them) by `...\<last component>`, so a detail shown to the user or copied into a bug
 /// report carries neither the Windows user name nor a server or share name. A path ends at `: `, a
-/// quote, a line break or the end of the text.
+/// line break, the end of the text, or the quote that opened it (one not followed by a letter or
+/// digit, so `O'Brien` stays inside).
 pub fn strip_paths(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -287,11 +288,19 @@ pub fn strip_paths(text: &str) -> String {
             i += 1;
             continue;
         }
+        // A quote ends the path only if the path was opened by that same quote, and only where it
+        // is not followed by a letter or digit: a user name may contain an apostrophe (O'Brien).
+        let opener = i
+            .checked_sub(1)
+            .map(|p| chars[p])
+            .filter(|c| matches!(c, '"' | '\''));
         let mut end = i;
         while end < chars.len() {
             let c = chars[end];
             let colon_space = c == ':' && end > i + 1 && chars.get(end + 1) == Some(&' ');
-            if colon_space || matches!(c, '"' | '\'' | '\n' | '\r') {
+            let closing =
+                Some(c) == opener && !chars.get(end + 1).is_some_and(|n| n.is_alphanumeric());
+            if colon_space || closing || matches!(c, '\n' | '\r') {
                 break;
             }
             end += 1;
@@ -895,6 +904,27 @@ mod mapping_tests {
         }
         // A backslash pair inside a word is no path start.
         assert_eq!(strip_paths("a\\\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn an_apostrophe_in_a_user_name_does_not_end_the_path() {
+        for (text, want) in [
+            (
+                "could not read C:\\Users\\O'Brien\\AppData\\settings.json: access denied",
+                "could not read ...\\settings.json: access denied",
+            ),
+            (
+                "could not read 'C:\\Users\\O'Brien\\AppData\\settings.json': access denied",
+                "could not read '...\\settings.json': access denied",
+            ),
+            (
+                "could not read \"C:\\Users\\O'Brien\\AppData\\settings.json\": access denied",
+                "could not read \"...\\settings.json\": access denied",
+            ),
+            ("open \\\\fileserver\\share\\O'Brien\\t2", "open ...\\t2"),
+        ] {
+            assert_eq!(strip_paths(text), want, "{text}");
+        }
     }
 
     /// Every error whose text can carry a local path: the web view gets neither the user name nor

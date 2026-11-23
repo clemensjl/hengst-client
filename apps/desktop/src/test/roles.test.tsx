@@ -2,7 +2,7 @@ import { render } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup } from "@testing-library/react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { singleByRole } from "./roles.ts";
+import { singleByRole } from "../../e2e/support/roles.ts";
 
 afterEach(() => cleanup());
 

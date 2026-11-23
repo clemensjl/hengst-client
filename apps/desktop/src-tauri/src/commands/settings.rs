@@ -306,9 +306,9 @@ mod tests {
         // Even an existing local java.exe is refused; a UNC or verbatim path is never looked at.
         for path in [
             java.display().to_string(),
-            r"\fileserver\share\java.exe".to_string(),
-            r"\?\C:\Program Files\Java\bin\java.exe".to_string(),
-            r"\?\UNC\fileserver\share\java.exe".to_string(),
+            r"\\fileserver\share\java.exe".to_string(),
+            r"\\?\C:\Program Files\Java\bin\java.exe".to_string(),
+            r"\\?\UNC\fileserver\share\java.exe".to_string(),
         ] {
             let e = settings_update_impl(
                 &state,
