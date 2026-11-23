@@ -44,7 +44,8 @@ pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error
 /// get `CARGO_BIN_EXE_fake-java`). It is looked for in the profile folder of the running test
 /// executable (`<target>/debug`, where `cargo test --workspace` puts it); when it is missing or
 /// older than its source it is built there first with `cargo build -j 6 -p hengst-testkit --bin
-/// fake-java`, once per test process. Panics if that build fails.
+/// fake-java --profile <the test's profile>`, once per test process. Panics with the paths if the
+/// build fails or the binary is not where the profile puts it.
 pub fn fake_java() -> std::path::PathBuf {
     use std::path::{Path, PathBuf};
     use std::sync::OnceLock;
@@ -66,6 +67,13 @@ pub fn fake_java() -> std::path::PathBuf {
         };
         if !fresh {
             let target = profile.parent().expect("the target folder");
+            // Built with the profile of the running test so it lands next to it: the folder
+            // `debug` is the dev profile, any other folder (`release`, a custom one) its name.
+            let folder = profile
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| panic!("no profile folder above {}", exe.display()));
+            let cargo_profile = if folder == "debug" { "dev" } else { folder };
             let status = std::process::Command::new(
                 std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
             )
@@ -78,14 +86,23 @@ pub fn fake_java() -> std::path::PathBuf {
                 "--bin",
                 "fake-java",
             ])
+            .args(["--profile", cargo_profile])
             .arg("--target-dir")
             .arg(target)
             .current_dir(env!("CARGO_MANIFEST_DIR"))
             .status()
             .expect("cargo could not be started to build fake-java");
-            assert!(status.success(), "building fake-java failed");
+            assert!(
+                status.success(),
+                "building fake-java with profile {cargo_profile} failed"
+            );
         }
-        assert!(bin.is_file(), "no fake-java at {}", bin.display());
+        assert!(
+            bin.is_file(),
+            "no fake-java at {} (test executable {})",
+            bin.display(),
+            exe.display()
+        );
         bin
     })
     .clone()

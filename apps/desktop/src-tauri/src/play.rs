@@ -36,7 +36,7 @@
 
 use crate::accounts::{internal, Accounts, OpKind, OpOut, Operations};
 use crate::dto::accounts::OperationId;
-use crate::dto::error::{ErrorCode, ErrorDto};
+use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
 use crate::dto::play::{GameStateDto, LastExit, PlayEvent, RunId, StopResult, TransferDto};
 use crate::error::{error_dto, instance_id_error, redact, strip_paths};
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
@@ -90,11 +90,27 @@ struct Run {
     run_id: RunId,
     since: u64,
     process: Arc<GameProcess>,
-    /// The app asked the game to stop; set before the request is sent, so an exit that overtakes
-    /// the answer still counts as requested.
-    stop_requested: bool,
-    /// A stop reached the game (shown as `Stopping`).
-    stopping: bool,
+    /// `game_stop` calls whose close request is being sent right now.
+    stops_in_flight: u32,
+    /// A close request reached a window of the game.
+    asked: bool,
+    /// `game_force_stop` calls whose termination is running right now.
+    forcing: u32,
+    /// A force stop went through.
+    forced: bool,
+}
+
+impl Run {
+    /// The app asked the game to stop. A request still in flight counts, so an exit that
+    /// overtakes its answer is not "unexpected"; one that reached nothing and failed does not.
+    fn stop_requested(&self) -> bool {
+        self.asked || self.forced || self.forcing > 0 || self.stops_in_flight > 0
+    }
+
+    /// Shown as `Stopping`: a stop reached the game or a force stop is under way.
+    fn stopping(&self) -> bool {
+        self.asked || self.forced || self.forcing > 0
+    }
 }
 
 enum Phase {
@@ -184,7 +200,7 @@ impl Game {
             instance: run.instance.clone(),
             run_id,
             code,
-            stop_requested: run.stop_requested,
+            stop_requested: run.stop_requested(),
         };
         self.set(
             &mut inner,
@@ -203,7 +219,7 @@ fn dto(phase: &Phase) -> GameStateDto {
         Phase::Preparing { instance, .. } => GameStateDto::Preparing {
             instance: instance.clone(),
         },
-        Phase::Running(run) if run.stopping => GameStateDto::Stopping {
+        Phase::Running(run) if run.stopping() => GameStateDto::Stopping {
             instance: run.instance.clone(),
             run_id: run.run_id,
         },
@@ -291,6 +307,18 @@ pub fn play_event(p: Progress, root: &Path) -> Option<PlayEvent> {
             message: strip_paths(&redact(&message)),
         },
     })
+}
+
+/// The web view's form of a failed start: `error_dto`, and for a failed installer step the action
+/// "open the log" with the log's path relative to the data folder (as `InstallLog` sends it; the
+/// web view hands it back through `resolve_log_path`). A log outside the data folder gets no
+/// action, never its absolute path.
+pub fn play_error(e: &hengst_core::Error, root: &Path) -> ErrorDto {
+    let mut dto = error_dto(e);
+    if let hengst_core::Error::Processor { log, .. } = e {
+        dto.action = relative(root, log).map(|path| ErrorAction::OpenLog { path });
+    }
+    dto
 }
 
 /// Everything a start needs, taken from `AppState` before the task runs.
@@ -442,7 +470,7 @@ impl PlayTask {
             progress,
         })
         .await
-        .map_err(|e| error_dto(&e))?;
+        .map_err(|e| play_error(&e, r.paths.root()))?;
         // From here on the start cannot be cancelled: an abort during the spawn would leave a
         // running game nobody watches.
         if self.cancel.is_cancelled() || !r.ops.try_commit(self.op) {
@@ -478,8 +506,10 @@ impl PlayTask {
                 run_id,
                 since: unix_millis(),
                 process: process.clone(),
-                stop_requested: false,
-                stopping: false,
+                stops_in_flight: 0,
+                asked: false,
+                forcing: 0,
+                forced: false,
             };
             game.set(&mut inner, Phase::Running(run));
             self.out.end(PlayEvent::Started { run_id });
@@ -557,71 +587,102 @@ fn unix_millis() -> u64 {
 
 /// Asks the running game to close (its windows get the close request). See `StopResult`.
 pub async fn stop(game: &Arc<Game>) -> Result<StopResult, ErrorDto> {
-    let (process, run_id, before) = {
-        let mut inner = lock(&game.inner);
-        let Phase::Running(run) = &mut inner.phase else {
-            return Ok(StopResult::NotRunning);
-        };
-        let before = run.stop_requested;
-        run.stop_requested = true;
-        (run.process.clone(), run.run_id, before)
+    let Some((process, run_id)) = begin_stop(game) else {
+        return Ok(StopResult::NotRunning);
     };
     let posted = tokio::task::spawn_blocking(move || process.request_stop())
         .await
         .map_err(|_| internal("the task that stops the game failed"))
         .and_then(|r| r.map_err(|e| error_dto(&e)));
+    finish_stop(game, run_id, posted)
+}
+
+/// Applies `change` to the run `run_id` if it still runs, and tells the web view when its state
+/// shows differently afterwards. `None`: that run is over.
+fn change_run<T>(game: &Game, run_id: RunId, change: impl FnOnce(&mut Run) -> T) -> Option<T> {
     let mut inner = lock(&game.inner);
-    let current = match &mut inner.phase {
-        Phase::Running(run) if run.run_id == run_id => Some(run),
+    let before = dto(&inner.phase);
+    let Phase::Running(run) = &mut inner.phase else {
+        return None;
+    };
+    if run.run_id != run_id {
+        return None;
+    }
+    let out = change(run);
+    if dto(&inner.phase) != before {
+        game.emit(&inner);
+    }
+    Some(out)
+}
+
+fn running_id(game: &Game) -> Option<RunId> {
+    match &lock(&game.inner).phase {
+        Phase::Running(run) => Some(run.run_id),
         _ => None,
-    };
-    let Some(run) = current else {
+    }
+}
+
+/// A stop request goes out: counted while in flight.
+fn begin_stop(game: &Game) -> Option<(Arc<GameProcess>, RunId)> {
+    let run_id = running_id(game)?;
+    change_run(game, run_id, |run| {
+        run.stops_in_flight += 1;
+        (run.process.clone(), run_id)
+    })
+}
+
+fn finish_stop(
+    game: &Game,
+    run_id: RunId,
+    posted: Result<usize, ErrorDto>,
+) -> Result<StopResult, ErrorDto> {
+    let reached = matches!(posted, Ok(n) if n > 0);
+    let still = change_run(game, run_id, |run| {
+        run.stops_in_flight -= 1;
+        run.asked |= reached;
+    });
+    match (posted, still) {
+        (Err(e), _) => Err(e),
+        (Ok(_), _) if reached => Ok(StopResult::Asked),
+        (Ok(_), Some(())) => Ok(StopResult::NoWindow),
         // The run ended meanwhile.
-        return match posted {
-            Ok(n) if n > 0 => Ok(StopResult::Asked),
-            Ok(_) => Ok(StopResult::NotRunning),
-            Err(e) => Err(e),
-        };
-    };
-    match posted {
-        Ok(n) if n > 0 => {
-            if !run.stopping {
-                run.stopping = true;
-                game.emit(&inner);
-            }
-            Ok(StopResult::Asked)
-        }
-        other => {
-            // Nothing reached the game: unless an earlier stop did, it was not asked.
-            if !run.stopping {
-                run.stop_requested = before;
-            }
-            other.map(|_| StopResult::NoWindow)
-        }
+        (Ok(_), None) => Ok(StopResult::NotRunning),
     }
 }
 
 /// Ends every process of the running game at once. `false` when no game runs.
 pub async fn force_stop(game: &Arc<Game>) -> Result<bool, ErrorDto> {
-    let process = {
-        let mut inner = lock(&game.inner);
-        let Phase::Running(run) = &mut inner.phase else {
-            return Ok(false);
-        };
-        run.stop_requested = true;
-        let changed = !run.stopping;
-        run.stopping = true;
-        let process = run.process.clone();
-        if changed {
-            game.emit(&inner);
-        }
-        process
+    let Some((process, run_id)) = begin_force(game) else {
+        return Ok(false);
     };
-    tokio::task::spawn_blocking(move || process.force_stop())
+    let result = tokio::task::spawn_blocking(move || process.force_stop())
         .await
-        .map_err(|_| internal("the task that stops the game failed"))?
-        .map_err(|e| error_dto(&e))?;
-    Ok(true)
+        .map_err(|_| internal("the task that stops the game failed"))
+        .and_then(|r| r.map_err(|e| error_dto(&e)));
+    finish_force(game, run_id, result)
+}
+
+/// A force stop starts: `Stopping` and requested while it runs.
+fn begin_force(game: &Game) -> Option<(Arc<GameProcess>, RunId)> {
+    let run_id = running_id(game)?;
+    change_run(game, run_id, |run| {
+        run.forcing += 1;
+        (run.process.clone(), run_id)
+    })
+}
+
+/// A failed termination takes its mark back: the game runs on as before.
+fn finish_force(
+    game: &Game,
+    run_id: RunId,
+    result: Result<(), ErrorDto>,
+) -> Result<bool, ErrorDto> {
+    let ok = result.is_ok();
+    change_run(game, run_id, |run| {
+        run.forcing -= 1;
+        run.forced |= ok;
+    });
+    result.map(|()| true)
 }
 
 /// Loads the instance under the instance lock and starts it (see `start`).

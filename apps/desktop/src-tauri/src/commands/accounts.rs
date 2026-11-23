@@ -1,4 +1,4 @@
-use crate::accounts::{internal, login_pages};
+use crate::accounts::{internal, login_pages, OpKind};
 use crate::dto::accounts::{AccountsDto, LoginEvent, LoginMethod, OperationId};
 use crate::dto::error::ErrorDto;
 use crate::error::error_dto;
@@ -82,10 +82,15 @@ pub async fn login_start(
     ))
 }
 
-/// `true` if the operation was running and is now cancelled (its channel gets `Cancelled`).
+/// `true` if the sign-in was running and is now cancelled (its channel gets `Cancelled`). Only
+/// sign-ins: the id of a game start is refused (`play_cancel` ends those).
+pub fn login_cancel_impl(state: &AppState, op: OperationId) -> bool {
+    state.operations.cancel_of(OpKind::Login, op)
+}
+
 #[tauri::command]
 pub fn login_cancel(state: State<'_, AppState>, op: OperationId) -> Result<bool, ErrorDto> {
-    Ok(state.operations.cancel(op))
+    Ok(login_cancel_impl(&state, op))
 }
 
 /// Opens the sign-in page of the running browser sign-in again. The address stays in Rust.

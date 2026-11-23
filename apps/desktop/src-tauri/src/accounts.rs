@@ -9,12 +9,12 @@ use crate::dto::accounts::{
     AccountDto, AccountKindDto, AccountsDto, LoginEvent, LoginMethod, OperationId, DEV_ACCOUNT_ID,
 };
 use crate::dto::error::{ErrorCode, ErrorDto};
-use crate::error::error_dto;
+use crate::error::{error_dto, strip_paths};
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
 use crate::settings::{Language, Settings, SettingsHandle};
 use hengst_core::args::Account;
 use hengst_core::auth::browser::{BrowserLoginPages, BROWSER_LOGIN_TIMEOUT};
-use hengst_core::auth::flow::{launch_account, LoginSession};
+use hengst_core::auth::flow::{launch_account_with, LoginSession};
 use hengst_core::auth::store::{load_accounts_file, AccountStore, SecretStore, StoredAccount};
 use hengst_core::auth::{unix_now, AuthError, MicrosoftAuth};
 use hengst_core::paths::Paths;
@@ -572,16 +572,27 @@ impl Accounts {
             Ok(stored) => stored,
             Err(e) => return (Err(e), false),
         };
-        let result = launch_account(
+        // A renewed session is saved like a sign-in: under `io_lock`, and only if the account
+        // is still there (it may have been signed out while the renewal was in flight). The
+        // lock is taken inside the synchronous callback, never across an await.
+        let result = launch_account_with(
             &self.store,
             self.auth.as_ref(),
             Some(&stored.uuid),
             unix_now(),
+            |session| {
+                let _io = self.io();
+                self.exact(&stored.uuid)?;
+                self.store.save_session(session).map(|_| ())
+            },
         )
         .await;
         if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
             if let Err(e) = self.mark_sign_in_required(&stored.uuid) {
-                self.diag(&format!("play: could not mark the account ({e})"));
+                self.diag(&format!(
+                    "play: could not mark the account ({})",
+                    strip_paths(&e.to_string())
+                ));
             }
             return (result, true);
         }

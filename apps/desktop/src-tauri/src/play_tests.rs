@@ -49,6 +49,7 @@ struct Fx {
     state: AppState,
     app_events: Seen<AppEvent>,
     lines: Seen<(RunId, String)>,
+    secrets: Arc<MemorySecretStore>,
 }
 
 impl Drop for Fx {
@@ -65,6 +66,8 @@ enum Login {
     Valid,
     /// A Microsoft account whose token is due; the sign-in mock refuses every refresh.
     Expired,
+    /// A Microsoft account whose token is due; every answer of the sign-in mock takes 1.5 s.
+    DueSlow,
     /// No account at all.
     None,
 }
@@ -74,6 +77,7 @@ async fn fixture(login: Login) -> Fx {
     mount_mojang(&server).await;
     let scenario = match login {
         Login::Expired => AuthScenario::RefreshExpired,
+        Login::DueSlow => AuthScenario::Slow(Duration::from_millis(1500)),
         _ => AuthScenario::Ok,
     };
     mount_auth(&server, scenario, &[PLAYER_A, PLAYER_B]).await;
@@ -83,7 +87,7 @@ async fn fixture(login: Login) -> Fx {
     let secrets = Arc::new(MemorySecretStore::default());
     let expires = match login {
         Login::Valid => u64::MAX,
-        Login::Expired => 1,
+        Login::Expired | Login::DueSlow => 1,
         Login::None => 0,
     };
     if !matches!(login, Login::None) {
@@ -105,9 +109,10 @@ async fn fixture(login: Login) -> Fx {
     let auth = MicrosoftAuth::new("e2e-client".into(), auth_endpoints(&server.uri()));
     let accounts = Accounts::new(
         &paths,
-        Box::new(SharedStore(secrets)),
+        Box::new(SharedStore(secrets.clone())),
         Some(auth),
-        Arc::new(|_| Err(())),
+        // Opens nothing: a browser sign-in then waits for a redirect that never comes.
+        Arc::new(|_| Ok(())),
     );
     let mut state = AppState::with_accounts(paths.clone(), endpoints(&server.uri()), accounts);
     state.trasher = Arc::new(|_| {
@@ -151,6 +156,7 @@ async fn fixture(login: Login) -> Fx {
         state,
         app_events,
         lines,
+        secrets,
     }
 }
 
@@ -329,7 +335,17 @@ async fn plays_through_running_and_stops_on_request() {
     // Lines carry the run they belong to.
     assert!(fx.lines.lock().unwrap().iter().all(|(r, _)| *r == run_id));
     assert!(fx.lines.lock().unwrap().iter().any(|(_, l)| l == "hello"));
-    // Recorded after the start.
+    // Recorded after the start: `Started` does not wait for the file write; the list learns it
+    // from the `DataChanged Instances` that follows the write.
+    until("the launch recorded", || {
+        fx.app_events
+            .lock()
+            .unwrap()
+            .contains(&AppEvent::DataChanged {
+                scope: DataScope::Instances,
+            })
+    })
+    .await;
     let inst = instances::load(&fx.state.paths, ID).unwrap();
     assert!(inst.config.last_played.is_some());
 
@@ -469,20 +485,63 @@ async fn closing_the_window_while_preparing_cancels_the_start() {
     until("the flag", || gate.saw_cancel.load(Ordering::SeqCst)).await;
 }
 
+/// A sign-in and a start run side by side: each cancel command ends only its own kind.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_login_operation_id_does_not_cancel_a_start_and_the_reverse() {
+async fn play_cancel_and_login_cancel_end_only_their_own_kind() {
+    use crate::commands::accounts::login_cancel_impl;
+    use crate::dto::accounts::{LoginEvent, LoginMethod};
     let fx = fixture(Login::Valid).await;
+    // A browser sign-in that waits for its redirect (the fixture's opener opens nothing).
+    let login_events: Seen<LoginEvent> = Arc::default();
+    let sink = login_events.clone();
+    let login = fx.state.accounts.start_login(
+        &fx.state.operations,
+        &fx.state.events,
+        LoginMethod::Browser,
+        crate::accounts::login_pages(crate::settings::Language::En),
+        fx.state.settings.clone(),
+        Arc::new(move |e| sink.lock().unwrap().push(e)),
+    );
+    until("the browser step", || {
+        login_events
+            .lock()
+            .unwrap()
+            .contains(&LoginEvent::BrowserOpened)
+    })
+    .await;
     let (blocking, gate) = blocking_preparer();
     fx.state.game.set_preparer(blocking);
     let (op, events) = fx.play().await;
     until("the installer step", || events.lock().unwrap().len() >= 2).await;
-    assert!(!play_cancel_impl(&fx.state, OperationId(op.0 + 1000)));
+
+    assert!(
+        !play_cancel_impl(&fx.state, login),
+        "play_cancel ended a sign-in"
+    );
+    assert!(
+        !login_cancel_impl(&fx.state, op),
+        "login_cancel ended a start"
+    );
     assert!(matches!(
         fx.state.game.state(),
         GameStateDto::Preparing { .. }
     ));
-    gate.release.store(true, Ordering::SeqCst);
-    ended(&events).await;
+    assert!(!login_events
+        .lock()
+        .unwrap()
+        .contains(&LoginEvent::Cancelled));
+    // Each with its own command.
+    assert!(login_cancel_impl(&fx.state, login));
+    assert!(play_cancel_impl(&fx.state, op));
+    assert_eq!(ended(&events).await, PlayEvent::Cancelled);
+    until("the sign-in cancelled", || {
+        login_events
+            .lock()
+            .unwrap()
+            .contains(&LoginEvent::Cancelled)
+    })
+    .await;
+    drop(gate);
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -630,7 +689,7 @@ async fn last_exit_is_cleared_by_the_next_start() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn delete_is_refused_while_preparing_or_running() {
+async fn delete_is_refused_while_preparing_running_or_stopping() {
     let fx = fixture(Login::Valid).await;
     let refused = |r: Result<(), ErrorDto>| r.unwrap_err().code == ErrorCode::InstanceRunning;
     let (blocking, gate) = blocking_preparer();
@@ -642,13 +701,20 @@ async fn delete_is_refused_while_preparing_or_running() {
     fx.idle().await;
 
     fx.state.game.set_preparer(core_preparer());
-    fx.script("sleep 60000\n");
+    fx.script("window ignore-close\n");
     let (_, events) = fx.play().await;
     ended(&events).await;
     fx.running().await;
     assert!(refused(instance_delete_impl(&fx.state, ID.into()).await));
+    // Stopping: the game was asked and has not exited yet.
+    fx.line("WINDOW READY").await;
+    assert_eq!(stop(&fx.state.game).await.unwrap(), StopResult::Asked);
+    assert!(matches!(
+        fx.state.game.state(),
+        GameStateDto::Stopping { .. }
+    ));
+    assert!(refused(instance_delete_impl(&fx.state, ID.into()).await));
     assert!(force_stop(&fx.state.game).await.unwrap());
-    // Refused while stopping, too: the game has not exited before the state says so.
     fx.idle().await;
     // Idle: the delete gets past the check (and the fixture's trasher refuses it).
     let after = instance_delete_impl(&fx.state, ID.into())
@@ -855,4 +921,162 @@ fn progress_maps_one_to_one_and_keeps_paths_out() {
             count: 7
         })
     );
+}
+
+/// Signing out while the renewal of that account's login is in flight: the late answer must not
+/// write the account back (entry, default, secrets) and nothing is launched with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn signing_out_during_the_login_renewal_keeps_the_account_removed() {
+    use hengst_core::auth::store::{secret_key, SecretKind};
+    let fx = fixture(Login::DueSlow).await;
+    fx.script("out started\nexit 0\n");
+    let (_, events) = fx.play().await;
+    // The renewal's first request waits 1.5 s for its answer; the sign-out lands meanwhile.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let accounts = fx.state.accounts.clone();
+    tokio::task::spawn_blocking(move || accounts.remove(PLAYER_A.uuid))
+        .await
+        .unwrap()
+        .unwrap();
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::AccountNotFound);
+    assert_eq!(fx.idle().await, None);
+    let list = fx.state.accounts.list(&fx.state.settings.get()).unwrap();
+    assert!(
+        list.accounts.iter().all(|a| a.id != PLAYER_A.uuid),
+        "{list:?}"
+    );
+    let file = std::fs::read_to_string(fx.state.paths.accounts_file()).unwrap();
+    assert!(!file.contains(PLAYER_A.uuid), "{file}");
+    for kind in [SecretKind::Minecraft, SecretKind::Refresh] {
+        assert!(fx
+            .secrets
+            .get(&secret_key(PLAYER_A.uuid, kind))
+            .unwrap()
+            .is_none());
+    }
+    assert!(!fx
+        .states()
+        .iter()
+        .any(|s| matches!(s, GameStateDto::Running { .. })));
+    assert!(fx.lines.lock().unwrap().is_empty());
+}
+
+/// Two `game_stop` calls overlap and neither reaches a window: whatever order they end in, the
+/// game counts as not asked (the old code restored a stale "requested" from the second call).
+#[tokio::test(flavor = "multi_thread")]
+async fn overlapping_stops_that_reach_nothing_do_not_count_as_requested() {
+    let fx = fixture(Login::Valid).await;
+    fx.script("out up\nsleep 5000\nexit 3\n");
+    let (_, events) = fx.play().await;
+    ended(&events).await;
+    let run_id = fx.running().await;
+    let game = &fx.state.game;
+    let requested = || match &lock(&game.inner).phase {
+        Phase::Running(run) => run.stop_requested(),
+        _ => panic!("not running"),
+    };
+    let (_, a) = begin_stop(game).unwrap();
+    let (_, b) = begin_stop(game).unwrap();
+    assert_eq!((a, b), (run_id, run_id));
+    assert!(requested(), "in flight counts");
+    assert_eq!(finish_stop(game, a, Ok(0)).unwrap(), StopResult::NoWindow);
+    assert!(requested(), "the other one is still in flight");
+    assert_eq!(finish_stop(game, b, Ok(0)).unwrap(), StopResult::NoWindow);
+    assert!(!requested());
+    assert!(matches!(game.state(), GameStateDto::Running { .. }));
+    let exit = fx.idle().await.unwrap();
+    assert_eq!(exit.code, 3);
+    assert!(!exit.stop_requested);
+}
+
+/// A force stop whose termination fails takes back `Stopping` and "requested".
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_force_stop_takes_its_mark_back() {
+    let fx = fixture(Login::Valid).await;
+    fx.script("sleep 60000\n");
+    let (_, events) = fx.play().await;
+    ended(&events).await;
+    let run_id = fx.running().await;
+    let game = &fx.state.game;
+    let (_, id) = begin_force(game).unwrap();
+    assert_eq!(id, run_id);
+    assert!(matches!(game.state(), GameStateDto::Stopping { .. }));
+    let err = finish_force(game, id, Err(internal("the test refuses"))).unwrap_err();
+    assert_eq!(err.code, ErrorCode::Internal);
+    assert!(matches!(game.state(), GameStateDto::Running { .. }));
+    match &lock(&game.inner).phase {
+        Phase::Running(run) => assert!(!run.stop_requested()),
+        _ => panic!("not running"),
+    }
+    // Back and forth both reached the web view.
+    let states = fx.states();
+    assert!(
+        matches!(
+            &states[states.len() - 2..],
+            [GameStateDto::Stopping { .. }, GameStateDto::Running { .. }]
+        ),
+        "{states:?}"
+    );
+    assert!(force_stop(game).await.unwrap());
+    assert!(fx.idle().await.unwrap().stop_requested);
+}
+
+/// A failed installer step offers its log, as the data-folder-relative path `InstallLog` uses;
+/// a log outside the data folder (cannot happen) offers nothing rather than an absolute path.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failed_installer_step_offers_its_log_relative_to_the_data_folder() {
+    use crate::dto::error::ErrorAction;
+    let fx = fixture(Login::Valid).await;
+    let log = fx
+        .state
+        .paths
+        .logs()
+        .join("loader-install-forge-1.20.1-47.4.28.log");
+    let failing = log.clone();
+    fx.state.game.set_preparer(Arc::new(move |_| {
+        let log = failing.clone();
+        Box::pin(async move {
+            Err(Error::Processor {
+                jar: "net.minecraftforge:jarsplitter:1.1.4".into(),
+                code: 1,
+                log,
+            })
+        })
+    }));
+    let (_, events) = fx.play().await;
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::InstallStepFailed);
+    assert_eq!(
+        error.action,
+        Some(ErrorAction::OpenLog {
+            path: "logs/loader-install-forge-1.20.1-47.4.28.log".into()
+        })
+    );
+    // Neither the data folder nor any absolute form of the log path reaches the web view.
+    let json = serde_json::to_string(&error).unwrap();
+    let root = fx
+        .state
+        .paths
+        .root()
+        .to_string_lossy()
+        .replace('\\', "\\\\");
+    assert!(!json.contains(&root), "{json}");
+
+    let outside = play_error(
+        &Error::Processor {
+            jar: "x".into(),
+            code: 1,
+            log: r"D:\elsewhere\x.log".into(),
+        },
+        fx.state.paths.root(),
+    );
+    assert_eq!(outside.action, None);
+    // Other errors keep their own mapping.
+    let other = Error::UnknownVersion("9.9".into());
+    assert_eq!(play_error(&other, fx.state.paths.root()), error_dto(&other));
 }
