@@ -58,6 +58,40 @@ describe("settings update", () => {
   });
 });
 
+describe("settings sequencing", () => {
+  it("an older settings load that answers after an update does not revert the update", async () => {
+    const loads: ((v: unknown) => void)[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "settings_get") return new Promise((resolve) => loads.push(resolve));
+      if (cmd === "settings_update") return { ...dto(null), theme: "light" };
+    });
+    const load = useApp.getState().loadSettings();
+    await vi.waitFor(() => expect(loads).toHaveLength(1));
+    await useApp.getState().updateSettings({ theme: "light" });
+    // The load was sent before the update and answers with the value from before it.
+    loads[0](dto(null));
+    await load;
+    expect(useApp.getState().settings.data?.theme).toBe("light");
+    expect(useApp.getState().settings.status).toBe("ready");
+  });
+
+  it("a late failure of an older settings load does not mark newer settings as failed", async () => {
+    const loads: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "settings_get")
+        return new Promise((resolve, reject) => loads.push({ resolve, reject }));
+    });
+    const first = useApp.getState().loadSettings();
+    const second = useApp.getState().loadSettings();
+    await vi.waitFor(() => expect(loads).toHaveLength(2));
+    loads[1].resolve(dto(null));
+    await second;
+    loads[0].reject({ code: "fileSystem", params: {}, action: null, detail: "x" });
+    await expect(first).rejects.toBeDefined();
+    expect(useApp.getState().settings.status).toBe("ready");
+  });
+});
+
 describe("settings events", () => {
   it("a reset notice that arrives with a settings change is shown as the reset toast", async () => {
     const send = await backend([dto("reset")]);
@@ -159,6 +193,42 @@ describe("accounts", () => {
   it("opening it before the list is known opens the sign-in dialog (the backend refuses in a build without an id)", () => {
     useApp.getState().openSignIn(null);
     expect(useApp.getState().accountDialog).toMatchObject({ kind: "signIn" });
+  });
+
+  it("a late answer of an older accounts request never replaces a newer selection", async () => {
+    const answers: ((v: unknown) => void)[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list") return new Promise((resolve) => answers.push(resolve));
+    });
+    const first = useApp.getState().loadAccounts();
+    const second = useApp.getState().loadAccounts();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    const newer = accountsDto(true, ["Mira_K", "Jonas_T"]);
+    newer.accounts[0].selected = false;
+    newer.accounts[1].selected = true;
+    answers[1](newer);
+    await second;
+    // The older answer still has the first account selected.
+    answers[0](accountsDto(true, ["Mira_K", "Jonas_T"]));
+    await first;
+    const selected = useApp.getState().accounts.data?.accounts.find((a) => a.selected);
+    expect(selected?.name).toBe("Jonas_T");
+  });
+
+  it("a late failure of an older accounts request does not mark a newer list as failed", async () => {
+    const answers: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "accounts_list")
+        return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+    });
+    const first = useApp.getState().loadAccounts();
+    const second = useApp.getState().loadAccounts();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1].resolve(accountsDto(true, ["Mira_K"]));
+    await second;
+    answers[0].reject({ code: "fileSystem", params: {}, action: null, detail: "x" });
+    await first;
+    expect(useApp.getState().accounts.status).toBe("ready");
   });
 
   it("selecting an account calls the backend with its id and reloads", async () => {

@@ -119,8 +119,15 @@ interface AppState {
 
 // The filter of the last `loadVersions`, used when an event asks for a reload.
 let versionsFilter: VersionFilter | null = null;
-// Counts the requests of the instance list; an answer counts only if no newer request was made.
-let instancesRequests = 0;
+// The newest request per resource. Answers can arrive out of order: one counts only if no newer
+// request for the same resource was made after it (an update of the settings counts as one).
+const requests = new Map<string, number>();
+/** Starts a request for `key`; the returned check says whether it is still the newest one. */
+function latest(key: string): () => boolean {
+  const mine = (requests.get(key) ?? 0) + 1;
+  requests.set(key, mine);
+  return () => requests.get(key) === mine;
+}
 // Counts the openings of the sign-in dialog; each one is a new sign-in with its own state.
 let signInOpenings = 0;
 
@@ -143,29 +150,34 @@ export const useApp = create<AppState>()((set, get) => ({
   setView: (view) => set({ view }),
 
   loadInfo: async () => {
+    const current = latest("info");
     set((s) => ({ info: loading(s.info) }));
     try {
-      set({ info: { status: "ready", data: await api.appInfo() } });
+      const data = await api.appInfo();
+      if (current()) set({ info: { status: "ready", data } });
     } catch (e) {
-      set((s) => ({ info: { ...s.info, status: "error", error: errorOf(e) } }));
+      if (current()) set((s) => ({ info: { ...s.info, status: "error", error: errorOf(e) } }));
     }
   },
 
   loadSettings: async () => {
+    const current = latest("settings");
     set((s) => ({ settings: loading(s.settings) }));
     try {
       const data = await api.settingsGet();
-      set({ settings: { status: "ready", data } });
+      if (current()) set({ settings: { status: "ready", data } });
       return data;
     } catch (e) {
-      set((s) => ({ settings: { ...s.settings, status: "error", error: errorOf(e) } }));
+      if (current())
+        set((s) => ({ settings: { ...s.settings, status: "error", error: errorOf(e) } }));
       throw e;
     }
   },
 
   updateSettings: async (change) => {
+    const current = latest("settings");
     const data = await api.settingsUpdate(change);
-    set({ settings: { status: "ready", data } });
+    if (current()) set({ settings: { status: "ready", data } });
     // An update that found the file damaged resets it and says so in its own answer: the follow-up
     // reload (which may fail) is not needed to learn it. The id keeps a second delivery to one toast.
     if (data.notice === "reset") toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
@@ -174,18 +186,23 @@ export const useApp = create<AppState>()((set, get) => ({
 
   loadVersions: async (filter) => {
     versionsFilter = filter;
+    const current = latest("versions");
     set((s) => ({ versions: loading(s.versions) }));
     try {
-      set({ versions: { status: "ready", data: await api.gameVersions(filter) } });
+      const data = await api.gameVersions(filter);
+      if (current()) set({ versions: { status: "ready", data } });
     } catch (e) {
-      set((s) => ({ versions: { ...s.versions, status: "error", error: errorOf(e) } }));
+      if (current())
+        set((s) => ({ versions: { ...s.versions, status: "error", error: errorOf(e) } }));
     }
   },
 
   loadVersionsSummary: async () => {
+    const current = latest("versionsSummary");
     set((s) => ({ versionsSummary: loading(s.versionsSummary) }));
     try {
       const all = await api.gameVersions(ALL_KINDS);
+      if (!current()) return;
       set({
         versionsSummary: {
           status: "ready",
@@ -197,6 +214,7 @@ export const useApp = create<AppState>()((set, get) => ({
         },
       });
     } catch (e) {
+      if (!current()) return;
       set((s) => ({
         versionsSummary: { ...s.versionsSummary, status: "error", error: errorOf(e) },
       }));
@@ -204,12 +222,15 @@ export const useApp = create<AppState>()((set, get) => ({
   },
 
   loadAccounts: async () => {
+    const current = latest("accounts");
     set((s) => ({ accounts: loading(s.accounts) }));
     try {
-      set({ accounts: { status: "ready", data: await api.accountsList() } });
+      const data = await api.accountsList();
+      if (current()) set({ accounts: { status: "ready", data } });
     } catch (e) {
       // The list shown so far stays; the error is what the chip and its menu explain.
-      set((s) => ({ accounts: { ...s.accounts, status: "error", error: errorOf(e) } }));
+      if (current())
+        set((s) => ({ accounts: { ...s.accounts, status: "error", error: errorOf(e) } }));
     }
   },
 
@@ -239,18 +260,17 @@ export const useApp = create<AppState>()((set, get) => ({
   closeAccountDialog: () => set({ accountDialog: null }),
 
   loadInstances: async () => {
-    // Only the answer of the newest request counts: an older one that arrives late is dropped.
-    const mine = ++instancesRequests;
+    const current = latest("instances");
     set((s) => ({ instances: loading(s.instances) }));
     try {
       const answer = await api.instancesList();
-      if (mine !== instancesRequests) return;
+      if (!current()) return;
       set({
         instances: { status: "ready", data: answer.instances },
         instancesIncomplete: answer.incomplete,
       });
     } catch (e) {
-      if (mine !== instancesRequests) return;
+      if (!current()) return;
       set((s) => ({ instances: { ...s.instances, status: "error", error: errorOf(e) } }));
     }
   },
