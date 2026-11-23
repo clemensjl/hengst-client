@@ -38,6 +38,13 @@ public interface GameView {
     Object worldIdentity();
 
     /**
+     * The server (or the client's own option) asks for reduced debug info: vanilla's debug screen then hides the
+     * position and the facing. Modules that show what vanilla withholds there (coordinates, direction, speed) show
+     * nothing while it is set. False outside a world. Allocation free.
+     */
+    boolean reducedDebugInfo();
+
+    /**
      * The JVM's used heap in bytes (total minus free). The default asks {@link Runtime}, which does not allocate; no
      * adapter work. The F3 screen shows the same figure.
      */

@@ -54,6 +54,21 @@ class HengstLegacyModTest {
     }
 
     @Test
+    void aHookRegistrationThatFailsLeavesTheModInert() {
+        // A renamed or missing API member surfaces as a LinkageError while the listeners are registered.
+        assertFalse(HengstLegacyMod.registerHooks(() -> {
+            throw new NoSuchMethodError("renamed API member");
+        }));
+        assertFalse(HengstLegacyMod.registerHooks(() -> {
+            throw new IllegalStateException("registry closed");
+        }));
+        assertFalse(HengstLegacyMod.ENABLED);
+        int[] ran = new int[1];
+        assertTrue(HengstLegacyMod.registerHooks(() -> ran[0]++));
+        assertEquals(1, ran[0]);
+    }
+
+    @Test
     void hooksNeverThrowIntoTheGame() {
         // No core (start failed or not started): the hook bodies catch what the missing core causes.
         assertDoesNotThrow(HengstLegacyMod::onFrame);
@@ -509,6 +524,7 @@ class HengstLegacyModTest {
             @Override public String serverAddress() { return null; }
             @Override public int pingMillis() { return -1; }
             @Override public Object worldIdentity() { return null; }
+            @Override public boolean reducedDebugInfo() { return false; }
         };
         return new Platform() {
             @Override public GameVersion version() { return GameVersion.V1_8_9; }

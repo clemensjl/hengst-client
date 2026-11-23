@@ -20,6 +20,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class ModulesTest {
     @TempDir Path dir;
@@ -33,7 +34,7 @@ class ModulesTest {
         platform = new FakePlatform(dir);
         time = new FakeTime();
         cfg = ModuleConfig.defaults();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private String coords(double x, double y, double z, int decimals) {
@@ -183,6 +184,21 @@ class ModulesTest {
     }
 
     // coordinates
+
+    @Test
+    void coordinates_are_empty_while_the_server_asks_for_reduced_debug_info() {
+        platform.inWorld = true;
+        platform.playerX = 3.0;
+        CoordinatesModule coords = new CoordinatesModule();
+        coords.tick(ctx, cfg);
+        assertEquals("X 3  Y 0  Z 0", coords.text());
+        platform.reducedDebugInfo = true;
+        coords.tick(ctx, cfg);
+        assertEquals("", coords.text());
+        platform.reducedDebugInfo = false;
+        coords.tick(ctx, cfg);
+        assertEquals("X 3  Y 0  Z 0", coords.text());
+    }
 
     @Test
     void coordinates_floor_and_reuse_text() {
@@ -624,7 +640,7 @@ class ModulesTest {
         io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock wall =
                 new io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock();
         wall.utcMillis = java.time.Instant.parse("2026-11-21T23:58:58Z").toEpochMilli(); // "11:58:58 PM"
-        HudContext wallCtx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
+        HudContext wallCtx = TestContexts.context(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
         wallCtx.setI18n(io.github.clemensjl.hengst.mod.common.I18n.load(language));
         io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
             new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),

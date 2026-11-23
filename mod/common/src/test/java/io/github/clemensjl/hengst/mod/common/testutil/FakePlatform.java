@@ -27,6 +27,7 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public String serverAddress;
     public int pingMillis = -1;
     public Object worldIdentity;
+    public boolean reducedDebugInfo;
     public long memoryUsed;
     public long memoryMax;
     public String languageCode = "en_us";
@@ -169,6 +170,11 @@ public final class FakePlatform implements Platform, GameView, InputView {
     @Override
     public Object worldIdentity() {
         return worldIdentity;
+    }
+
+    @Override
+    public boolean reducedDebugInfo() {
+        return reducedDebugInfo;
     }
 
     @Override

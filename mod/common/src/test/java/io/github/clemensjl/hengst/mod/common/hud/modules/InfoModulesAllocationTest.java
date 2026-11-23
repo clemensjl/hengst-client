@@ -22,6 +22,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 /** Direction and speed through the real renderer: nothing is allocated unless a displayed value changed. */
 @Tag("interpreted")
@@ -52,7 +53,7 @@ class InfoModulesAllocationTest {
         platform.inWorld = true;
         platform.worldIdentity = new Object();
         time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
         direction = new DirectionModule();
         speed = new SpeedModule();
         FeatureRegistry reg = new FeatureRegistry();
@@ -66,7 +67,7 @@ class InfoModulesAllocationTest {
         s.setEnabled(true);
         s.setAnchor(Anchor.BOTTOM_RIGHT);
         s.setOption("decimals", 2);
-        renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(p);
         canvas = new CountingCanvas();
     }
@@ -103,6 +104,27 @@ class InfoModulesAllocationTest {
         assertEquals(0, frameBytes, "allocated " + frameBytes + " bytes in " + n + " frames");
         assertEquals(0, tickBytes, "allocated " + tickBytes + " bytes in " + n + " ticks");
         assertTrue(canvas.texts > 0);
+    }
+
+    @Test
+    void reduced_debug_info_allocates_nothing_while_the_player_moves_and_turns() {
+        platform.playerYaw = -135f;
+        settle();
+        platform.reducedDebugInfo = true;
+        settle();
+        int n = 20000;
+        long before = allocated();
+        for (int i = 0; i < n; i++) {
+            platform.playerYaw += 0.37f;
+            platform.playerX += 0.25;
+            renderer.tick(ctx);
+            ctx.frames().onFrame();
+            renderer.render(canvas, ctx);
+        }
+        long bytes = allocated() - before;
+        assertEquals(0, bytes, "allocated " + bytes + " bytes in " + n + " ticks and frames");
+        assertEquals("", direction.text());
+        assertEquals("", speed.text());
     }
 
     @Test
@@ -225,7 +247,7 @@ class InfoModulesAllocationTest {
         wall.offset = 3_600_000;
         platform.memoryMax = 4096L << 20;
         platform.memoryUsed = 1000L << 20;
-        ctx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
         clock = new ClockModule();
         memory = new MemoryModule();
         FeatureRegistry reg = new FeatureRegistry();
@@ -239,7 +261,7 @@ class InfoModulesAllocationTest {
         ModuleConfig m = p.module("memory");
         m.setEnabled(true);
         m.setAnchor(Anchor.BOTTOM_RIGHT);
-        clockRenderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        clockRenderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         clockRenderer.rebuild(p);
         for (int i = 0; i < 3000; i++) { // warm-up: class loading, resolution, first texts
             ctx.frames().onFrame();
@@ -366,7 +388,7 @@ class InfoModulesAllocationTest {
         ModuleConfig b = p.module("server_address");
         b.setEnabled(true);
         b.setAnchor(Anchor.BOTTOM_RIGHT);
-        netRenderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        netRenderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         netRenderer.rebuild(p);
         for (int i = 0; i < 3000; i++) {
             ctx.frames().onFrame();
@@ -503,7 +525,7 @@ class InfoModulesAllocationTest {
         c.setEnabled(true);
         c.setAnchor(Anchor.TOP_LEFT);
         c.setOption("tenths", tenths);
-        stopwatchRenderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        stopwatchRenderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         stopwatchRenderer.rebuild(p);
         for (int i = 0; i < 3000; i++) {
             ctx.frames().onFrame();
@@ -644,7 +666,7 @@ class InfoModulesAllocationTest {
         c.setAnchor(Anchor.TOP_RIGHT);
         c.setScale(3.0f);
         c.setBackground(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         io.github.clemensjl.hengst.mod.common.testutil.WideGlyphCanvas wide =
                 new io.github.clemensjl.hengst.mod.common.testutil.WideGlyphCanvas(320, 240);

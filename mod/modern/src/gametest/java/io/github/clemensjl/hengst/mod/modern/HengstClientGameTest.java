@@ -136,12 +136,12 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             if (restart) {
                 restartPhase(ctx);
             } else {
-                fullPhase(ctx);
+                fullPhase(ctx, world);
             }
         }
     }
 
-    private static void fullPhase(ClientGameTestContext ctx) {
+    private static void fullPhase(ClientGameTestContext ctx, TestSingleplayerContext world) {
         TestInput input = ctx.getInput();
         HengstCore core = HengstModernMod.core();
         Platform platform = core.context().platform();
@@ -333,6 +333,7 @@ public final class HengstClientGameTest implements FabricClientGameTest {
 
         keyRegistration(ctx, core);
         infoModules(ctx, core);
+        reducedDebugInfo(ctx, world, core);
         settingsWithTheFullCatalog(ctx, core);
         languageSwitch(ctx, core);
         dispatchAllocation(ctx);
@@ -1695,6 +1696,36 @@ public final class HengstClientGameTest implements FabricClientGameTest {
         }
     }
 
+    /**
+     * The server's reduced-debug-info rule (vanilla F3 then hides position and facing): coordinates, direction and speed
+     * show nothing while it is set and return when it is cleared.
+     */
+    private static void reducedDebugInfo(ClientGameTestContext ctx, TestSingleplayerContext world, HengstCore core) {
+        String[] ids = {"coordinates", "direction", "speed"};
+        boolean[] was = new boolean[ids.length];
+        for (int i = 0; i < ids.length; i++) {
+            String id = ids[i];
+            was[i] = ctx.computeOnClient(mc -> core.activeProfile().module(id).enabled());
+            setEnabled(ctx, core, id, true);
+            waitText(ctx, core, id, s -> !s.isEmpty(), 3_000, id + " shows a text before the rule");
+        }
+        world.getServer().runCommand("gamerule reduced_debug_info true");
+        waitUntil(ctx, mc -> mc.showOnlyReducedInfo(), 5_000, "the client sees reduced debug info");
+        for (String id : ids) {
+            waitText(ctx, core, id, String::isEmpty, 2_000, id + " empty under reduced debug info");
+        }
+        world.getServer().runCommand("gamerule reduced_debug_info false");
+        waitUntil(ctx, mc -> !mc.showOnlyReducedInfo(), 5_000, "reduced debug info cleared");
+        for (String id : ids) {
+            waitText(ctx, core, id, s -> !s.isEmpty(), 3_000, id + " shows a text again after the rule");
+        }
+        for (int i = 0; i < ids.length; i++) {
+            setEnabled(ctx, core, ids[i], was[i]);
+        }
+        ctx.runOnClient(HengstClientGameTest::clearChat);         // the two command feedback lines
+        pass("reduced debug info: coordinates, direction and speed empty while the gamerule is on, back when it is off");
+    }
+
     // ---- M1a helpers ----
 
     private static TextHudModule module(HengstCore core, String id) {
@@ -2392,6 +2423,14 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             }
         }
         throw new AssertionError("key mapping " + name + " not registered");
+    }
+
+    private static void clearChat(Minecraft mc) {
+        //? if >=26.1 {
+        mc.gui.hud.getChat().clearMessages(false);
+        //?} else {
+        /*mc.gui.getChat().clearMessages(false);
+        *///?}
     }
 
     private static void addChatLine(Minecraft mc, String text) {

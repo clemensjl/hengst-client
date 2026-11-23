@@ -17,6 +17,7 @@ import java.util.Collections;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class ClockModuleTest {
     @TempDir Path dir;
@@ -28,7 +29,7 @@ class ClockModuleTest {
         FakePlatform platform = new FakePlatform(dir);
         FakeTime time = new FakeTime();
         wall = new FakeWallClock();
-        ctx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
     }
 
     static long utc(String iso) {

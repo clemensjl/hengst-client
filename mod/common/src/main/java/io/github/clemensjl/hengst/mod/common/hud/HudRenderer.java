@@ -5,11 +5,9 @@ import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGate;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
-import io.github.clemensjl.hengst.mod.common.feature.RestrictionPolicy;
 import io.github.clemensjl.hengst.mod.common.layout.LayoutMath;
 import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
-import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import java.util.Arrays;
 import java.util.List;
@@ -31,11 +29,6 @@ public final class HudRenderer {
     private boolean[] failed = new boolean[0];
     private boolean suppressed;
     private long[] renderTimes;
-
-    /** Without restrictions. */
-    public HudRenderer(FeatureRegistry registry, GameVersion version) {
-        this(registry, new FeatureGate(version, RestrictionPolicy.NONE));
-    }
 
     public HudRenderer(FeatureRegistry registry, FeatureGate gate) {
         this.registry = registry;

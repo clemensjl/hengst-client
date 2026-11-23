@@ -493,6 +493,7 @@ public final class LegacyGameTest implements ClientModInitializer {
 
         keyRegistration(core);
         infoModules(core);
+        reducedDebugInfo(core);
         settingsWithTheFullCatalog(core);
         languageSwitch(core);
         dispatchAllocation();
@@ -590,6 +591,59 @@ public final class LegacyGameTest implements ClientModInitializer {
     }
 
     /** The seven text modules one at a time: switched on through the core, checked by text and pixels, switched off. */
+    /**
+     * The server's reduced-debug-info rule (vanilla F3 then hides position and facing): coordinates, direction and speed
+     * show nothing while it is set and return when it is cleared.
+     */
+    private static void reducedDebugInfo(final HengstCore core) throws Exception {
+        final String[] ids = {"coordinates", "direction", "speed"};
+        boolean[] was = new boolean[ids.length];
+        Predicate notEmpty = new Predicate() {
+            @Override
+            public boolean test(String s) {
+                return !s.isEmpty();
+            }
+        };
+        Predicate empty = new Predicate() {
+            @Override
+            public boolean test(String s) {
+                return s.isEmpty();
+            }
+        };
+        for (int i = 0; i < ids.length; i++) {
+            final String id = ids[i];
+            was[i] = onClient(() -> core.activeProfile().module(id).enabled());
+            setEnabled(core, id, true);
+            waitText(core, id, notEmpty, 3_000, id + " shows a text before the rule");
+        }
+        onClient(() -> {
+            MinecraftClient.getInstance().player.sendChatMessage("/gamerule reducedDebugInfo true");
+            return null;
+        });
+        waitUntil(() -> MinecraftClient.getInstance().player.getReducedDebugInfo(), 5_000,
+                "the client sees reduced debug info");
+        for (String id : ids) {
+            waitText(core, id, empty, 2_000, id + " empty under reduced debug info");
+        }
+        onClient(() -> {
+            MinecraftClient.getInstance().player.sendChatMessage("/gamerule reducedDebugInfo false");
+            return null;
+        });
+        waitUntil(() -> !MinecraftClient.getInstance().player.getReducedDebugInfo(), 5_000,
+                "reduced debug info cleared");
+        for (String id : ids) {
+            waitText(core, id, notEmpty, 3_000, id + " shows a text again after the rule");
+        }
+        for (int i = 0; i < ids.length; i++) {
+            setEnabled(core, ids[i], was[i]);
+        }
+        onClient(() -> {
+            MinecraftClient.getInstance().inGameHud.getChatHud().clear();
+            return null;
+        });
+        pass("reduced debug info: coordinates, direction and speed empty while the gamerule is on, back when it is off");
+    }
+
     private static void infoModules(final HengstCore core) throws Exception {
         final Platform platform = core.context().platform();
 

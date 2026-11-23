@@ -12,6 +12,7 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class MemoryModuleTest {
     @TempDir Path dir;
@@ -22,7 +23,7 @@ class MemoryModuleTest {
     void setUp() {
         platform = new FakePlatform(dir);
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private void ticks(MemoryModule m, ModuleConfig cfg, int n) {

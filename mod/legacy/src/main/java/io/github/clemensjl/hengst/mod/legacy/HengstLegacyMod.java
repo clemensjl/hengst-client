@@ -69,11 +69,31 @@ public final class HengstLegacyMod implements ClientModInitializer {
         }
         // HUD: InGameHudMixin, not Legacy Fabric API's HudRenderCallback (that one fires after the chat and the
         // player list, see the mixin).
-        ClientTickEvents.END_CLIENT_TICK.register(HengstLegacyMod::onEndTick);
-        // Legacy Fabric API injects this at the HEAD of MinecraftClient.stop(), which run() calls on the client
-        // thread when the game loop ends (window closed, quit button), before Display.destroy and System.exit.
-        ClientLifecycleEvents.CLIENT_STOPPING.register(HengstLegacyMod::onStopping);
+        boolean hooked = registerHooks(() -> {
+            ClientTickEvents.END_CLIENT_TICK.register(HengstLegacyMod::onEndTick);
+            // Legacy Fabric API injects this at the HEAD of MinecraftClient.stop(), which run() calls on the client
+            // thread when the game loop ends (window closed, quit button), before Display.destroy and System.exit.
+            ClientLifecycleEvents.CLIENT_STOPPING.register(HengstLegacyMod::onStopping);
+        });
+        if (!hooked) {
+            return;
+        }
         ENABLED = true;
+    }
+
+    /**
+     * Runs the listener registration; false, logged once, if it fails (a renamed or missing member of the API mod shows
+     * as a LinkageError here). The mod then stays inert: listeners registered before the failure check {@link #ENABLED}
+     * first and return.
+     */
+    static boolean registerHooks(Runnable hooks) {
+        try {
+            hooks.run();
+            return true;
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.error("[hengst] registering the game hooks failed; the mod stays inactive", e);
+            return false;
+        }
     }
 
     /**

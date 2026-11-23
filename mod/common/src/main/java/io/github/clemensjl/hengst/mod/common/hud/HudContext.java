@@ -16,14 +16,6 @@ public final class HudContext {
     private I18n i18n;
     private int languageGeneration;
 
-    public HudContext(Platform platform, TimeSource time, FrameCounter frames, CpsCounter cps) {
-        this(platform, time, WallClock.SYSTEM, frames, cps);
-    }
-
-    public HudContext(Platform platform, TimeSource time, WallClock wallClock, FrameCounter frames, CpsCounter cps) {
-        this(platform, time, wallClock, frames, cps, I18n.load(platform.languageCode()));
-    }
-
     /** The core's constructor: it read the language code itself (guarded) and passes the loaded texts. */
     public HudContext(Platform platform, TimeSource time, WallClock wallClock, FrameCounter frames, CpsCounter cps,
             I18n i18n) {

@@ -46,6 +46,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class SettingsScreenTest {
     @TempDir Path dir;
@@ -147,7 +148,7 @@ class SettingsScreenTest {
 
     @Test void close_saves_rebuilds_then_closes_in_that_order() throws Exception {
         FakePlatform platform = new FakePlatform(dir);
-        HudRenderer renderer = new HudRenderer(reg(), GameVersion.V1_8_9);
+        HudRenderer renderer = TestContexts.renderer(reg(), GameVersion.V1_8_9);
         renderer.rebuild(active[0]);
         ScreenClose close = new ScreenClose(model::saveIfDirty, () -> renderer.rebuild(active[0]), platform, "the settings");
         screen = new SettingsScreen(model, I18n.load("en_us"), close);
@@ -163,7 +164,7 @@ class SettingsScreenTest {
 
     @Test void failed_save_on_close_keeps_state_dirty_and_still_closes() {
         FakePlatform platform = new FakePlatform(dir);
-        HudRenderer renderer = new HudRenderer(reg(), GameVersion.V1_8_9);
+        HudRenderer renderer = TestContexts.renderer(reg(), GameVersion.V1_8_9);
         model.markChanged();
         failSave = true;
         new ScreenClose(model::saveIfDirty, () -> renderer.rebuild(active[0]), platform, "the settings").run();

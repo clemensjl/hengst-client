@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class DirectionModuleTest {
     @TempDir Path dir;
@@ -26,7 +27,7 @@ class DirectionModuleTest {
         platform = new FakePlatform(dir);
         platform.inWorld = true;
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     @Test
@@ -140,5 +141,20 @@ class DirectionModuleTest {
             m.tick(ctx, cfg);
             assertEquals(c[1], m.text(), "yaw " + c[0]);
         }
+    }
+
+    @Test
+    void direction_is_empty_while_the_server_asks_for_reduced_debug_info() {
+        DirectionModule m = new DirectionModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.playerYaw = -90f;
+        m.tick(ctx, cfg);
+        assertEquals("E 90°", m.text());
+        platform.reducedDebugInfo = true;
+        m.tick(ctx, cfg);
+        assertEquals("", m.text());
+        platform.reducedDebugInfo = false;
+        m.tick(ctx, cfg);
+        assertEquals("E 90°", m.text());
     }
 }

@@ -23,6 +23,7 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 /** The four real modules through the real renderer: nothing is allocated unless a displayed value changed. */
 class ModulesAllocationTest {
@@ -44,7 +45,7 @@ class ModulesAllocationTest {
         platform.down.add(GameKey.FORWARD);
         platform.down.add(GameKey.ATTACK);
         time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private static long allocated() {
@@ -66,7 +67,7 @@ class ModulesAllocationTest {
             c.setScale(1.5f);
         }
         p.module("coordinates").setOption("decimals", 2);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         return r;
     }

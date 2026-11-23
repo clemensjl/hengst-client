@@ -21,6 +21,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class StopwatchModuleTest {
     @TempDir Path dir;
@@ -34,7 +35,7 @@ class StopwatchModuleTest {
     void setUp() {
         platform = new FakePlatform(dir);
         time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     @Test
@@ -116,7 +117,7 @@ class StopwatchModuleTest {
     @Test
     void the_stopwatch_uses_the_monotonic_time_source() {
         FakeWallClock wall = new FakeWallClock();
-        HudContext wctx = new HudContext(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
+        HudContext wctx = TestContexts.context(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
         m.onKey(0, true, time.now);
         time.advanceMillis(2_000);
         wall.utcMillis -= 3_600_000;

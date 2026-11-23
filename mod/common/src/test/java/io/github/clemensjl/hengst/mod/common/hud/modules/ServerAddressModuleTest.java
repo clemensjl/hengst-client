@@ -15,6 +15,7 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class ServerAddressModuleTest {
     @TempDir Path dir;
@@ -26,7 +27,7 @@ class ServerAddressModuleTest {
         platform = new FakePlatform(dir);
         platform.inWorld = true;
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private String shown(String address, boolean showPort) {

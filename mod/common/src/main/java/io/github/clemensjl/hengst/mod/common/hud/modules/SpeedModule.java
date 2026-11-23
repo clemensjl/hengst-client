@@ -18,7 +18,7 @@ import java.util.List;
  * exceeds 100 m/s), on a new
  * world instance (dimension change, new world), on a position that is not finite and whenever the core applies the
  * configuration (module switched off and on, profile switch, server change: the position from before would count as
- * one step). Empty outside a world.
+ * one step). Empty outside a world and while the server asks for reduced debug info.
  */
 public final class SpeedModule extends TextHudModule {
     private static final OptionSpec VERTICAL = OptionSpec.toggle("include_vertical", false);
@@ -69,12 +69,13 @@ public final class SpeedModule extends TextHudModule {
     @Override
     public void onConfigChanged(ModuleConfig cfg) {
         restart(false);
+        world = null;   // a switched-off module is not ticked: never keep the world alive (GameView.worldIdentity)
     }
 
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
         GameView game = ctx.platform().game();
-        if (!game.inWorld()) {
+        if (!game.inWorld() || game.reducedDebugInfo()) {          // vanilla's F3 hides it too
             restart(false);
             world = null;
             shownScaled = NONE;

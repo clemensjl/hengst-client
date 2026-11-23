@@ -14,7 +14,7 @@ import java.util.List;
 /**
  * Shows the player position as "X 12  Y 64  Z -30". Without decimals the values are floored like the block position;
  * with decimals they are rounded to the nearest step, half away from zero. An axis that is not a sane number
- * (NaN, infinite, beyond 1e15) shows "?". Empty outside a world.
+ * (NaN, infinite, beyond 1e15) shows "?". Empty outside a world and while the server asks for reduced debug info.
  */
 public final class CoordinatesModule extends TextHudModule {
     private static final OptionSpec DECIMALS = OptionSpec.intRange("decimals", 0, 0, 2);
@@ -52,7 +52,7 @@ public final class CoordinatesModule extends TextHudModule {
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
         GameView game = ctx.platform().game();
-        if (!game.inWorld()) {
+        if (!game.inWorld() || game.reducedDebugInfo()) {          // vanilla's F3 hides it too
             shown = false;
             setText("");
             return;

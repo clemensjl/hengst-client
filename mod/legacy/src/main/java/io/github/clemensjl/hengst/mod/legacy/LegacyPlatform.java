@@ -171,6 +171,13 @@ public final class LegacyPlatform implements Platform {
         public Object worldIdentity() {
             return MinecraftClient.getInstance().world;
         }
+
+        @Override
+        public boolean reducedDebugInfo() {
+            // As vanilla's DebugHud.hasReducedDebugInfo: the server's gamerule (sent to the player) or the option.
+            MinecraftClient mc = MinecraftClient.getInstance();
+            return mc.player != null && (mc.player.getReducedDebugInfo() || mc.options.reducedDebugInfo);
+        }
     }
 
     private static final class Input implements InputView {

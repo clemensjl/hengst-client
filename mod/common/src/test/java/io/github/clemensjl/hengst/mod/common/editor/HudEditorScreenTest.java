@@ -27,6 +27,7 @@ import java.time.Clock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class HudEditorScreenTest {
     @TempDir Path dir;
@@ -44,7 +45,7 @@ class HudEditorScreenTest {
     void setUp() {
         FakeTime t = new FakeTime();
         platform = new FakePlatform(dir);
-        ctx = new HudContext(platform, t, new FrameCounter(t), new CpsCounter(t));
+        ctx = TestContexts.context(platform, t, new FrameCounter(t), new CpsCounter(t));
         FeatureRegistry reg = new FeatureRegistry();
         reg.register(new FixedSizeModule("a", 1, 40, 10));
         reg.register(new FixedSizeModule("b", 2, 40, 10));
@@ -53,7 +54,7 @@ class HudEditorScreenTest {
         profile.module("b").setEnabled(true);
         profile.module("b").setOffsetX(250);
         profile.module("b").setOffsetY(100);
-        renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(profile);
         configs = renderer.activeConfigs();
         model = new HudEditorModel(renderer.activeModules(), configs);
@@ -221,7 +222,7 @@ class HudEditorScreenTest {
         reg.register(new FixedSizeModule("fps", 1, 0, 0));
         Profile p = new Profile();
         p.module("fps").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         HudEditorModel m = new HudEditorModel(r.activeModules(), r.activeConfigs());
         HudEditorScreen screen = new HudEditorScreen(m, ctx, I18n.load("en_us"), () -> {});

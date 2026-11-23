@@ -1,6 +1,7 @@
 package io.github.clemensjl.hengst.mod.common.hud.modules;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.hud.CpsCounter;
@@ -8,10 +9,12 @@ import io.github.clemensjl.hengst.mod.common.hud.FrameCounter;
 import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
+import java.lang.ref.WeakReference;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class SpeedModuleTest {
     @TempDir Path dir;
@@ -23,7 +26,7 @@ class SpeedModuleTest {
         platform = new FakePlatform(dir);
         platform.inWorld = true;
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     @Test
@@ -210,6 +213,46 @@ class SpeedModuleTest {
         assertEquals("5.0 m/s", m.text());
         platform.playerX += 6; // beyond the limit: also reset without the apply
         m.tick(ctx, cfg);
+        assertEquals("0.0 m/s", m.text());
+    }
+
+    @Test
+    void a_switched_off_module_does_not_keep_the_world_alive() throws Exception {
+        SpeedModule m = new SpeedModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        Object world = new Object();
+        WeakReference<Object> ref = new WeakReference<Object>(world);
+        platform.worldIdentity = world;
+        m.tick(ctx, cfg);
+        platform.playerX += 0.2;
+        m.tick(ctx, cfg);
+        cfg.setEnabled(false);
+        m.onConfigChanged(cfg);          // switched off: never ticked again
+        platform.worldIdentity = null;   // the player leaves the world
+        platform.inWorld = false;
+        world = null;
+        for (int i = 0; i < 20 && ref.get() != null; i++) {
+            System.gc();
+            Thread.sleep(10);
+        }
+        assertNull(ref.get(), "the switched-off module still references the world");
+    }
+
+    @Test
+    void speed_is_empty_while_the_server_asks_for_reduced_debug_info() {
+        SpeedModule m = new SpeedModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        platform.worldIdentity = new Object();
+        m.tick(ctx, cfg);
+        platform.playerZ -= 0.25;
+        m.tick(ctx, cfg);
+        assertEquals("5.0 m/s", m.text());
+        platform.reducedDebugInfo = true;
+        platform.playerZ -= 0.25;
+        m.tick(ctx, cfg);
+        assertEquals("", m.text());
+        platform.reducedDebugInfo = false;
+        m.tick(ctx, cfg);           // starts again from this position
         assertEquals("0.0 m/s", m.text());
     }
 }

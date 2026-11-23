@@ -81,10 +81,30 @@ public final class HengstModernMod implements ClientModInitializer {
         // Hud.extractRenderState): above hotbar, effects, boss bar, scoreboard, action bar and title; below the chat
         // text, the player list, any screen and its dim, toasts and the F3 overlay. Never deferred. Inherits the
         // chat's render condition (not under F1), which the core applies anyway.
-        HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT, HUD_ID, HengstModernMod::onHud);
-        ClientTickEvents.END_CLIENT_TICK.register(HengstModernMod::onEndTick);
-        ClientLifecycleEvents.CLIENT_STOPPING.register(HengstModernMod::onStopping);
+        boolean hooked = registerHooks(() -> {
+            HudElementRegistry.attachElementBefore(VanillaHudElements.CHAT, HUD_ID, HengstModernMod::onHud);
+            ClientTickEvents.END_CLIENT_TICK.register(HengstModernMod::onEndTick);
+            ClientLifecycleEvents.CLIENT_STOPPING.register(HengstModernMod::onStopping);
+        });
+        if (!hooked) {
+            return;
+        }
         ENABLED = true;
+    }
+
+    /**
+     * Runs the listener registration; false, logged once, if it fails (a renamed or missing member of the API mod shows
+     * as a LinkageError here). The mod then stays inert: listeners registered before the failure check {@link #ENABLED}
+     * first and return.
+     */
+    static boolean registerHooks(Runnable hooks) {
+        try {
+            hooks.run();
+            return true;
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.error("[hengst] registering the game hooks failed; the mod stays inactive", e);
+            return false;
+        }
     }
 
     /**

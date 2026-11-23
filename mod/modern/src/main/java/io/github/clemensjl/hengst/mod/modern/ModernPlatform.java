@@ -199,6 +199,13 @@ public final class ModernPlatform implements Platform {
         public Object worldIdentity() {
             return Minecraft.getInstance().level;
         }
+
+        @Override
+        public boolean reducedDebugInfo() {
+            // The same query vanilla's debug screen uses: the server's gamerule (sent to the player) or the option.
+            Minecraft mc = Minecraft.getInstance();
+            return mc.player != null && mc.showOnlyReducedInfo();
+        }
     }
 
     private static final class Input implements InputView {

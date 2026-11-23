@@ -16,7 +16,7 @@ import java.util.List;
  * the course is {@code h = ((yaw + 180) mod 360 + 360) mod 360}, shown as {@code d = round(h) mod 360} degrees (a
  * half degree rounds up) and the letters of the eighth {@code ((2d + 45) / 90) mod 8}. The 360 texts of the current
  * style and language are built once when the style or the language generation changes; a tick only picks one.
- * Empty outside a world, "?" for a yaw that is not a finite number.
+ * Empty outside a world and while the server asks for reduced debug info, "?" for a yaw that is not a finite number.
  */
 public final class DirectionModule extends TextHudModule {
     private static final OptionSpec STYLE =
@@ -58,7 +58,7 @@ public final class DirectionModule extends TextHudModule {
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
         GameView game = ctx.platform().game();
-        if (!game.inWorld()) {
+        if (!game.inWorld() || game.reducedDebugInfo()) {          // vanilla's F3 hides it too
             lastCourse = NOT_BUILT;
             setText("");
             return;

@@ -19,6 +19,7 @@ import java.util.EnumSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 /** The generic fit of {@link TextHudModule}: a text wider than the screen offers is drawn cut in the middle. */
 class TextHudModuleFitTest {
@@ -47,7 +48,7 @@ class TextHudModuleFitTest {
         platform.inWorld = true;
         platform.worldIdentity = new Object();
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private static String repeat(char c, int n) {
@@ -75,7 +76,7 @@ class TextHudModuleFitTest {
         c.setOffsetY(offsetY);
         c.setScale(scale);
         c.setBackground(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         WideGlyphCanvas canvas = new WideGlyphCanvas(width, 240);
         r.tick(ctx);

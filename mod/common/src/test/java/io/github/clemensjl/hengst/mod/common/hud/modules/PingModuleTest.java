@@ -13,6 +13,7 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class PingModuleTest {
     @TempDir Path dir;
@@ -27,7 +28,7 @@ class PingModuleTest {
         platform.inWorld = true;
         platform.serverAddress = "mc.example.net";
         FakeTime time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
         m = new PingModule();
         cfg = ModuleConfig.defaults();
     }

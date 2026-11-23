@@ -23,6 +23,7 @@ import java.util.EnumSet;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class HudRendererTest {
     @TempDir Path dir;
@@ -35,7 +36,7 @@ class HudRendererTest {
         platform = new FakePlatform(dir);
         platform.inWorld = true;
         time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     static final class Fixed extends TextHudModule {
@@ -120,7 +121,7 @@ class HudRendererTest {
         p.module(bad.id()).setEnabled(true);
         p.module("c").setEnabled(true);
         out[0] = p;
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         return r;
     }
@@ -250,7 +251,7 @@ class HudRendererTest {
         p[0].module("a").setEnabled(true);
         p[0].module("bad").setEnabled(true);
         p[0].module("c").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p[0]);
         bad.renderer = r;
         bad.profile = p[0];
@@ -277,7 +278,7 @@ class HudRendererTest {
         reg.register(new Fixed("a", 1));
         Profile p = new Profile();
         p.module("a").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         FakeCanvas c = new FakeCanvas();
         r.render(c, ctx);
@@ -294,7 +295,7 @@ class HudRendererTest {
         ModuleConfig a = p.module(id);
         a.setEnabled(true);
         out[0] = a;
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         r.tick(ctx);
         return r;
@@ -310,7 +311,7 @@ class HudRendererTest {
         p.module("a").setEnabled(true);
         p.module("b").setEnabled(true);
         p.module("old").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         assertEquals(2, r.activeCount());
         assertEquals("a", r.activeModules()[0].id());
@@ -332,7 +333,7 @@ class HudRendererTest {
         a.setOffsetX(-2);
         a.setOffsetY(2);
         a.setScale(2f);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         FakeCanvas c = new FakeCanvas();
         r.tick(ctx);
@@ -362,7 +363,7 @@ class HudRendererTest {
         Profile p = new Profile();
         p.module("first").setEnabled(true);
         p.module("second").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         FakeCanvas c = new FakeCanvas();
         r.render(c, ctx);
@@ -490,7 +491,7 @@ class HudRendererTest {
         p.module("box").setEnabled(true);
         reg.register(new Counter());
         p.module("counter").setEnabled(true);
-        HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(p);
         platform.screenOpen = true;
         CountingCanvas counting = new CountingCanvas();
@@ -523,7 +524,7 @@ class HudRendererTest {
         Profile profile = new Profile();
         profile.module("t1").setEnabled(true);
         profile.module("t2").setEnabled(true);
-        HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(profile);
         FakeCanvas canvas = new FakeCanvas();
         long[] times = new long[2];
@@ -548,7 +549,7 @@ class HudRendererTest {
         Profile profile = new Profile();
         profile.module("t1").setEnabled(true);
         profile.module("thrower").setEnabled(true);
-        HudRenderer renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(profile);
         FakeCanvas canvas = new FakeCanvas();
         long[] times = {5, 5};
