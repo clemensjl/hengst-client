@@ -91,7 +91,15 @@ pub fn resolve_log_path(paths: &Paths, path: &str) -> hengst_core::Result<PathBu
     if !file.starts_with(&base) || !is_log(&file) || !std::fs::metadata(&file)?.is_file() {
         return Err(unsafe_path());
     }
-    Ok(file)
+    plain_log_path(&file)
+}
+
+/// The checked canonical path in the spelling the shell and `.log` handlers expect:
+/// `canonicalize` gives `\\?\C:\...` (or `\\?\UNC\...`), which `ShellExecuteW` and many handlers
+/// refuse. A verbatim form without a plain spelling (`\\?\Volume{..}`) is refused.
+fn plain_log_path(file: &Path) -> hengst_core::Result<PathBuf> {
+    crate::recycle::strip_verbatim(file)
+        .ok_or_else(|| hengst_core::Error::UnsafePath(file.display().to_string()))
 }
 
 /// The names Windows reserves for devices, with or without an extension (`CON`, `nul.log`,
@@ -520,9 +528,46 @@ mod tests {
     }
 
     #[test]
+    fn a_checked_log_path_is_handed_on_in_its_plain_spelling() {
+        let plain = |p: &str| plain_log_path(Path::new(p)).ok();
+        assert_eq!(
+            plain("\\\\?\\C:\\data\\logs\\x.log"),
+            Some(PathBuf::from("C:\\data\\logs\\x.log"))
+        );
+        assert_eq!(
+            plain("\\\\?\\UNC\\server\\share\\logs\\x.log"),
+            Some(PathBuf::from("\\\\server\\share\\logs\\x.log"))
+        );
+        assert_eq!(
+            plain("C:\\data\\logs\\x.log"),
+            Some(PathBuf::from("C:\\data\\logs\\x.log"))
+        );
+        // Verbatim forms without a plain spelling are refused.
+        for p in [
+            "\\\\?\\Volume{12345678-1234-1234-1234-123456789abc}\\logs\\x.log",
+            "\\\\?\\GLOBALROOT\\Device\\HarddiskVolume1\\logs\\x.log",
+        ] {
+            assert_eq!(plain(p), None, "{p}");
+        }
+    }
+
+    #[test]
     fn log_paths_the_core_reports_resolve_to_the_file() {
         let (_d, paths) = logs_home();
-        let root = std::fs::canonicalize(paths.root()).unwrap();
+        // The plain spelling: the opener and the .log handler get no `\\?\` path.
+        let root =
+            crate::recycle::strip_verbatim(&std::fs::canonicalize(paths.root()).unwrap()).unwrap();
+        for path in [
+            "logs/loader-install-forge-9.9.log",
+            "instances/9.9/logs/latest.log",
+        ] {
+            let resolved = resolve_log_path(&paths, path).unwrap();
+            assert!(
+                !resolved.to_string_lossy().starts_with("\\\\?\\"),
+                "{}",
+                resolved.display()
+            );
+        }
         assert_eq!(
             resolve_log_path(&paths, "logs/loader-install-forge-9.9.log").unwrap(),
             root.join("logs").join("loader-install-forge-9.9.log")
