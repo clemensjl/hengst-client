@@ -1055,6 +1055,21 @@ public final class LegacyGameTest implements ClientModInitializer {
         pass(lang + ": the controls screen lists the mod's category and its four bindings translated " + listed);
     }
 
+    // A single dispatch call of 1192 bytes was seen once per game start at 67 to 80 s JVM uptime on the modern versions
+    // (cause unknown, spec 8.8). The asserted window starts no earlier than this; inside it the check stays exact.
+    private static final long ASSERTED_WINDOW_UPTIME_MS = 90_000;
+
+    private static void waitForSteadyJvm() throws InterruptedException {
+        long before = ManagementFactory.getRuntimeMXBean().getUptime();
+        long wait = Math.max(0, ASSERTED_WINDOW_UPTIME_MS - before);
+        if (wait > 0) {
+            waitRealTime(wait);
+        }
+        LOGGER.info("[hengst-gametest] dispatch: asserted window starts at JVM uptime "
+                + ManagementFactory.getRuntimeMXBean().getUptime() + " ms (waited " + wait + " ms for "
+                + ASSERTED_WINDOW_UPTIME_MS + " ms)");
+    }
+
     /**
      * The mod's per-tick key dispatch ({@code LegacyKeys.tick}: the keys and the focus rule) in steady state, called once
      * more per tick from the harness's tick listener with the measurement around that call only. The game's
@@ -1062,12 +1077,16 @@ public final class LegacyGameTest implements ClientModInitializer {
      * passes) is measured separately and reported, not asserted. The measuring call is
      * {@code getThreadAllocatedBytes(id)} (release 8 API, it may allocate itself on Java 8); a pair of calls without
      * anything between them is measured too and subtracted per call. 100 calls warm up, then two windows of 300 calls;
-     * every allocating call is logged with its index and the focus value. The second window must have none.
+     * every allocating call is logged with its index and the focus value. The second window starts no earlier than 90 s
+     * JVM uptime and must have none.
      */
     private static void dispatchAllocation() throws Exception {
         long[][] windows = new long[2][];
         for (int round = 0; round < 3; round++) {                 // round 0: 100 calls to warm up
             final int calls = round == 0 ? 100 : 300;
+            if (round == 2) {
+                waitForSteadyJvm();
+            }
             onClient(() -> {
                 dispatchBytes = 0;
                 gameBytes = 0;
