@@ -650,9 +650,20 @@ mod windows {
         })
     }
 
-    /// Reads one stream to its end: lines redacted and cut, then parsed and emitted.
-    fn pump(pipe: impl io::Read, stream: Stream, redactor: &Redactor, emitter: &Mutex<Emitter>) {
-        let emit = |entries: Vec<Entry>| {
+    /// Reads one stream to its end: lines redacted and cut, then parsed, the parsed text redacted
+    /// again and emitted. The second pass is needed because the parser decodes XML entities in
+    /// log4j events: a token written as character references outside CDATA only appears then.
+    pub(super) fn pump(
+        pipe: impl io::Read,
+        stream: Stream,
+        redactor: &Redactor,
+        emitter: &Mutex<Emitter>,
+    ) {
+        let emit = |mut entries: Vec<Entry>| {
+            for entry in &mut entries {
+                entry.message = redactor.redact(&entry.message);
+                entry.thread = entry.thread.as_deref().map(|t| redactor.redact(t));
+            }
             emitter
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -699,13 +710,19 @@ mod windows {
         /// id). Returns how many windows
         /// it was posted to: 0 when the game has ended or has no window, so it cannot be asked.
         /// Does not wait. Safe to call any number of times, also after the end.
+        ///
+        /// Residual race: between the re-check of the window's owner and `PostMessageW` the window
+        /// can be destroyed and its handle value handed to a new window of another process, which
+        /// would then get the close request. No Windows API closes this gap (a window handle cannot
+        /// be held open like a process handle); the window is short and needs a window to be
+        /// destroyed exactly then.
         pub fn request_stop(&self) -> Result<usize> {
             let pids = self.job.process_ids()?;
             if pids.is_empty() {
                 return Ok(0);
             }
             let mut posted = 0;
-            for target in stop_targets(&self.job, &pids) {
+            for target in stop_targets(&self.job, top_level_windows(&pids)) {
                 // The window must still belong to the process checked above; that process cannot
                 // end and hand its id on while `target.process` holds it open.
                 if window_pid(target.hwnd) != target.pid {
@@ -729,8 +746,8 @@ mod windows {
     /// An unowned top-level window, its process and whether it is visible.
     pub(super) struct Window {
         pub(super) hwnd: HWND,
-        pid: u32,
-        visible: bool,
+        pub(super) pid: u32,
+        pub(super) visible: bool,
     }
 
     /// A window `request_stop` may post to: its process is open (so its id cannot be reused) and
@@ -738,6 +755,7 @@ mod windows {
     pub(super) struct Target {
         pub(super) hwnd: HWND,
         pid: u32,
+        visible: bool,
         #[allow(dead_code)] // held open, never read
         process: OwnedHandle,
     }
@@ -747,16 +765,15 @@ mod windows {
     /// window stays). The GLFW case follows GLFW's source and is not verified against a real game.
     const SKIPPED_CLASSES: [&str; 3] = ["IME", "MSCTFIME UI", "GLFW3 Helper"];
 
-    /// The windows of `pids` to post the close request to: the visible ones, or the hidden ones
-    /// when none is visible; each only if its process is in `job` right now. The ids come from the
+    /// The windows to post the close request to, out of `windows` (the unowned top-level windows
+    /// of the job's process ids): first only those whose process is in `job` right now, then of
+    /// these the visible ones, or the hidden ones when none is visible. The ids come from the
     /// job's list, but a process can end and its id go to an unrelated process before the windows
-    /// are enumerated, so membership is checked again on an open handle.
-    pub(super) fn stop_targets(job: &Job, pids: &[u32]) -> Vec<Target> {
-        let windows = top_level_windows(pids);
-        let any_visible = windows.iter().any(|w| w.visible);
-        windows
+    /// are enumerated, so membership is checked again on an open handle, and before visibility is
+    /// decided: a visible window of such an unrelated process must not hide the game's windows.
+    pub(super) fn stop_targets(job: &Job, windows: Vec<Window>) -> Vec<Target> {
+        let members: Vec<Target> = windows
             .into_iter()
-            .filter(|w| w.visible || !any_visible)
             .filter_map(|w| {
                 // SAFETY: plain call; the result is checked before it is owned.
                 let h = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, w.pid) };
@@ -768,9 +785,15 @@ mod windows {
                 job.contains(&process).ok()?.then_some(Target {
                     hwnd: w.hwnd,
                     pid: w.pid,
+                    visible: w.visible,
                     process,
                 })
             })
+            .collect();
+        let any_visible = members.iter().any(|t| t.visible);
+        members
+            .into_iter()
+            .filter(|t| t.visible || !any_visible)
             .collect()
     }
 
@@ -1140,6 +1163,7 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn a_window_of_a_process_outside_the_job_is_never_targeted() {
+        use self::windows::Window;
         use windows_sys::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow};
         let class: Vec<u16> = "STATIC".encode_utf16().chain([0]).collect();
         // SAFETY: a predefined class, no parent; created without WS_VISIBLE and never shown.
@@ -1161,14 +1185,105 @@ mod tests {
         };
         assert!(!hwnd.is_null());
         let own = std::process::id();
-        // Control: by process id alone the window would be a target.
+        // Control: by process id alone the window would be a target, and it is the hidden kind
+        // that is only chosen when nothing is visible.
         let found = self::windows::top_level_windows(&[own]);
         let job = crate::process::Job::new_detached().unwrap();
-        let targets = self::windows::stop_targets(&job, &[own]);
+        let targets = self::windows::stop_targets(&job, self::windows::top_level_windows(&[own]));
+        // The same window pinned as visible and as hidden: never a target either way.
+        let pinned: Vec<usize> = [true, false]
+            .into_iter()
+            .map(|visible| {
+                let w = Window {
+                    hwnd,
+                    pid: own,
+                    visible,
+                };
+                self::windows::stop_targets(&job, vec![w]).len()
+            })
+            .collect();
         // SAFETY: this thread's own window.
         unsafe { DestroyWindow(hwnd) };
-        assert!(found.iter().any(|w| w.hwnd == hwnd));
+        let control: Vec<&Window> = found.iter().filter(|w| w.hwnd == hwnd).collect();
+        assert_eq!(control.len(), 1);
+        assert!(!control[0].visible);
         assert!(targets.iter().all(|t| t.hwnd != hwnd));
+        assert_eq!(pinned, [0, 0]);
+    }
+
+    /// A visible window of a process outside the job must not make the hidden windows of a job
+    /// member fall out: membership is decided before visibility. The windows are passed in as
+    /// data (only their process ids are looked at), so no window is created or shown.
+    #[cfg(windows)]
+    #[test]
+    fn a_visible_window_outside_the_job_does_not_hide_the_members_windows() {
+        use self::windows::Window;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let job = crate::process::Job::new_kill_on_close().unwrap();
+        let mut cmd = Command::new("cmd");
+        cmd.raw_arg("/d /c ping -n 60 127.0.0.1 >nul")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null());
+        let mut child = job.spawn(&mut cmd).unwrap();
+        let fake = |n: usize| n as windows_sys::Win32::Foundation::HWND;
+        let windows = vec![
+            // Not in the job (this test process), visible.
+            Window {
+                hwnd: fake(0x10),
+                pid: std::process::id(),
+                visible: true,
+            },
+            // The member, only a hidden window.
+            Window {
+                hwnd: fake(0x20),
+                pid: child.id(),
+                visible: false,
+            },
+        ];
+        let targets: Vec<_> = self::windows::stop_targets(&job, windows)
+            .into_iter()
+            .map(|t| t.hwnd)
+            .collect();
+        job.terminate(1);
+        let _ = child.wait();
+        assert_eq!(targets, [fake(0x20)]);
+    }
+
+    /// XML entities are decoded by the parser after the raw line was redacted: a token written
+    /// as character references outside CDATA (in the message and in an attribute) only appears
+    /// after decoding and must still never reach the sink.
+    #[cfg(windows)]
+    #[test]
+    fn an_entity_escaped_token_in_a_log4j_event_never_reaches_the_sink() {
+        let escaped: String = TOKEN
+            .chars()
+            .map(|c| format!("&#x{:x};", c as u32))
+            .collect();
+        let output = format!(
+            "<log4j:Event logger=\"a\" timestamp=\"5\" level=\"INFO\" thread=\"{escaped}\">
+             <log4j:Message>token {escaped} end</log4j:Message>
+             </log4j:Event>
+"
+        );
+        // The raw output holds no piece of the token, so the line-level redaction cannot see it.
+        assert_no_token(&output);
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: LineSink = {
+            let lines = lines.clone();
+            Arc::new(move |l: LogLine| lines.lock().unwrap().push(l))
+        };
+        let emitter = std::sync::Mutex::new(Emitter {
+            seq: 0,
+            sink,
+            file: None,
+            utc_offset: 0,
+        });
+        self::windows::pump(output.as_bytes(), Stream::Stdout, &redactor(), &emitter);
+        let lines = lines.lock().unwrap();
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].message, "token <redacted> end");
+        assert_eq!(lines[0].thread.as_deref(), Some("<redacted>"));
     }
 
     #[test]
