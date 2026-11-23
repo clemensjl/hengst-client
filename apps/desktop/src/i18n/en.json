@@ -149,7 +149,7 @@
   "errors.recycleBinUnconfirmed.title": "The folder is gone and may not be in the Recycle Bin",
   "errors.recycleBinUnconfirmed.body": "Windows removed the folder without putting it into the Recycle Bin, or the app could not find it there. Check the Recycle Bin before you assume it is lost.",
   "errors.recycleBinUnknown.title": "The result is unknown",
-  "errors.recycleBinUnknown.body": "Windows did not report a result in time. The folder may be gone, partly moved or still there. Check the folder and the Recycle Bin.",
+  "errors.recycleBinUnknown.body": "Windows did not report a result, or what it left behind could not be checked. The folder may be gone, partly moved or still there. Check the folder and the Recycle Bin.",
   "errors.recycleBinPending.title": "An earlier delete is still running",
   "errors.recycleBinPending.body": "An earlier delete has not finished. Restart the app and check the folder and the Recycle Bin.",
   "errors.instanceRunning.title": "Currently running",

@@ -1090,6 +1090,105 @@ async fn a_timed_out_or_stopped_call_is_unknown_and_a_pending_one_started_nothin
     assert!(fx.events().contains(&instances_changed()));
 }
 
+#[tokio::test]
+async fn an_unknown_result_with_the_folder_gone_clears_the_selection() {
+    use crate::recycle::RecycleFailure;
+    for failure in [
+        RecycleFailure::TimedOut,
+        RecycleFailure::Aborted("x".into()),
+    ] {
+        let mut fx = fixture().await;
+        make(&fx, "A", "9.9");
+        select(&fx, Some("9.9"));
+        let f = failure.clone();
+        fx.state.trasher = Arc::new(move |p| {
+            std::fs::remove_dir_all(p)?;
+            Err(Error::Io(std::io::Error::other(f.clone())))
+        });
+        fx.clear_events();
+        let dto = instance_delete_impl(&fx.state, "9.9".into())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::RecycleBinUnknown, "{failure:?}");
+        assert_eq!(selected(&fx), None, "{failure:?}");
+        assert!(fx.events().contains(&instances_changed()), "{failure:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_refused_or_pending_move_with_the_folder_gone_is_unconfirmed_and_clears_the_selection() {
+    // Nothing of ours moved it, yet the folder went away (another program, or an earlier move
+    // that ended meanwhile): gone, never "in the Recycle Bin".
+    use crate::recycle::{BinReason, RecycleFailure};
+    for failure in [
+        RecycleFailure::Refused(BinReason::BinOff),
+        RecycleFailure::Refused(BinReason::Unchecked),
+        RecycleFailure::StillRunning,
+    ] {
+        let mut fx = fixture().await;
+        make(&fx, "A", "9.9");
+        select(&fx, Some("9.9"));
+        let f = failure.clone();
+        fx.state.trasher = Arc::new(move |p| {
+            std::fs::remove_dir_all(p)?;
+            Err(Error::Io(std::io::Error::other(f.clone())))
+        });
+        fx.clear_events();
+        let dto = instance_delete_impl(&fx.state, "9.9".into())
+            .await
+            .unwrap_err();
+        assert_eq!(dto.code, ErrorCode::RecycleBinUnconfirmed, "{failure:?}");
+        assert_eq!(selected(&fx), None, "{failure:?}");
+        assert!(fx.events().contains(&instances_changed()), "{failure:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_failed_move_the_core_cannot_judge_is_unknown_and_refreshes_the_list() {
+    use crate::recycle::RecycleFailure;
+    let mut fx = fixture().await;
+    make(&fx, "A", "9.9");
+    select(&fx, Some("9.9"));
+    fx.state.trasher = Arc::new(|p| {
+        // The folder was replaced by a file: there, but its entries cannot be listed.
+        std::fs::remove_dir_all(p)?;
+        std::fs::write(p, b"x")?;
+        Err(Error::Io(std::io::Error::other(RecycleFailure::Failed(
+            "x".into(),
+        ))))
+    });
+    fx.clear_events();
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinUnknown);
+    assert_eq!(dto.params.get("id").map(String::as_str), Some("9.9"));
+    assert!(!dto.params.contains_key("reason"));
+    assert_eq!(fx.events(), [instances_changed()]);
+}
+
+#[test]
+fn the_list_is_announced_once_a_shell_call_given_up_on_has_ended() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let running = Arc::new(AtomicBool::new(true));
+    let events = crate::events::EventHub::default();
+    let log: Log = Arc::default();
+    let sink = log.clone();
+    events.subscribe(Arc::new(move |e| sink.lock().unwrap().push(e)));
+    let flag = running.clone();
+    announce_when_shell_ends(events, Duration::from_millis(10), move || {
+        flag.load(Ordering::SeqCst)
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(log.lock().unwrap().is_empty(), "the call still runs");
+    running.store(false, Ordering::SeqCst);
+    let until = std::time::Instant::now() + Duration::from_secs(5);
+    while log.lock().unwrap().is_empty() && std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(*log.lock().unwrap(), [instances_changed()]);
+}
+
 #[test]
 fn a_list_task_that_panicked_announces_nothing_so_a_reloading_ui_cannot_loop() {
     // `None`: the task failed (a panic). It is answered with an error; an event would make the UI

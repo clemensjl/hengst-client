@@ -94,6 +94,8 @@ pub enum Error {
     InstanceLinked { id: String },
     #[error("instance {id} was only partly moved to the Recycle Bin")]
     InstancePartlyMoved { id: String },
+    #[error("moving instance {id} to the Recycle Bin failed, and what it left behind could not be checked")]
+    InstanceMoveUnknown { id: String },
     #[error("the operation was cancelled")]
     Cancelled,
     #[error("Windows Credential Manager error: {0}")]

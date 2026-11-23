@@ -37,6 +37,15 @@ const SETTLED = [
   "instanceNotFound",
 ];
 
+/** Outcomes after which the folder is worth a look: nothing moved, or what is left is unclear. */
+const OPEN_FOLDER = [
+  "recycleBinFailed",
+  "recycleBinUnknown",
+  "recycleBinUnconfirmed",
+  "recycleBinPartial",
+  "recycleBinPending",
+];
+
 /** After the folder went away: if it was the selection, the fallback of DESIGN.md 10.2 is saved. */
 async function settleSelection(wasSelected: boolean) {
   const app = useApp.getState();
@@ -155,7 +164,7 @@ export function DeleteInstanceDialog({
               autoFocus
               onRetry={error.code === "busy" ? remove : undefined}
               extraAction={
-                error.code === "recycleBinFailed"
+                OPEN_FOLDER.includes(error.code)
                   ? { label: t("instances.openFolder"), onClick: openFolder }
                   : undefined
               }

@@ -383,6 +383,22 @@ describe("InstancesView delete", () => {
     },
   );
 
+  it.each(["recycleBinUnknown", "recycleBinUnconfirmed", "recycleBinPartial", "recycleBinPending"])(
+    "%s offers Open folder to check what is left",
+    async (code) => {
+      const backend = await setup(three());
+      backend.deleteFails = err(code, { id: "a" });
+      const menu = await openMenu("Alpha");
+      fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+      fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+      const panel = await within(dialog()).findByRole("alert");
+      fireEvent.click(within(panel).getByRole("button", { name: "Open folder" }));
+      await waitFor(() =>
+        expect(backend.of("open_location")).toEqual([{ target: { kind: "instance", id: "a" } }]),
+      );
+    },
+  );
+
   it("a partial move says to check both places and offers only closing", async () => {
     const backend = await setup(three());
     backend.deleteFails = err("recycleBinPartial", { id: "a" });

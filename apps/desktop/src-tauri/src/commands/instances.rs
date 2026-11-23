@@ -7,7 +7,7 @@ use crate::dto::instances::{
 };
 use crate::dto::versions::VersionFilter;
 use crate::error::{error_dto, instance_id_error, redact, strip_paths};
-use crate::events::{AppEvent, DataScope};
+use crate::events::{AppEvent, DataScope, EventHub};
 use crate::recycle::{failure_of, BinReason, RecycleFailure};
 use crate::state::AppState;
 use hengst_core::auth::unix_now;
@@ -416,13 +416,20 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
     .await;
     let recorded = recorded.lock().unwrap_or_else(|p| p.into_inner()).take();
     let result = done.map_err(|e| {
-        // The task may have moved the folder before it failed.
+        // The task may have moved the folder before it failed. The selection is left as it is:
+        // whether the folder is gone is not known here, and a list without it falls back anyway.
         changed(state, DataScope::Instances);
         join_error(e)
     })?;
+    if matches!(&recorded, Some((Some(RecycleFailure::TimedOut), _))) {
+        // The shell call goes on after the time-out; once it ends the folder may have changed.
+        announce_when_shell_ends(state.events.clone(), Duration::from_millis(500), || {
+            crate::recycle::shell_running()
+        });
+    }
     match result {
         Ok(()) => {}
-        Err(e @ Error::InstancePartlyMoved { .. }) => {
+        Err(e @ (Error::InstancePartlyMoved { .. } | Error::InstanceMoveUnknown { .. })) => {
             changed(state, DataScope::Instances);
             return Err(error_dto(&e));
         }
@@ -479,6 +486,24 @@ pub async fn instance_delete_impl(state: &AppState, id: String) -> Result<(), Er
         return Err(with_id(code, &id, detail));
     }
     Ok(())
+}
+
+/// Announces a change of the instance list once `running` says the shell call is over, checking
+/// every `poll` on a thread of its own. Used after a time-out: the call the app gave up on may still
+/// move the folder.
+fn announce_when_shell_ends(
+    events: EventHub,
+    poll: Duration,
+    running: impl Fn() -> bool + Send + 'static,
+) {
+    std::thread::spawn(move || {
+        while running() {
+            std::thread::sleep(poll);
+        }
+        events.emit(AppEvent::DataChanged {
+            scope: DataScope::Instances,
+        });
+    });
 }
 
 #[tauri::command]

@@ -401,6 +401,16 @@ describe("outcomes that do not claim that nothing was deleted", () => {
     }
   });
 
+  it("the unknown outcome does not blame a time-out: it also follows a stopped call", () => {
+    for (const t of [de, en]) {
+      const { body } = describeError(
+        { code: "recycleBinUnknown", params: { id: "9.9" }, action: null, detail: "" },
+        t,
+      );
+      expect(body).not.toMatch(/in time|rechtzeitig/i);
+    }
+  });
+
   it("the pending outcome tells to restart and check both places", () => {
     const pending: ErrorDto = {
       code: "recycleBinPending",

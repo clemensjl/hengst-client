@@ -706,21 +706,36 @@ enum Aftermath {
     Gone,
     /// The folder is there and entries that were directly inside it are missing.
     Partial,
-    /// Nothing that can be told: the folder is there and complete, or cannot be judged.
+    /// The folder is there and every entry that was directly inside it still is.
     Untouched,
+    /// It cannot be told: the folder's metadata could not be read, or its entries could not be
+    /// listed before or after the move.
+    Unknown,
 }
 
 /// Limit: only the top level is compared, so a failure that removed files deeper down (inside
-/// `saves/`, say) is not noticed, and a folder that cannot be listed is not judged.
+/// `saves/`, say) is not noticed.
 fn after_failed_move(dir: &Path, before: Option<&HashSet<std::ffi::OsString>>) -> Aftermath {
-    match std::fs::symlink_metadata(dir) {
+    judge_aftermath(std::fs::symlink_metadata(dir).map(|_| ()), before, || {
+        top_level_names(dir)
+    })
+}
+
+/// `metadata`: reading the folder's metadata after the move; `after`: its entries now.
+fn judge_aftermath(
+    metadata: std::io::Result<()>,
+    before: Option<&HashSet<std::ffi::OsString>>,
+    after: impl FnOnce() -> Option<HashSet<std::ffi::OsString>>,
+) -> Aftermath {
+    match metadata {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Aftermath::Gone,
-        Err(_) => Aftermath::Untouched,
-        Ok(_) => match (before, top_level_names(dir)) {
+        Err(_) => Aftermath::Unknown,
+        Ok(()) => match (before, after()) {
             (Some(before), Some(after)) if before.iter().any(|name| !after.contains(name)) => {
                 Aftermath::Partial
             }
-            _ => Aftermath::Untouched,
+            (Some(_), Some(_)) => Aftermath::Untouched,
+            _ => Aftermath::Unknown,
         },
     }
 }
@@ -731,8 +746,9 @@ fn after_failed_move(dir: &Path, before: Option<&HashSet<std::ffi::OsString>>) -
 /// fails with the folder untouched, that error is returned and nothing else happens; if it fails
 /// after the folder is gone entirely, the instance is gone and the result is `Ok` (it is in the bin
 /// or was removed by the shell: the caller refreshes its list); if it fails after entries directly
-/// inside the folder are missing (see `after_failed_move`), the error is `InstancePartlyMoved`. If
-/// `trash` reports success and the folder is still there, it is an I/O error. There is no other way
+/// inside the folder are missing (see `after_failed_move`), the error is `InstancePartlyMoved`; if
+/// what it left behind cannot be checked, the error is `InstanceMoveUnknown`. If `trash` reports
+/// success and the folder is still there, it is an I/O error. There is no other way
 /// to remove the folder. The shared `versions`, `libraries` and
 /// `assets` are never touched. Whether the instance is running is for the caller to know.
 pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
@@ -750,6 +766,7 @@ pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> R
             Aftermath::Gone => Ok(()),
             Aftermath::Partial => Err(Error::InstancePartlyMoved { id: id.to_string() }),
             Aftermath::Untouched => Err(e),
+            Aftermath::Unknown => Err(Error::InstanceMoveUnknown { id: id.to_string() }),
         };
     }
     if std::fs::symlink_metadata(&dir).is_ok() {

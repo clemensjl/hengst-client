@@ -84,6 +84,10 @@ pub fn error_dto(e: &Error) -> ErrorDto {
             put("id", id.clone());
             (ErrorCode::RecycleBinPartial, None)
         }
+        Error::InstanceMoveUnknown { id } => {
+            put("id", id.clone());
+            (ErrorCode::RecycleBinUnknown, None)
+        }
         Error::InstanceExists { id } => {
             put("id", id.clone());
             (ErrorCode::InstanceExists, None)
@@ -788,6 +792,12 @@ mod mapping_tests {
             row(
                 Error::InstancePartlyMoved { id: "9.9".into() },
                 ErrorCode::RecycleBinPartial,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceMoveUnknown { id: "9.9".into() },
+                ErrorCode::RecycleBinUnknown,
                 None,
                 &[("id", "9.9")],
             ),

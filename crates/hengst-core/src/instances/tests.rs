@@ -1079,6 +1079,64 @@ fn a_trasher_that_removes_part_and_then_fails_gives_the_partly_moved_error() {
 }
 
 #[test]
+fn a_failed_move_whose_aftermath_cannot_be_judged_is_unknown_never_untouched() {
+    // The folder was replaced by a file: it is there, but its entries cannot be listed.
+    let (_d, paths) = home();
+    instance_with_world(&paths);
+    let r = delete(&paths, "1.21.11", &|p| {
+        std::fs::remove_dir_all(p)?;
+        std::fs::write(p, b"x")?;
+        Err(Error::Io(std::io::Error::other("late failure")))
+    });
+    assert!(
+        matches!(&r, Err(Error::InstanceMoveUnknown { id }) if id == "1.21.11"),
+        "{r:?}"
+    );
+}
+
+#[test]
+fn the_aftermath_is_judged_from_what_can_be_read() {
+    use std::ffi::OsString;
+    use std::io::{Error as IoError, ErrorKind};
+    let names = |n: &[&str]| -> HashSet<OsString> { n.iter().map(OsString::from).collect() };
+    let before = names(&["a", "b"]);
+    let judged =
+        |meta: std::io::Result<()>,
+         before: Option<&HashSet<OsString>>,
+         after: Option<HashSet<OsString>>| { judge_aftermath(meta, before, || after) };
+    assert!(matches!(
+        judged(Err(ErrorKind::NotFound.into()), Some(&before), None),
+        Aftermath::Gone
+    ));
+    // Metadata that cannot be read says nothing about the folder.
+    assert!(matches!(
+        judged(
+            Err(IoError::from(ErrorKind::PermissionDenied)),
+            Some(&before),
+            None
+        ),
+        Aftermath::Unknown
+    ));
+    assert!(matches!(
+        judged(Ok(()), Some(&before), Some(names(&["a"]))),
+        Aftermath::Partial
+    ));
+    assert!(matches!(
+        judged(Ok(()), Some(&before), Some(names(&["a", "b", "new"]))),
+        Aftermath::Untouched
+    ));
+    // A listing that failed before or after: nothing can be compared.
+    assert!(matches!(
+        judged(Ok(()), None, Some(names(&["a", "b"]))),
+        Aftermath::Unknown
+    ));
+    assert!(matches!(
+        judged(Ok(()), Some(&before), None),
+        Aftermath::Unknown
+    ));
+}
+
+#[test]
 fn a_trasher_that_moves_everything_and_then_fails_is_a_success() {
     // The instance is gone from its folder (in the bin or deleted by the shell): the caller has to
     // refresh its list, not hear that "the rest is still in place".
@@ -1197,6 +1255,10 @@ fn link_and_partial_errors_are_distinct_variants() {
     assert_eq!(
         Error::InstancePartlyMoved { id: "x".into() }.to_string(),
         "instance x was only partly moved to the Recycle Bin"
+    );
+    assert_eq!(
+        Error::InstanceMoveUnknown { id: "x".into() }.to_string(),
+        "moving instance x to the Recycle Bin failed, and what it left behind could not be checked"
     );
 }
 

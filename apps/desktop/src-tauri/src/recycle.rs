@@ -31,8 +31,10 @@
 //! Known limits: the `RecycleBinSize` policy and the legacy global `NukeOnDelete` are not read
 //! (layers 2 and 3 cover them); `trash::os_limited::list` fails as a whole when one item of the bin
 //! cannot be read, which refuses the move before anything happens (`Refused(Unchecked)`: the bin is
-//! listed before the call). After a time-out the shell thread keeps running: a later move is refused until it
-//! has ended, and its outcome is reported as unknown.
+//! listed before the call). If listing the bin fails after a successful call, the move ends as
+//! `Unconfirmed`, never as "in the bin". After a time-out the shell thread keeps running: a later
+//! move is refused until it has ended, its outcome is reported as unknown, and the instance list
+//! is announced as changed once it has ended.
 
 use hengst_core::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -53,7 +55,9 @@ pub enum BinReason {
     InUse,
     /// Windows would not move the folder, for a reason it did not name.
     Other,
-    /// The Recycle Bin settings could not be checked, so Windows was never asked.
+    /// Something the move depends on could not be read, so Windows was never asked: the Recycle
+    /// Bin settings of the volume, the resolved path of the folder, or the current contents of the
+    /// bin (listed before the call).
     Unchecked,
 }
 
@@ -277,6 +281,11 @@ impl ShellSlot {
             .is_ok()
             .then_some(ShellSlot)
     }
+}
+
+/// A shell call is running, also one the caller gave up on after a time-out.
+pub fn shell_running() -> bool {
+    SHELL_RUNNING.load(Ordering::SeqCst)
 }
 
 impl Drop for ShellSlot {
