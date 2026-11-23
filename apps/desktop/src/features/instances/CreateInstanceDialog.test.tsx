@@ -357,4 +357,75 @@ describe("CreateInstanceDialog", () => {
         .map((r) => r.textContent),
     ).toEqual(["No loader"]);
   });
+
+  it("loader options as the backend maps Fabric: no Unstable badge, only the recommended one marked", async () => {
+    await setup(undefined, (b) => {
+      // What loader_versions answers for Fabric since the owner decision: every build stable.
+      b.loaderVersions = () => ({
+        versions: [
+          { id: "0.20.1", stable: true },
+          { id: "0.20.0", stable: true },
+          { id: "0.19.5", stable: true },
+        ],
+        recommended: "0.20.1",
+      });
+    });
+    await versionsLoaded();
+    await chooseLoader("Fabric");
+    await waitFor(() => expect(loaderVersionTrigger().textContent).toContain("0.20.1"));
+    fireEvent.click(loaderVersionTrigger());
+    const options = await screen.findAllByRole("option");
+    expect(options.map((o) => o.textContent)).toEqual(["0.20.1Recommended", "0.20.0", "0.19.5"]);
+    expect(screen.queryByText("Unstable")).toBeNull();
+  });
+
+  it("name check equals the backend: a tab is refused inline, a trailing space is not counted", async () => {
+    const backend = await setup();
+    await versionsLoaded();
+    fireEvent.change(nameField(), { target: { value: "Mira	world" } });
+    fireEvent.blur(nameField());
+    expect(within(dialog()).getByText("No control characters such as tabs.")).toBeTruthy();
+    fireEvent.click(createButton());
+    await act(async () => {});
+    expect(backend.count("instance_create")).toBe(0);
+    // 64 characters plus a trailing space: valid, and the counter shows what is checked.
+    fireEvent.change(nameField(), { target: { value: `${"x".repeat(64)} ` } });
+    expect(within(dialog()).getByText("64/64")).toBeTruthy();
+    expect(within(dialog()).queryByText("At most 64 characters.")).toBeNull();
+    // A leading U+FEFF is kept by the backend's trim, so 64 more characters are one too many.
+    fireEvent.change(nameField(), { target: { value: `﻿${"x".repeat(64)}` } });
+    expect(within(dialog()).getByText("At most 64 characters.")).toBeTruthy();
+    expect(within(dialog()).getByText("65/64")).toBeTruthy();
+    fireEvent.change(nameField(), { target: { value: " Kept " } });
+    fireEvent.click(createButton());
+    await waitFor(() => expect(backend.count("instance_create")).toBe(1));
+    expect((backend.of("instance_create")[0].req as { name: string }).name).toBe("Kept");
+  });
+
+  it("a failing loader list says so with Try again instead of offering only No loader silently", async () => {
+    const backend = await setup(undefined, (b) => (b.loaderKindsFails = err("internal")));
+    await versionsLoaded();
+    expect(await within(dialog()).findByText("The loader list could not be loaded.")).toBeTruthy();
+    backend.loaderKindsFails = null;
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Try again" }));
+    expect(await within(dialog()).findByRole("radio", { name: "Fabric" })).toBeTruthy();
+    expect(within(dialog()).queryByText("The loader list could not be loaded.")).toBeNull();
+  });
+
+  it("while the version list loads the trigger holds the first focus, cannot open and says why", async () => {
+    const gate = deferred();
+    await setup(undefined, (b) => (b.versionsGate = gate.promise));
+    const trigger = versionTrigger();
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+    expect(trigger.textContent).toBe("Loading versions…");
+    expect(trigger.getAttribute("aria-disabled")).toBe("true");
+    expect(createButton().getAttribute("aria-describedby")).toBe(trigger.id);
+    fireEvent.click(trigger);
+    await act(async () => {});
+    expect(screen.queryByPlaceholderText("Search")).toBeNull();
+    gate.resolve();
+    await versionsLoaded();
+    expect(document.activeElement).toBe(versionTrigger());
+    expect(versionTrigger().getAttribute("aria-disabled")).toBeNull();
+  });
 });

@@ -182,6 +182,27 @@ fn the_loader_dto_maps_to_the_core_kind_and_back() {
     assert!(serde_json::from_str::<LoaderKindDto>("\"fabric \"").is_err());
 }
 
+/// A loader list on the mock for `9.9`: `(version, stable)`, `stable: None` leaves the field out
+/// (Quilt's service has none).
+async fn serve_loader_list(fx: &Fixture, base: &str, builds: &[(&str, Option<bool>)]) {
+    let entries: Vec<serde_json::Value> = builds
+        .iter()
+        .map(|(v, stable)| {
+            let mut loader = serde_json::json!({ "version": v, "maven": format!("x:loader:{v}") });
+            if let Some(s) = stable {
+                loader["stable"] = serde_json::json!(s);
+            }
+            serde_json::json!({ "loader": loader })
+        })
+        .collect();
+    wiremock::Mock::given(wiremock::matchers::path(format!(
+        "/{base}/versions/loader/9.9"
+    )))
+    .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(entries))
+    .mount(&fx.server)
+    .await;
+}
+
 #[tokio::test]
 async fn loader_versions_mark_the_recommended_build() {
     let fx = fixture().await;
@@ -189,13 +210,44 @@ async fn loader_versions_mark_the_recommended_build() {
         .await
         .unwrap();
     assert_eq!(r.recommended, "0.99.0");
-    let beta = r
+}
+
+/// Owner decision (22.11.): Fabric's service flags only its current release as stable, so every
+/// other build would read as unstable; no Fabric or Quilt build is shown as unstable. The
+/// recommended build is still the core's pick (what a create without a version installs).
+#[tokio::test]
+async fn fabric_and_quilt_builds_never_read_as_unstable_and_other_loaders_keep_their_flag() {
+    let fx = fixture().await;
+    let fabric = loader_versions_impl(&fx.state, LoaderKindDto::Fabric, "9.9")
+        .await
+        .unwrap();
+    assert_eq!(fabric.versions.len(), 2);
+    assert!(fabric.versions.iter().all(|v| v.stable), "{fabric:?}");
+    assert_eq!(fabric.recommended, "0.99.0");
+
+    serve_loader_list(&fx, "quilt", &[("0.31.0-beta.6", None), ("0.30.2", None)]).await;
+    let quilt = loader_versions_impl(&fx.state, LoaderKindDto::Quilt, "9.9")
+        .await
+        .unwrap();
+    assert!(quilt.versions.iter().all(|v| v.stable), "{quilt:?}");
+    assert_eq!(quilt.recommended, "0.30.2");
+
+    serve_loader_list(
+        &fx,
+        "legacy-fabric",
+        &[("0.20.1", Some(true)), ("0.20.0", Some(false))],
+    )
+    .await;
+    let legacy = loader_versions_impl(&fx.state, LoaderKindDto::LegacyFabric, "9.9")
+        .await
+        .unwrap();
+    let flags: Vec<(&str, bool)> = legacy
         .versions
         .iter()
-        .find(|v| v.id == "0.100.0-beta.1")
-        .unwrap();
-    assert!(!beta.stable);
-    assert!(r.versions.iter().any(|v| v.id == "0.99.0" && v.stable));
+        .map(|v| (v.id.as_str(), v.stable))
+        .collect();
+    assert_eq!(flags, [("0.20.1", true), ("0.20.0", false)]);
+    assert_eq!(legacy.recommended, "0.20.1");
 }
 
 #[tokio::test]
@@ -1036,4 +1088,15 @@ async fn a_timed_out_or_stopped_call_is_unknown_and_a_pending_one_started_nothin
         .unwrap_err();
     assert_eq!(dto.code, ErrorCode::RecycleBinUnknown);
     assert!(fx.events().contains(&instances_changed()));
+}
+
+#[test]
+fn a_list_task_that_panicked_announces_nothing_so_a_reloading_ui_cannot_loop() {
+    // `None`: the task failed (a panic). It is answered with an error; an event would make the UI
+    // reload, run into the same panic and reload again.
+    assert!(!list_announces_change::<(), ()>(None));
+    assert!(list_announces_change::<(), ()>(Some(&Some(Ok(vec![()])))));
+    assert!(!list_announces_change::<(), ()>(Some(&Some(Ok(vec![])))));
+    assert!(!list_announces_change::<(), ()>(Some(&Some(Err(())))));
+    assert!(!list_announces_change::<(), ()>(Some(&None)));
 }

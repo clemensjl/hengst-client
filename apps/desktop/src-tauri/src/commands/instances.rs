@@ -169,12 +169,16 @@ pub async fn loader_versions_impl(
         .map_err(|e| error_dto(&e))?
         .id
         .clone();
+    // Owner decision (22.11.): Fabric's service flags only its current release as stable, so every
+    // other build would read as unstable; Quilt is treated the same. Their builds are never shown
+    // as unstable; the recommended one is the core's pick. Other loaders keep their flag.
+    let shows_unstable = !matches!(kind, LoaderKind::Fabric | LoaderKind::Quilt);
     Ok(LoaderVersionsDto {
         versions: list
             .iter()
             .map(|v| LoaderVersionDto {
                 id: v.id.clone(),
-                stable: v.stable,
+                stable: v.stable || !shows_unstable,
             })
             .collect(),
         recommended,
@@ -203,6 +207,15 @@ async fn lock_within(
         .map_err(|_| busy())
 }
 
+/// Whether a list announces a change of the instances. Only a real change is: the UI reloads the
+/// list on this event, so an event for "nothing changed" (a failed adoption wrote nothing) would
+/// be an endless reload loop. A task that panicked (`None`) announces nothing either: it may have
+/// adopted a folder first, but its answer is an error the UI shows with "Try again", while an
+/// event would make it reload into the same panic again and again.
+pub(crate) fn list_announces_change<T, E>(adopted: Option<&Option<Result<Vec<T>, E>>>) -> bool {
+    matches!(adopted, Some(Some(Ok(adopted))) if !adopted.is_empty())
+}
+
 pub async fn instances_list_within(
     state: &AppState,
     wait: Duration,
@@ -228,15 +241,7 @@ pub async fn instances_list_within(
         (adopted, instances::list(&paths))
     })
     .await;
-    // Only a real change is announced: the UI reloads the list on this event, so an event for
-    // "nothing changed" (a failed adoption wrote nothing) would be an endless reload loop. A task
-    // that failed may have written files first.
-    let may_have_changed = match &done {
-        Err(_) => true,
-        Ok((Some(Ok(adopted)), _)) => !adopted.is_empty(),
-        Ok((Some(Err(_)) | None, _)) => false,
-    };
-    if may_have_changed {
+    if list_announces_change(done.as_ref().ok().map(|(adopted, _)| adopted)) {
         changed(state, DataScope::Instances);
     }
     let (adopted, listing) = done.map_err(join_error)?;

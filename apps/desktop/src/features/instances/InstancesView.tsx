@@ -1,5 +1,5 @@
 import { PlusIcon, TriangleAlertIcon } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Delayed } from "@/components/Delayed";
 import { Button } from "@/components/ui/button";
@@ -12,10 +12,16 @@ import { api, IpcError } from "@/ipc/client";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useApp, type InstanceFocus } from "@/stores/app";
-import { CreateInstanceDialog } from "./CreateInstanceDialog";
 import { DeleteInstanceDialog } from "./DeleteInstanceDialog";
 import { InstanceRow, NARROW_GRID, ROW_GRID } from "./InstanceRow";
 import { effectiveSelection } from "./selection";
+
+/**
+ * The create dialog is its own chunk (combobox, select and checkbox stay out of the start). The
+ * view asks for it as soon as it shows, so it is there by the time it is opened.
+ */
+const loadCreateDialog = () => import("./CreateInstanceDialog");
+const CreateInstanceDialog = lazy(loadCreateDialog);
 
 const errorOf = (e: unknown): ErrorDto =>
   e instanceof IpcError ? e.dto : { code: "internal", params: {}, action: null, detail: String(e) };
@@ -168,6 +174,14 @@ export function InstancesView() {
   const [actionError, setActionError] = useState<{ error: ErrorDto; folder: boolean } | null>(null);
   const parts = useRef(new Map<string, { row?: HTMLElement; action?: HTMLElement }>());
 
+  const createOpen = useApp((s) => s.createOpen);
+  // Mounted from the first opening on, so its closing animation and its draft handling run.
+  const [createWanted, setCreateWanted] = useState(false);
+  if (createOpen && !createWanted) setCreateWanted(true);
+  useEffect(() => {
+    void loadCreateDialog();
+  }, []);
+
   useEffect(() => {
     if (instances.status === "idle") void loadInstances();
   }, [instances.status, loadInstances]);
@@ -273,7 +287,13 @@ export function InstancesView() {
           </div>
         )}
       </div>
-      <CreateInstanceDialog />
+      {createWanted && (
+        // Nothing to show while the chunk loads (it was asked for when the view appeared); the
+        // dialog is a layer over the view, so nothing below moves.
+        <Suspense fallback={null}>
+          <CreateInstanceDialog />
+        </Suspense>
+      )}
       {deleting && (
         <DeleteInstanceDialog
           key={deleting.instance.id}

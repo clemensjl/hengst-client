@@ -270,5 +270,7 @@
   "instances.form.nameEmpty": "Gib einen Namen ein.",
   "instances.form.nameTooLong": "Höchstens 64 Zeichen.",
   "instances.form.creating": "Wird angelegt…",
-  "instances.form.closeBusy": "Schließen geht erst, wenn die Instanz angelegt ist"
+  "instances.form.closeBusy": "Schließen geht erst, wenn die Instanz angelegt ist",
+  "instances.form.nameControl": "Keine Steuerzeichen wie Tabulatoren.",
+  "instances.form.loaderKindsFailed": "Die Loader-Liste konnte nicht geladen werden."
 }

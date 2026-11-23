@@ -171,22 +171,31 @@ describe("InstancesView rows", () => {
     const backend = await setup([instance("future", { status: "tooNew", game: "" })]);
     const row = rowButton("future");
     expect(row.getAttribute("aria-disabled")).toBe("true");
-    const badge = within(row).getByText("Newer format");
-    expect(row.getAttribute("aria-describedby")).toBe(badge.id);
+    // The badge is in the row's name once, not also its description.
+    expect(within(row).getByText("Newer format")).toBeTruthy();
+    expect(row.getAttribute("aria-describedby")).toBeNull();
     fireEvent.click(row);
     await act(async () => {});
     expect(backend.count("instance_select")).toBe(0);
     const menu = await openMenu("future");
+    // Only "Open folder" can be used; "Delete" is there, disabled, with the reason as its
+    // description, and every child of the menu is a menu item or a separator.
+    const items = within(menu).getAllByRole("menuitem");
     expect(
-      within(menu)
-        .getAllByRole("menuitem")
-        .map((i) => i.textContent),
+      items.filter((i) => i.getAttribute("aria-disabled") !== "true").map((i) => i.textContent),
     ).toEqual(["Open folder"]);
-    expect(
-      within(menu).getByText(
-        "Saved by a newer version of Hengst Client. You can delete it only in Explorer.",
-      ),
-    ).toBeTruthy();
+    const del = within(menu).getByRole("menuitem", { name: "Delete" });
+    expect(del.getAttribute("aria-disabled")).toBe("true");
+    const reason = document.getElementById(del.getAttribute("aria-describedby")!)!;
+    expect(reason.textContent).toBe(
+      "Saved by a newer version of Hengst Client. You can delete it only in Explorer.",
+    );
+    expect(del.contains(reason)).toBe(true);
+    for (const child of menu.children) {
+      expect(["menuitem", "separator"]).toContain(child.getAttribute("role"));
+    }
+    fireEvent.click(del);
+    expect(screen.queryByRole("alertdialog")).toBeNull();
     // The Delete key does not open the dialog for it either.
     fireEvent.keyDown(document.body, { key: "Escape" });
     fireEvent.keyDown(row, { key: "Delete" });
@@ -266,6 +275,7 @@ describe("InstancesView delete", () => {
     expect(del.getAttribute("aria-disabled")).toBe("true");
     const reason = within(menu).getByText("Currently running. Stop the game first.");
     expect(del.getAttribute("aria-describedby")).toBe(reason.id);
+    expect(del.contains(reason)).toBe(true);
     fireEvent.click(del);
     expect(screen.queryByRole("alertdialog")).toBeNull();
     fireEvent.keyDown(document.body, { key: "Escape" });
@@ -293,6 +303,23 @@ describe("InstancesView delete", () => {
     );
     expect(screen.getByRole("alertdialog")).toBeTruthy();
     expect(toast).not.toHaveBeenCalled();
+  });
+
+  it("a refused Open folder in the delete dialog shows the folder title and body", async () => {
+    const backend = await setup(three());
+    backend.deleteFails = err("recycleBinFailed", { id: "a", reason: "tooLarge" });
+    backend.openFails = err("openFailed");
+    const menu = await openMenu("Alpha");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+    const panel = await within(dialog()).findByRole("alert");
+    fireEvent.click(within(panel).getByRole("button", { name: "Open folder" }));
+    expect(await within(dialog()).findByText("The folder could not be opened")).toBeTruthy();
+    expect(
+      within(dialog()).getByText(
+        "Windows refused to open it in Explorer. Check that the folder still exists, then try again.",
+      ),
+    ).toBeTruthy();
   });
 
   it.each(["binOff", "noBin", "inUse", "unchecked", "other"])(
@@ -425,5 +452,89 @@ describe("InstancesView delete", () => {
       expect(document.activeElement).toBe(screen.getByRole("button", { name: "Create instance" })),
     );
     expect(backend.count("instance_delete")).toBe(3);
+  });
+
+  it("a successful delete of the selected instance saves the fallback selection", async () => {
+    const backend = await setup(three());
+    expect(rowButton("Beta").getAttribute("aria-current")).toBe("true");
+    const menu = await openMenu("Beta");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    // The first readable instance in list order, saved in the backend and shown as selected.
+    expect(backend.of("instance_select")).toEqual([{ id: "a" }]);
+    await waitFor(() => expect(rowButton("Alpha").getAttribute("aria-current")).toBe("true"));
+  });
+
+  it("deleting an instance that is already gone says so, offers only closing and reloads", async () => {
+    const backend = await setup(three());
+    backend.deleteFails = err("instanceNotFound", { id: "c" });
+    const menu = await openMenu("Gamma");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+    backend.list = backend.list.filter((i) => i.id !== "c");
+    const lists = backend.count("instances_list");
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+    const panel = await within(dialog()).findByRole("alert");
+    expect(within(panel).getByText("Instance not found")).toBeTruthy();
+    expect(within(dialog()).queryByRole("button", { name: "Move to Recycle Bin" })).toBeNull();
+    expect(toast).not.toHaveBeenCalled();
+    await waitFor(() => expect(backend.count("instances_list")).toBeGreaterThan(lists));
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("Gamma")).toBeNull());
+  });
+});
+
+describe("InstancesView layouts", () => {
+  /** `matchMedia` as the WebView has it: `narrow` answers the query of the narrow layout. */
+  function mockWidth(narrow: boolean) {
+    window.matchMedia = ((query: string) => ({
+      matches: query === "(width < 880px)" ? narrow : false,
+      media: query,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    })) as unknown as typeof window.matchMedia;
+  }
+  afterEach(() => {
+    delete (window as { matchMedia?: unknown }).matchMedia;
+  });
+
+  const loaded = [
+    instance("a", {
+      name: "Alpha",
+      game: "1.14 Pre-Release 1",
+      loader: { kind: "fabric", displayName: "Fabric", version: "0.17.3" },
+      selected: true,
+    }),
+  ];
+
+  it("below 880 CSS px: 64 px rows with version and loader under the name, no Last played, an icon-only header action", async () => {
+    mockWidth(true);
+    await setup(loaded);
+    const row = rowButton("Alpha");
+    expect(row.className).toContain("h-16");
+    expect(row.className).toContain("grid-cols-[24px_minmax(0,1fr)_40px]");
+    expect(within(row).getByText("1.14 Pre-Release 1").parentElement?.textContent).toBe(
+      "1.14 Pre-Release 1Fabric 0.17.3",
+    );
+    expect(within(row).queryByText("Never played")).toBeNull();
+    expect(screen.queryByText("Last played")).toBeNull();
+    const action = within(header()).getByRole("button", { name: "Create instance" });
+    expect(action.textContent).toBe("");
+  });
+
+  it("from 880 CSS px: 48 px rows with the five columns and the labelled header action", async () => {
+    mockWidth(false);
+    await setup(loaded);
+    const row = rowButton("Alpha");
+    expect(row.className).toContain("h-12");
+    expect(row.className).toContain("grid-cols-[24px_minmax(0,1fr)_128px_168px_136px_40px]");
+    expect(within(row).getByText("Never played")).toBeTruthy();
+    expect(screen.getByText("Last played")).toBeTruthy();
+    // A long version id stays on one line, cut with an ellipsis.
+    expect(within(row).getByText("1.14 Pre-Release 1").className).toContain("truncate");
+    expect(within(header()).getByRole("button", { name: "Create instance" }).textContent).toBe(
+      "Create instance",
+    );
   });
 });

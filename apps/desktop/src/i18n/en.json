@@ -270,5 +270,7 @@
   "instances.form.nameEmpty": "Enter a name.",
   "instances.form.nameTooLong": "At most 64 characters.",
   "instances.form.creating": "Creating…",
-  "instances.form.closeBusy": "Closing works once the instance is created"
+  "instances.form.closeBusy": "Closing works once the instance is created",
+  "instances.form.nameControl": "No control characters such as tabs.",
+  "instances.form.loaderKindsFailed": "The loader list could not be loaded."
 }

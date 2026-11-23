@@ -42,7 +42,7 @@ import type { LoaderVersionsDto } from "@/ipc/bindings/LoaderVersionsDto";
 import type { VersionFilter } from "@/ipc/bindings/VersionFilter";
 import { api, IpcError } from "@/ipc/client";
 import { useApp, type InstanceDraft } from "@/stores/app";
-import { suggestName } from "./naming";
+import { MAX_NAME, nameLength, nameProblem, suggestName, trimName } from "./naming";
 import { DEFAULT_FILTER, filterVersions } from "./versionFilter";
 
 const errorOf = (e: unknown): ErrorDto =>
@@ -53,7 +53,6 @@ const ALL_KINDS: VersionFilter = { release: true, snapshot: true, beta: true, al
 const KINDS = ["release", "snapshot", "beta", "alpha"] as const;
 /** The codes that mean "no connection" (DESIGN.md 10.5, 10.6). */
 const OFFLINE = ["offline", "network"];
-const MAX_NAME = 64;
 /** DESIGN.md 10.7: the counter shows from 80 % of the limit. */
 const COUNTER_FROM = Math.ceil(MAX_NAME * 0.8);
 
@@ -65,14 +64,6 @@ const NEW_DRAFT: InstanceDraft = {
   name: "",
   nameEdited: false,
 };
-
-/** Characters as the backend counts them (Unicode scalar values), after trimming. */
-const nameProblem = (name: string): string | null =>
-  name.trim() === ""
-    ? "instances.form.nameEmpty"
-    : Array.from(name.trim()).length > MAX_NAME
-      ? "instances.form.nameTooLong"
-      : null;
 
 interface LoaderVersions {
   /** `<kind>|<game>`: an answer for another choice is dropped. */
@@ -147,6 +138,8 @@ export function CreateInstanceDialog() {
         className="w-140"
         closeLabel={t("common.close")}
         closeBusyReason={busy ? t("instances.form.closeBusy") : undefined}
+        // The version trigger, also while the list loads: it is only aria-disabled then, so it
+        // can hold focus from the first moment (DESIGN.md 11.2).
         initialFocus={triggerRef}
         finalFocus={() => !created.current}
       >
@@ -184,6 +177,7 @@ function CreateForm({
     version: `${id}-v`,
     versionNote: `${id}-vn`,
     loaderLabel: `${id}-ll`,
+    loaderKinds: `${id}-lk`,
     loaderVersionLabel: `${id}-lvl`,
     loaderVersion: `${id}-lv`,
     loaderNote: `${id}-ln`,
@@ -200,6 +194,7 @@ function CreateForm({
 
   const [query, setQuery] = useState("");
   const [kinds, setKinds] = useState<LoaderInfoDto[] | null>(null);
+  const [kindsError, setKindsError] = useState<ErrorDto | null>(null);
   const [loaderVersions, setLoaderVersions] = useState<LoaderVersions | null>(null);
   const [validated, setValidated] = useState(false);
   const [error, setError] = useState<ErrorDto | null>(null);
@@ -212,16 +207,23 @@ function CreateForm({
     if (s.status !== "ready" && s.status !== "loading") void loadVersions(ALL_KINDS);
   }, [loadVersions]);
 
-  useEffect(() => {
-    let live = true;
-    api
-      .loaderKinds()
-      .then((k) => live && setKinds(k))
-      .catch(() => live && setKinds([]));
-    return () => {
-      live = false;
-    };
+  // Mounted: false once the dialog went away, so a late answer changes nothing.
+  const mounted = useRef(true);
+  useEffect(
+    () => () => {
+      mounted.current = false;
+    },
+    [],
+  );
+  const loadKinds = useCallback(() => {
+    setKindsError(null);
+    api.loaderKinds().then(
+      (k) => mounted.current && setKinds(k),
+      (e: unknown) => mounted.current && setKindsError(errorOf(e)),
+    );
   }, []);
+  useEffect(() => loadKinds(), [loadKinds]);
+  const [versionsOpen, setVersionsOpen] = useState(false);
 
   const all = versions.data?.versions ?? [];
   const kindOf = new Map(all.map((v) => [v.id, v.kind]));
@@ -259,7 +261,8 @@ function CreateForm({
   const name = draft.nameEdited ? draft.name : game ? suggestName(game, loaderInfo) : "";
   const problem = nameProblem(name);
   const shownProblem = validated ? problem : null;
-  const count = Array.from(name).length;
+  // The check and the counter count the same string the backend keeps.
+  const count = nameLength(name);
 
   // Why "Create instance" cannot be used now: the id of the text that says so (DESIGN.md 10.0).
   let blockedBy: string | null = null;
@@ -280,7 +283,7 @@ function CreateForm({
     setError(null);
     try {
       const made = await api.instanceCreate({
-        name: name.trim(),
+        name: trimName(name),
         game,
         // Slugs and versions only; the display name stays in the backend.
         loader: draft.loader === "none" ? null : { kind: draft.loader, version: loaderVersion },
@@ -321,12 +324,16 @@ function CreateForm({
             }}
             inputValue={query}
             onInputValueChange={setQuery}
-            disabled={!versions.data}
+            // Without a list it does not open: the trigger says why.
+            open={versionsOpen && versions.data !== undefined}
+            onOpenChange={(next) => setVersionsOpen(next && versions.data !== undefined)}
           >
             <ComboboxTrigger
               ref={triggerRef}
               id={ids.version}
               aria-labelledby={`${ids.versionLabel} ${ids.version}`}
+              aria-disabled={versions.data ? undefined : true}
+              className="aria-disabled:border-border aria-disabled:bg-card aria-disabled:text-text-disabled aria-disabled:hover:border-border"
             >
               <span className="truncate">
                 {!versions.data
@@ -420,6 +427,13 @@ function CreateForm({
             labelledBy={ids.loaderLabel}
             className="flex flex-wrap gap-2"
           />
+          {kindsError && (
+            <InlineError
+              id={ids.loaderKinds}
+              text={t("instances.form.loaderKindsFailed")}
+              onRetry={loadKinds}
+            />
+          )}
         </div>
 
         {draft.loader !== "none" && (
@@ -504,7 +518,8 @@ function CreateForm({
             aria-invalid={shownProblem ? true : undefined}
             aria-describedby={ids.nameHelp}
             onChange={(e) => {
-              // A pasted line break never becomes part of the name.
+              // A pasted line break never becomes part of the name; any other control character
+              // (a tab) is refused by the check, as by the backend.
               update({ name: e.target.value.replace(/[\r\n]+/g, ""), nameEdited: true });
             }}
             onBlur={() => {
@@ -556,3 +571,6 @@ function CreateForm({
     </>
   );
 }
+
+/** For `React.lazy`: the dialog loads as its own chunk. */
+export default CreateInstanceDialog;

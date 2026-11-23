@@ -119,6 +119,8 @@ interface AppState {
 
 // The filter of the last `loadVersions`, used when an event asks for a reload.
 let versionsFilter: VersionFilter | null = null;
+// Counts the requests of the instance list; an answer counts only if no newer request was made.
+let instancesRequests = 0;
 // Counts the openings of the sign-in dialog; each one is a new sign-in with its own state.
 let signInOpenings = 0;
 
@@ -237,14 +239,18 @@ export const useApp = create<AppState>()((set, get) => ({
   closeAccountDialog: () => set({ accountDialog: null }),
 
   loadInstances: async () => {
+    // Only the answer of the newest request counts: an older one that arrives late is dropped.
+    const mine = ++instancesRequests;
     set((s) => ({ instances: loading(s.instances) }));
     try {
       const answer = await api.instancesList();
+      if (mine !== instancesRequests) return;
       set({
         instances: { status: "ready", data: answer.instances },
         instancesIncomplete: answer.incomplete,
       });
     } catch (e) {
+      if (mine !== instancesRequests) return;
       set((s) => ({ instances: { ...s.instances, status: "error", error: errorOf(e) } }));
     }
   },

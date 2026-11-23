@@ -62,6 +62,8 @@ pub struct LoaderInfoDto {
 #[serde(rename_all = "camelCase")]
 pub struct LoaderVersionDto {
     pub id: String,
+    /// `false`: shown as unstable. Always `true` for Fabric and Quilt, whose services do not mark
+    /// test builds in a way worth showing (owner decision).
     pub stable: bool,
 }
 

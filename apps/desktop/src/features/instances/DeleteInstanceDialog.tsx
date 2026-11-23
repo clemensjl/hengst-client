@@ -162,10 +162,13 @@ export function DeleteInstanceDialog({
             />
           )}
           {folderCopy && (
-            <p role="alert" className="flex items-start gap-2 text-small text-danger">
-              <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
-              {folderCopy.title}
-            </p>
+            <div role="alert" className="flex items-start gap-2 text-small">
+              <CircleAlertIcon className="mt-0.5 size-4 shrink-0 text-danger" aria-hidden="true" />
+              <span className="flex flex-col">
+                <span className="text-danger">{folderCopy.title}</span>
+                <span className="text-muted-foreground">{folderCopy.body}</span>
+              </span>
+            </div>
           )}
         </AlertDialogBody>
         <AlertDialogFooter>

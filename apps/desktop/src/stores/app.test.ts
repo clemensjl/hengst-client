@@ -235,4 +235,37 @@ describe("instances", () => {
     sink!({ event: "dataChanged", data: { scope: "instances" } });
     await vi.waitFor(() => expect(useApp.getState().instances.data?.[0].id).toBe("v2"));
   });
+
+  it("a late answer of an older request never replaces the list of a newer one", async () => {
+    const answers: ((v: unknown) => void)[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "instances_list") return new Promise((resolve) => answers.push(resolve));
+    });
+    const first = useApp.getState().loadInstances();
+    const second = useApp.getState().loadInstances();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    // The newer request answers first, the older one after it.
+    answers[1]({ instances: [row("new")], incomplete: false });
+    await second;
+    answers[0]({ instances: [row("old")], incomplete: true });
+    await first;
+    expect(useApp.getState().instances.data?.map((i) => i.id)).toEqual(["new"]);
+    expect(useApp.getState().instancesIncomplete).toBe(false);
+  });
+
+  it("a late failure of an older request does not mark a newer list as failed", async () => {
+    const answers: { resolve: (v: unknown) => void; reject: (e: unknown) => void }[] = [];
+    mockIPC((cmd) => {
+      if (cmd === "instances_list")
+        return new Promise((resolve, reject) => answers.push({ resolve, reject }));
+    });
+    const first = useApp.getState().loadInstances();
+    const second = useApp.getState().loadInstances();
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1].resolve({ instances: [row("new")], incomplete: false });
+    await second;
+    answers[0].reject({ code: "busy", params: {}, action: null, detail: "x" });
+    await first;
+    expect(useApp.getState().instances.status).toBe("ready");
+  });
 });

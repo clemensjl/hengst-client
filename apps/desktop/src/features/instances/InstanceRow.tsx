@@ -49,7 +49,6 @@ export function InstanceRow({
   register,
 }: Props) {
   const { t, i18n } = useTranslation();
-  const badgeId = useId();
   const reasonId = useId();
   const nameRef = useRef<HTMLSpanElement>(null);
   const actionRef = useRef<HTMLElement | null>(null);
@@ -64,17 +63,27 @@ export function InstanceRow({
       : instance.status === "broken"
         ? t("instances.badge.broken")
         : null;
+  // Version ids can be long ("1.14 Pre-Release 1"): one line, cut with an ellipsis.
   const version = (
-    <span className="text-small text-muted-foreground tabular-nums">{instance.game}</span>
+    <span className="min-w-0 truncate text-small text-muted-foreground tabular-nums">
+      {instance.game}
+    </span>
   );
   const loader = (
     <span className="truncate text-small text-muted-foreground">{loaderText(instance, t)}</span>
   );
+  // The badge is part of the row's name; it is not also its description (read twice otherwise).
   const warning = badge && (
     <span>
-      <Badge id={badgeId}>{badge}</Badge>
+      <Badge>{badge}</Badge>
     </span>
   );
+  // Why "Delete" cannot be used, shown under it in the menu and read as its description.
+  const deleteBlocked = !deletable
+    ? t("instances.tooNewHint")
+    : running
+      ? t("instances.running")
+      : null;
   const askDelete = (from: HTMLElement | null) => {
     if (deletable && !running) onDelete(instance, from);
   };
@@ -90,7 +99,6 @@ export function InstanceRow({
               data-instance-row={instance.id}
               aria-current={selected ? "true" : undefined}
               aria-disabled={readable ? undefined : true}
-              aria-describedby={badge ? badgeId : undefined}
               onClick={() => readable && onSelect(instance.id)}
               onKeyDown={(e) => {
                 if (e.key === "Delete") {
@@ -180,30 +188,30 @@ export function InstanceRow({
             <FolderOpenIcon aria-hidden="true" />
             {t("instances.openFolder")}
           </DropdownMenuItem>
-          {deletable ? (
-            <>
-              <DropdownMenuSeparator />
-              <DropdownMenuItem
-                disabled={running}
-                aria-describedby={running ? reasonId : undefined}
-                onClick={() => askDelete(actionRef.current)}
-              >
-                <span className={cn("flex items-center gap-2", running ? "" : "text-danger")}>
-                  <Trash2Icon className="size-4" aria-hidden="true" />
-                  {t("instances.delete")}
+          <DropdownMenuSeparator />
+          {/* A disabled item stays reachable with the arrow keys (Base UI), so its reason, a
+              second line inside it, is read as its description. */}
+          <DropdownMenuItem
+            disabled={deleteBlocked !== null}
+            aria-label={t("instances.delete")}
+            aria-describedby={deleteBlocked ? reasonId : undefined}
+            onClick={() => askDelete(actionRef.current)}
+          >
+            <span className="flex min-w-0 flex-col py-2">
+              <span className={cn("flex items-center gap-2", deleteBlocked ? "" : "text-danger")}>
+                <Trash2Icon className="size-4" aria-hidden="true" />
+                {t("instances.delete")}
+              </span>
+              {deleteBlocked && (
+                <span
+                  id={reasonId}
+                  className="max-w-80 pl-6 text-caption whitespace-normal text-muted-foreground"
+                >
+                  {deleteBlocked}
                 </span>
-              </DropdownMenuItem>
-              {running && (
-                <p id={reasonId} className="px-3 pb-2 text-caption text-muted-foreground">
-                  {t("instances.running")}
-                </p>
               )}
-            </>
-          ) : (
-            <p className="max-w-80 px-3 py-2 text-caption text-muted-foreground">
-              {t("instances.tooNewHint")}
-            </p>
-          )}
+            </span>
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </li>

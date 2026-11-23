@@ -73,7 +73,10 @@ export function instancesBackend(list: InstanceDto[] = []) {
     incomplete: false,
     versions: MANIFEST as GameVersionsDto,
     versionsFails: null as ErrorDto | null,
+    /** Held until resolved: `game_versions` answers only then. */
+    versionsGate: null as Promise<void> | null,
     loaders: LOADERS,
+    loaderKindsFails: null as ErrorDto | null,
     /** What `loader_versions` answers for a kind and a game; a thrown `ErrorDto` is a refusal. */
     loaderVersions: (_kind: string, _game: string): LoaderVersionsDto => ({
       versions: [
@@ -102,9 +105,11 @@ export function instancesBackend(list: InstanceDto[] = []) {
         if (b.listFails) throw b.listFails;
         return { instances: b.list, incomplete: b.incomplete };
       case "game_versions":
+        if (b.versionsGate) await b.versionsGate;
         if (b.versionsFails) throw b.versionsFails;
         return b.versions;
       case "loader_kinds":
+        if (b.loaderKindsFails) throw b.loaderKindsFails;
         return b.loaders;
       case "loader_versions":
         return b.loaderVersions(args.kind as string, args.game as string);
