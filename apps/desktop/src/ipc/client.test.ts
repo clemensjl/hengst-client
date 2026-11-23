@@ -42,6 +42,34 @@ describe("ipc client", () => {
     });
   });
 
+  it("a non-DTO rejection reaches the detail bounded and without tokens, queries or user folders", async () => {
+    const text =
+      "failed GET https://api.example/v1?access_token=SECRET-1&state=Q with Authorization: Bearer SECRET-2; " +
+      "bearer SECRET-3.abc at C:\\Users\\someone\\AppData\\x.json: denied; share \\\\fileserver\\share\\someone\\y " +
+      "x".repeat(5000);
+    mockIPC(() => {
+      throw new Error(text);
+    });
+    const detail = await api.appInfo().then(
+      () => "",
+      (e: { dto: { detail: string } }) => e.dto.detail,
+    );
+    for (const banned of ["SECRET", "state=Q", "someone", "Users", "fileserver"]) {
+      expect(detail).not.toContain(banned);
+    }
+    expect(detail).toContain("https://api.example/v1");
+    // A long text without a path is cut.
+    mockIPC(() => {
+      throw "y".repeat(5000);
+    });
+    const long = await api.appInfo().then(
+      () => "",
+      (e: { dto: { detail: string } }) => e.dto.detail,
+    );
+    expect(long.length).toBeLessThanOrEqual(1000);
+    expect(long.startsWith("yyyy")).toBe(true);
+  });
+
   it("loginStart passes the method, the language and the channel, no texts, and returns the op", async () => {
     let seen: [string, string[]] | undefined;
     mockIPC((cmd, args) => {

@@ -35,13 +35,42 @@ function isErrorDto(value: unknown): value is ErrorDto {
   );
 }
 
+/** The longest detail a non-DTO rejection keeps. */
+const DETAIL_LIMIT = 1000;
+
+/**
+ * Makes the text of a rejection that did not come from the backend's own errors safe for the
+ * "Details" disclosure, as the backend does with its own (`error.rs`): URL query parts, the value
+ * of an `Authorization` header and bearer tokens are removed, every absolute Windows path (drive,
+ * UNC or `\\?\`) is cut to its last component, and the text is bounded.
+ */
+function redactDetail(text: string): string {
+  const out = text
+    .replace(/(https?:\/\/[^\s?)\]"'>]*)\?[^\s)\]"'>]*/g, "$1")
+    .replace(/(authorization[:=])[^\n\r;]*/gi, "$1 ***")
+    .replace(/(bearer\s+)([^\s;,)"']+)/gi, (all, prefix: string, word: string) =>
+      // The word "bearer" in prose ("the bearer of ...") has no token after it.
+      word.length >= 16 || /[\d.\-_/+=]/.test(word) ? `${prefix}***` : all,
+    )
+    .replace(
+      /(?<![A-Za-z0-9])(?:[A-Za-z]:[\\/]|\\{2,}(?=[^\s"'\\]))[^"'\n\r]*?(?=: |["'\n\r]|$)/g,
+      (path) => `...\\${path.split(/[\\/]/).filter(Boolean).pop() ?? ""}`,
+    );
+  return out.length > DETAIL_LIMIT ? `${out.slice(0, DETAIL_LIMIT - 1)}…` : out;
+}
+
 /** Every rejection of `invoke` becomes an `IpcError`; a non-DTO value is wrapped as `internal`. */
 export async function guard<T>(call: Promise<T>): Promise<T> {
   try {
     return await call;
   } catch (value) {
     if (isErrorDto(value)) throw new IpcError(value);
-    throw new IpcError({ code: "internal", params: {}, action: null, detail: String(value) });
+    throw new IpcError({
+      code: "internal",
+      params: {},
+      action: null,
+      detail: redactDetail(String(value)),
+    });
   }
 }
 
