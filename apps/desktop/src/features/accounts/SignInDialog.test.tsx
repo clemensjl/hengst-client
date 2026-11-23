@@ -183,6 +183,40 @@ describe("SignInDialog outcomes", () => {
     expect(backend.of("open_url")).toEqual([{ target: "signInHelp" }]);
   });
 
+  it("a failing learn more says so as an alert instead of doing nothing", async () => {
+    const backend = await setup();
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "failed", data: { error: err("appNotApproved") } }));
+    backend.openUrlFails = err("openFailed");
+    fireEvent.click(await screen.findByRole("button", { name: "Learn more" }));
+    const alert = await within(dialog()).findByRole("alert");
+    expect(alert.textContent).toBe("The browser could not be opened.");
+  });
+
+  it("a failing open microsoft.com/link says so as an alert and keeps the code", async () => {
+    const backend = await setup();
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(1));
+    act(() => {
+      backend.started();
+      backend.emit({
+        event: "deviceCode",
+        data: {
+          userCode: "ABCD1234",
+          verificationUri: "https://www.microsoft.com/link",
+          expiresAt: Math.floor(Date.now() / 1000) + 900,
+        },
+      });
+    });
+    backend.openUrlFails = err("openFailed");
+    fireEvent.click(button("Open microsoft.com/link"));
+    const alert = await within(dialog()).findByRole("alert");
+    expect(alert.textContent).toBe(
+      "The browser could not be opened. Open microsoft.com/link in a browser yourself and enter the code.",
+    );
+    expect(within(dialog()).getByText("ABCD1234")).toBeTruthy();
+  });
+
   it("failed: the panel with Try again, which restarts the same method; focus on the title", async () => {
     const backend = await setup();
     fireEvent.click(button("Use a code instead"));

@@ -46,6 +46,8 @@ export function fakeBackend(initial: AccountsDto = { accounts: [], canSignIn: tr
     selectFails: null as ErrorDto | null,
     /** `account_remove` fails with this. */
     removeFails: null as ErrorDto | null,
+    /** `open_url` fails with this. */
+    openUrlFails: null as ErrorDto | null,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     of: (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args),
     /** The channel of the n-th `login_start` (0 is the first). */
@@ -77,6 +79,9 @@ export function fakeBackend(initial: AccountsDto = { accounts: [], canSignIn: tr
         return;
       case "account_remove":
         if (b.removeFails) throw b.removeFails;
+        return;
+      case "open_url":
+        if (b.openUrlFails) throw b.openUrlFails;
         return;
       default:
         return;

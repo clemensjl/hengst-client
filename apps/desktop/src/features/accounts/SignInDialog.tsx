@@ -79,9 +79,12 @@ function useRemaining(expiresAt: number): number {
 function CodeView({
   state,
   copyRef,
+  openFailed,
 }: {
   state: Extract<SignInState, { phase: "showingCode" }>;
   copyRef: React.RefObject<HTMLButtonElement | null>;
+  /** "Open microsoft.com/link" was refused by the system. */
+  openFailed: boolean;
 }) {
   const { t } = useTranslation();
   const remaining = useRemaining(state.expiresAt);
@@ -132,6 +135,7 @@ function CodeView({
           {t("errors.copyFailed")}
         </p>
       )}
+      {openFailed && <OpenFailed text={t("signIn.code.openFailed")} />}
       {/* Plain text, no live region: a screen reader does not read it every second. The digits
           are tabular so the line does not shift. */}
       <p className="text-caption text-muted-foreground tabular-nums">
@@ -148,16 +152,30 @@ function CodeView({
   );
 }
 
+/** A link button the system refused to open: said beside it, so the click does not do nothing. */
+function OpenFailed({ text }: { text: string }) {
+  return (
+    <p role="alert" className="flex items-start gap-2 text-small text-danger">
+      <CircleAlertIcon className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+      {text}
+    </p>
+  );
+}
+
 function Body({
   signIn,
   copyRef,
   bodyRef,
   devOffline,
+  deviceLoginFailed,
+  helpFailed,
 }: {
   signIn: SignIn;
   copyRef: React.RefObject<HTMLButtonElement | null>;
   bodyRef: React.RefObject<HTMLDivElement | null>;
   devOffline: boolean;
+  deviceLoginFailed: boolean;
+  helpFailed: boolean;
 }) {
   const { t } = useTranslation();
   const { state } = signIn;
@@ -208,7 +226,7 @@ function Body({
         </div>
       );
     case "showingCode":
-      return <CodeView state={state} copyRef={copyRef} />;
+      return <CodeView state={state} copyRef={copyRef} openFailed={deviceLoginFailed} />;
     case "completing":
       return (
         <p
@@ -259,6 +277,7 @@ function Body({
             {devOffline && (
               <p className="text-caption text-muted-foreground">{t("signIn.notApproved.dev")}</p>
             )}
+            {helpFailed && <OpenFailed text={t("signIn.openFailed")} />}
           </InfoBlock>
         </div>
       );
@@ -273,15 +292,17 @@ function Footer({
   primaryRef,
   requestClose,
   close,
+  help,
+  deviceLogin,
 }: {
   signIn: SignIn;
   primaryRef: React.RefObject<HTMLButtonElement | null>;
   requestClose: () => void;
   close: () => void;
+  help: ReturnType<typeof useOpenUrl>;
+  deviceLogin: ReturnType<typeof useOpenUrl>;
 }) {
   const { t } = useTranslation();
-  const help = useOpenUrl("signInHelp");
-  const deviceLogin = useOpenUrl("deviceLogin");
   const { state } = signIn;
   const cancel = <Button onClick={requestClose}>{t("common.cancel")}</Button>;
   const inertCancel = (
@@ -373,6 +394,9 @@ export function SignInDialog({
   const primaryRef = useRef<HTMLButtonElement>(null);
   const copyRef = useRef<HTMLButtonElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  // Here and not in the footer: the body says when opening failed.
+  const help = useOpenUrl("signInHelp");
+  const deviceLogin = useOpenUrl("deviceLogin");
 
   // Escape, the close button and Cancel are one path: cancel what runs, close if that worked. A
   // cancel that is refused (the account is being saved) leaves the dialog; the terminal event decides.
@@ -433,7 +457,14 @@ export function SignInDialog({
       >
         <DialogTitle>{title}</DialogTitle>
         <DialogBody>
-          <Body signIn={signIn} copyRef={copyRef} bodyRef={bodyRef} devOffline={devOffline} />
+          <Body
+            signIn={signIn}
+            copyRef={copyRef}
+            bodyRef={bodyRef}
+            devOffline={devOffline}
+            deviceLoginFailed={deviceLogin.failed}
+            helpFailed={help.failed}
+          />
         </DialogBody>
         <DialogFooter>
           <Footer
@@ -441,6 +472,8 @@ export function SignInDialog({
             primaryRef={primaryRef}
             requestClose={requestClose}
             close={() => setOpen(false)}
+            help={help}
+            deviceLogin={deviceLogin}
           />
         </DialogFooter>
       </DialogContent>
