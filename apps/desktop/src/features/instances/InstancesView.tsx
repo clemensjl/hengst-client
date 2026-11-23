@@ -33,8 +33,9 @@ const loadCreateDialog = () => import("./CreateInstanceDialog");
 const CreateInstanceDialog = lazy(loadCreateDialog);
 
 /**
- * Catches a chunk that cannot be loaded: without it React would unmount the whole app. It renders
- * nothing and tells the view, which closes the dialog and says so.
+ * Catches any error while the create dialog renders: a chunk that cannot be loaded, and also an
+ * error thrown by the dialog itself. Without it React would unmount the whole app. It renders
+ * nothing and tells the view, which closes the dialog and says the dialog could not be loaded.
  */
 class ChunkBoundary extends Component<{ onError: () => void; children: ReactNode }> {
   state = { failed: false };
@@ -203,11 +204,22 @@ export function InstancesView() {
   const createOpen = useApp((s) => s.createOpen);
   // Mounted from the first opening on, so its closing animation and its draft handling run.
   const [createWanted, setCreateWanted] = useState(false);
-  if (createOpen && !createWanted) setCreateWanted(true);
-  // The dialog's chunk could not be loaded; "Try again" asks for it with a fresh lazy component
-  // (a failed one keeps its rejection).
+  // The dialog's chunk could not be loaded. A failed lazy component keeps its rejection, so the
+  // failure puts a fresh one in place: the next opening (Try again, or any "New instance") loads
+  // the chunk again, and the old failure goes away until that attempt fails too.
   const [chunkFailed, setChunkFailed] = useState(false);
+  if (createOpen && !createWanted) {
+    setCreateWanted(true);
+    setChunkFailed(false);
+  }
   const [CreateDialog, setCreateDialog] = useState(() => CreateInstanceDialog);
+  const chunkTitle = useRef<HTMLParagraphElement>(null);
+  useEffect(() => {
+    if (!chunkFailed) return;
+    // As after a failed create (DESIGN.md 11.2): the focus goes to the title of the failure.
+    chunkTitle.current?.focus();
+    chunkTitle.current?.scrollIntoView?.({ block: "nearest" });
+  }, [chunkFailed]);
   const closeCreate = useApp((s) => s.closeCreate);
   const openCreate = useApp((s) => s.openCreate);
   useEffect(() => {
@@ -299,20 +311,20 @@ export function InstancesView() {
                 aria-hidden="true"
               />
               <div className="flex min-w-0 flex-col">
-                <p className="text-body font-semibold">{t("instances.createLoadFailed.title")}</p>
+                <p
+                  ref={chunkTitle}
+                  tabIndex={-1}
+                  className="text-body font-semibold [overflow-wrap:anywhere]"
+                >
+                  {t("instances.createLoadFailed.title")}
+                </p>
                 <p className="text-small text-muted-foreground">
                   {t("instances.createLoadFailed.body")}
                 </p>
               </div>
             </div>
             <div className="pl-[30px]">
-              <Button
-                onClick={() => {
-                  setChunkFailed(false);
-                  setCreateDialog(() => lazy(loadCreateDialog));
-                  openCreate();
-                }}
-              >
+              <Button onClick={openCreate}>
                 <RefreshCwIcon aria-hidden="true" />
                 {t("common.retry")}
               </Button>
@@ -355,6 +367,7 @@ export function InstancesView() {
           onError={() => {
             setChunkFailed(true);
             setCreateWanted(false);
+            setCreateDialog(() => lazy(loadCreateDialog));
             closeCreate();
           }}
         >
