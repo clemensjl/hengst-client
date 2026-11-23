@@ -173,20 +173,16 @@ export async function byRole(
   name: string,
   timeout?: number,
 ): Promise<WebdriverIO.Element> {
-  let found: WebdriverIO.Element | null = null;
+  let found: unknown = null;
   await browser.waitUntil(
     async () => {
-      found = (await browser.execute(
-        singleByRole,
-        role,
-        name,
-        true,
-      )) as unknown as WebdriverIO.Element | null;
+      found = await browser.execute(singleByRole, role, name, true);
       return found !== null;
     },
     { timeout, timeoutMsg: `no single displayed ${role} named "${name}"` },
   );
-  return found!;
+  // `execute` hands back a plain WebDriver element reference; `$` turns it into an element.
+  return await $(found as Parameters<typeof $>[0]);
 }
 
 /**
