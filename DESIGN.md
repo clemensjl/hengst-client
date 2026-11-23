@@ -476,7 +476,7 @@ Every new animation is checked with `~/.claude/skills/review-animations/SKILL.md
 
 ### 10.0 Common rules
 
-- Disabled controls use `--text-disabled` for text and icons and keep their layout. Every disabled control has a visible reason next to it (Z7), referenced with `aria-describedby`.
+- Disabled controls use `--text-disabled` for text and icons and keep their layout. Every disabled control has a visible reason next to it (Z7), referenced with `aria-describedby`. One exception: the close button (X) of a dialog that cannot be closed yet (sign-in while "Wird angemeldet…" / "Signing in…") stays focusable with `aria-disabled`, and its reason ("Schließen geht erst, wenn die Anmeldung fertig ist" / "Closing works once the sign-in is done") is a tooltip, so it is visible only on hover and keyboard focus; it is also the button's description.
 - Hover styles apply only to devices with hover and a fine pointer.
 - Click guard: an action that starts a request blocks a second activation until it resolves (Z2). Where a button changes into an opposite action (Play into Cancel, Starting into Cancel), the new action ignores activations for 600 ms after the change, so the second click of a double click never triggers it.
 
@@ -530,6 +530,8 @@ Chip: a button, 40 px high, radius pill, `--surface-raised` fill, 1 px `--border
 
 No account: the chip is a `secondary` button "Anmelden" / "Sign in" (`log-in`) that opens the sign-in dialog. If the build has no client id (`can_sign_in` false), it shows the no-client-id block of 11.6 instead and the sign-in dialog is not opened.
 
+Accounts but none selected: the chip is a `secondary` button "Konto wählen" / "Choose account" (`user-round`, then `chevron-down`) that opens the same menu; it never names an account that is not selected. Development builds always list the dev account, so they never show "Anmelden" in the header: without a selected account they show "Konto wählen".
+
 Menu (DropdownMenu, aligned to the chip's right edge, `width: max-content`, `min-width: 280px`, `max-width: 360px`, radius 10, padding 4, items 40 px, radius 6, padding 0 12):
 1. Radio group of accounts: a 16 px check slot (check `--text` on the selected one), 8 px gap, name, warning badge "Erneut anmelden" where needed. The name is the only part that shrinks: at the 360 px maximum a wide 16-character name with the badge (about 393 px) truncates with ellipsis and shows the full name in a tooltip; the badge never shrinks or wraps. Choosing an account selects it; choosing one that needs sign-in starts sign-in for it. The dev account (dev builds only) carries the badge "Entwicklungs-Build" / "Development build".
 2. Separator.
@@ -573,7 +575,7 @@ Loader: a radio group shown as separate segments that wrap: "Kein Loader" / "No 
 
 The same segment component serves Language and Theme in Settings.
 
-Loader version: Select with label "Loader-Version" / "Loader version", trigger as the version picker. Items 40 px: check slot, version, then a badge "Empfohlen" / "Recommended" or "Instabil" / "Unstable". Preselection: the recommended version. Hidden when "Kein Loader" is selected.
+Loader version: Select with label "Loader-Version" / "Loader version", trigger as the version picker. Items 40 px: check slot, version, then a badge "Empfohlen" / "Recommended" or "Instabil" / "Unstable". "Empfohlen" marks the build that a create without an explicit version would install (the core's pick). Fabric and Quilt builds never carry "Instabil": their services mark only the newest build stable, so every older one would read as unstable (owner decision 22.11.). Preselection: the recommended version. Hidden when "Kein Loader" is selected.
 - Loading: trigger disabled with "Wird geladen…" / "Loading…".
 - No builds for this game version: the select is replaced by the hint from `errors.noLoaderVersions` with `triangle-alert` 16 in `--warning`; the create button is disabled and described by that text.
 - Offline: "Keine Verbindung. Loader-Versionen können gerade nicht geladen werden." / "No connection. Loader versions cannot be loaded right now." with "Erneut versuchen".
@@ -728,6 +730,7 @@ Width 440. Title "{{name}} löschen?" / "Delete {{name}}?". Text "Der Ordner mit
 
 - Loading: the destructive button shows its loading state; both buttons inert.
 - Error: ErrorPanel inside the dialog above the buttons; the dialog stays open. If the Recycle Bin cannot take the folder (too large for the bin, drive without a bin), the app never deletes permanently: the ErrorPanel says "Ordner konnte nicht in den Papierkorb verschoben werden" / "The folder could not be moved to the Recycle Bin", body "Es wurde nichts gelöscht. Öffne den Ordner, um ihn selbst zu verschieben oder zu löschen." / "Nothing was deleted. Open the folder to move or delete it yourself.", with the action "Ordner öffnen" / "Open folder".
+- Doubtful outcomes (the result is unknown, the folder is gone but not found in the Recycle Bin, it was only partly moved, an earlier delete is still running): ErrorPanel with the copy of its code, never "Es wurde nichts gelöscht" / "Nothing was deleted"; the action "Ordner öffnen" / "Open folder" to check what is left; the footer offers only "Schließen" / "Close"; the list reloads.
 - Success: dialog closes, the row disappears, toast "{{name}} ist im Papierkorb" / "{{name}} is in the Recycle Bin". Selection fallback per 10.2.
 - Focus after delete: the action button of the next row, else of the previous row, else "Instanz anlegen".
 - Empty: not applicable (opened for one instance).
@@ -760,6 +763,7 @@ Width 560. Title "Konto hinzufügen" / "Add account"; when signing in an existin
 | cancelled | dialog closes, focus to the chip | |
 
 - "Browser erneut öffnen" fails: inline error under the body text "Der Browser ließ sich nicht öffnen. Verwende stattdessen den Code." / "The browser could not be opened. Use a code instead." (the link button below stays).
+- "microsoft.com/link öffnen" fails: inline error (`role="alert"`) under the code view "Der Browser ließ sich nicht öffnen. Öffne microsoft.com/link selbst in einem Browser und gib den Code ein." / "The browser could not be opened. Open microsoft.com/link in a browser yourself and enter the code."; the code stays. "Mehr erfahren" fails (appNotApproved): inline error (`role="alert"`) at the end of the block "Der Browser ließ sich nicht öffnen." / "The browser could not be opened."
 - Code copied: the copy button reads "Kopiert" / "Copied" for 2 s (no toast).
 - Signing in again with a different Microsoft account than the one asked for: that account is added and selected as usual; the dialog closes with the toast "Angemeldet als {{new}}. {{old}} ist weiterhin abgemeldet." / "Signed in as {{new}}. {{old}} is still signed out." and the old account keeps its "Erneut anmelden" badge.
 - Loading: the starting and completing phases. Empty: not applicable. Error: the failed phase.
@@ -790,7 +794,7 @@ Error copy in the failed phase (title without full stop, body, action):
 
 Shown inside the sign-in dialog for `appNotApproved`, instead of the generic ErrorPanel. This block is for one condition only: Mojang has not approved the app yet. Not an error style: `info` 18 in `--text-muted`, title (18/26) "Anmeldung noch nicht verfügbar" / "Sign-in is not available yet", text (16/24) "Mojang hat die Microsoft-Anmeldung von Hengst Client noch nicht freigegeben. Bis dahin lassen sich keine Konten hinzufügen. Mit deinem Konto ist alles in Ordnung, du musst nichts ändern." / "Mojang has not approved Hengst Client's Microsoft sign-in yet. Until then, accounts cannot be added. Your account is fine, nothing needs to change on your side." Dev builds add a caption: "Entwicklungs-Builds können das Offline-Entwicklungskonto verwenden." / "Development builds can use the offline development account." Buttons as in 11.5; "Mehr erfahren" opens the sign-in help page in the browser.
 
-Second block, build without a client id (`missingClientId`, `can_sign_in` false): the build was made without a Microsoft client id and therefore cannot sign in. Defined only here and referenced from the Play button (10.2), the account chip menu and the add-account entry (10.3) and the `missingClientId` row in 11.5. Shown as an alert dialog (440), same style as the block above (`info` 18 in `--text-muted`, title 18/26, text 16/24); the sign-in dialog is not opened. Title "Dieser Build kann sich nicht anmelden" / "This build cannot sign in", text "Er wurde ohne Microsoft-Client-ID gebaut. Verwende ein offizielles Release oder trage beim eigenen Bauen die Client-ID ein." / "It was built without a Microsoft client id. Use an official release, or set the client id when building it yourself." Buttons: `secondary` "Schließen" / "Close" (initial focus) and primary "Anleitung zum Bauen" / "Build instructions", which opens the build section of the README in the browser (`UrlTarget::BuildHelp`).
+Second block, build without a client id (`missingClientId`, `can_sign_in` false): the build was made without a Microsoft client id and therefore cannot sign in. Defined only here and referenced from the Play button (10.2), the account chip menu and the add-account entry (10.3) and the `missingClientId` row in 11.5. Shown as an alert dialog (440), same style as the block above (`info` 18 in `--text-muted`, title 18/26, text 16/24); the sign-in dialog is not opened. Title "Dieser Build kann sich nicht anmelden" / "This build cannot sign in", text "Er wurde ohne Microsoft-Client-ID gebaut. Verwende ein offizielles Release oder trage beim eigenen Bauen die Client-ID ein." / "It was built without a Microsoft client id. Use an official release, or set the client id when building it yourself." Buttons: `secondary` "Schließen" / "Close" (initial focus) and primary "Anleitung zum Bauen" / "Build instructions", which opens the build section of the README in the browser (`UrlTarget::BuildHelp`). This block cannot occur in builds of this repository: they carry the project's client id (`CLIENT_ID`), and an empty `HENGST_MS_CLIENT_ID` falls back to it. It exists for forks that build without one.
 
 ### 11.7 Settings with About (4a partial, 4b complete)
 
