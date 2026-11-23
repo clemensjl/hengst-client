@@ -20,23 +20,16 @@ fn invalid_input(field: &str) -> ErrorDto {
     }
 }
 
-/// An absolute path to an existing file named `java.exe` or `javaw.exe` (any case).
-fn is_java_file(path: &std::path::Path) -> bool {
-    let name_ok = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .is_some_and(|n| n.eq_ignore_ascii_case("java.exe") || n.eq_ignore_ascii_case("javaw.exe"));
-    path.is_absolute() && name_ok && path.is_file()
-}
-
 fn validate(patch: &SettingsPatch) -> Result<(), ErrorDto> {
     if patch.memory_mb.is_some_and(|m| !MEMORY_MB.contains(&m)) {
         return Err(invalid_input("memoryMb"));
     }
-    if let Patch::Set(path) = &patch.java_override {
-        if !is_java_file(std::path::Path::new(path)) {
-            return Err(invalid_input("javaOverride"));
-        }
+    // A Java path from the web view is refused without looking at it: a UNC path would make even
+    // a file check connect to a server (and send the Windows credentials), and the path is run
+    // when the game starts. It is chosen through a file dialog in Rust (Phase 4b); clearing it
+    // stays possible.
+    if let Patch::Set(_) = &patch.java_override {
+        return Err(invalid_input("javaOverride"));
     }
     Ok(())
 }
@@ -303,41 +296,47 @@ mod tests {
     }
 
     #[test]
-    fn java_override_must_be_an_existing_java_file() {
+    fn java_override_cannot_be_set_from_the_web_view() {
         let dir = tempfile::tempdir().unwrap();
         let java = dir.path().join("java.exe");
-        let javaw = dir.path().join("JAVAW.EXE");
-        let other = dir.path().join("notepad.exe");
-        let folder = dir.path().join("java.exe.d");
-        let folder_named_java = dir.path().join("sub").join("java.exe");
-        for f in [&java, &javaw, &other] {
-            std::fs::write(f, b"").unwrap();
-        }
-        std::fs::create_dir(&folder).unwrap();
-        std::fs::create_dir_all(&folder_named_java).unwrap();
+        std::fs::write(&java, b"").unwrap();
         let state = state_in(dir.path());
-        let set = |p: &std::path::Path| {
-            settings_update_impl(
+        settings_update_impl(&state, theme_patch(Theme::Dark)).unwrap();
+        let before = std::fs::read(dir.path().join("settings.json")).unwrap();
+        // Even an existing local java.exe is refused; a UNC or verbatim path is never looked at.
+        for path in [
+            java.display().to_string(),
+            r"\fileserver\share\java.exe".to_string(),
+            r"\?\C:\Program Files\Java\bin\java.exe".to_string(),
+            r"\?\UNC\fileserver\share\java.exe".to_string(),
+        ] {
+            let e = settings_update_impl(
                 &state,
                 SettingsPatch {
-                    java_override: Patch::Set(p.display().to_string()),
+                    java_override: Patch::Set(path.clone()),
                     ..Default::default()
                 },
             )
-        };
-        assert!(set(&java).is_ok());
-        assert!(set(&javaw).is_ok());
-        for bad in [
-            other,
-            folder,
-            folder_named_java,
-            dir.path().join("missing").join("java.exe"),
-            std::path::PathBuf::from("java.exe"),
-        ] {
-            let e = set(&bad).unwrap_err();
-            assert_eq!(e.code, ErrorCode::InvalidInput, "{}", bad.display());
+            .unwrap_err();
+            assert_eq!(e.code, ErrorCode::InvalidInput, "{path}");
             assert_eq!(e.params["field"], "javaOverride");
+            assert!(!e.detail.contains("fileserver"), "{}", e.detail);
         }
+        assert_eq!(
+            std::fs::read(dir.path().join("settings.json")).unwrap(),
+            before
+        );
+        assert_eq!(state.settings.get().java_override, None);
+        // Clearing stays possible, and so does any patch that keeps the value.
+        state
+            .settings
+            .update(|s| {
+                s.java_override = Some(java.clone());
+                Ok(())
+            })
+            .unwrap();
+        let kept = settings_update_impl(&state, theme_patch(Theme::Light)).unwrap();
+        assert_eq!(kept.java_override, Some(java.display().to_string()));
         let cleared = settings_update_impl(
             &state,
             SettingsPatch {

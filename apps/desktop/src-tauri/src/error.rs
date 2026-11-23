@@ -150,7 +150,7 @@ pub fn error_dto(e: &Error) -> ErrorDto {
         action,
         detail: match e {
             Error::Json(json) => json_detail(json),
-            _ => redact(&e.to_string()),
+            _ => strip_paths(&redact(&e.to_string())),
         },
     }
 }
@@ -206,7 +206,10 @@ fn hint_key(hint: LoaderHint) -> &'static str {
 }
 
 /// Makes a core message safe for the "Details" disclosure: URL query parts, bearer tokens and
-/// the value of an `Authorization` header are removed. Local paths stay.
+/// the value of an `Authorization` header are removed. Local paths are not touched here: callers
+/// whose text may carry one run `strip_paths` on the result (`error_dto` does). That order matters:
+/// a path runs to the next `: `, so it can swallow the scheme of a URL that follows it, after which
+/// the query would no longer be found.
 pub fn redact(text: &str) -> String {
     let text = strip_query(text);
     let mut out = String::with_capacity(text.len());
@@ -254,19 +257,27 @@ pub fn redact(text: &str) -> String {
     out
 }
 
-/// Replaces every absolute Windows path in `text` (`C:\Users\name\...`, also with doubled
-/// backslashes as a `Debug` text has them) by `...\<last component>`, so a detail shown to the user
-/// or copied into a bug report does not carry the Windows user name. A path ends at `: `, a quote,
-/// a line break or the end of the text.
+/// Replaces every absolute Windows path in `text` (`C:\Users\name\...`, a UNC path
+/// `\\server\share\...`, a verbatim path `\\?\...`, also with doubled backslashes as a `Debug`
+/// text has them) by `...\<last component>`, so a detail shown to the user or copied into a bug
+/// report carries neither the Windows user name nor a server or share name. A path ends at `: `, a
+/// quote, a line break or the end of the text.
 pub fn strip_paths(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
     let mut i = 0;
     while i < chars.len() {
-        let starts_path = chars[i].is_ascii_alphabetic()
+        let after_word = i > 0 && chars[i - 1].is_ascii_alphanumeric();
+        let drive = chars[i].is_ascii_alphabetic()
             && chars.get(i + 1) == Some(&':')
-            && matches!(chars.get(i + 2), Some('\\') | Some('/'))
-            && (i == 0 || !chars[i - 1].is_ascii_alphanumeric());
+            && matches!(chars.get(i + 2), Some('\\') | Some('/'));
+        // Two or more backslashes, then a name: UNC (`\\server`) and verbatim (`\\?\`) paths.
+        let backslashes = chars[i..].iter().take_while(|c| **c == '\\').count();
+        let unc = backslashes >= 2
+            && chars
+                .get(i + backslashes)
+                .is_some_and(|c| !c.is_whitespace() && !matches!(c, '"' | '\''));
+        let starts_path = (drive || unc) && !after_word;
         if !starts_path {
             out.push(chars[i]);
             i += 1;
@@ -843,6 +854,95 @@ mod mapping_tests {
             // first drive path goes with it. Nothing of a path is ever left.
             "two ...\\d"
         );
+    }
+
+    #[test]
+    fn unc_and_verbatim_paths_lose_everything_but_their_last_component() {
+        for (text, want) in [
+            (
+                "open \\\\fileserver\\share\\someone\\t2: denied",
+                "open ...\\t2: denied",
+            ),
+            (
+                "open \\\\?\\C:\\Users\\someone\\t2: denied",
+                "open ...\\t2: denied",
+            ),
+            (
+                "open \\\\?\\UNC\\fileserver\\share\\someone\\t2: denied",
+                "open ...\\t2: denied",
+            ),
+            (
+                "open \\\\?\\Volume{0b1c}\\Users\\someone\\t2",
+                "open ...\\t2",
+            ),
+            // The `Debug` form doubles every backslash.
+            (
+                "\"open \\\\\\\\fileserver\\\\share\\\\someone\\\\t2: denied\"",
+                "\"open ...\\t2: denied\"",
+            ),
+        ] {
+            assert_eq!(strip_paths(text), want, "{text}");
+        }
+        // A backslash pair inside a word is no path start.
+        assert_eq!(strip_paths("a\\\\b"), "a\\\\b");
+    }
+
+    /// Every error whose text can carry a local path: the web view gets neither the user name nor
+    /// the server or share name.
+    #[test]
+    fn path_carrying_errors_reach_the_web_view_without_the_path() {
+        let source = || {
+            hengst_core::download::http_client()
+                .get("not a url")
+                .build()
+                .unwrap_err()
+        };
+        let paths = [
+            "C:\\Users\\someone\\AppData\\Roaming\\HengstClient\\x",
+            "\\\\fileserver\\share\\someone\\HengstClient\\x",
+            "\\\\?\\C:\\Users\\someone\\HengstClient\\x",
+            "\\\\?\\UNC\\fileserver\\share\\someone\\HengstClient\\x",
+        ];
+        for p in paths {
+            let errors = [
+                Error::Io(std::io::Error::other(format!(
+                    "could not read {p}\\settings.json: access denied"
+                ))),
+                // The two texts that block saving the settings (`settings::load_settings`).
+                Error::Io(std::io::Error::other(format!(
+                    "could not move the damaged settings file aside, it stays as it is: rename {p}\\settings.json: in use"
+                ))),
+                Error::Offline {
+                    path: PathBuf::from(p),
+                    url: "https://x/y".into(),
+                    source: source(),
+                },
+                Error::Checksum {
+                    path: PathBuf::from(p),
+                    expected: "a".into(),
+                    actual: "b".into(),
+                },
+                Error::NativesInUse {
+                    dir: PathBuf::from(p),
+                },
+                Error::LockTimeout {
+                    label: "forge".into(),
+                    waited_secs: 600,
+                    lock: PathBuf::from(p),
+                },
+                Error::Processor {
+                    jar: "binarypatcher".into(),
+                    code: 1,
+                    log: PathBuf::from(p),
+                },
+            ];
+            for e in errors {
+                let json = serde_json::to_string(&error_dto(&e)).unwrap();
+                for banned in ["someone", "Users", "fileserver", "share", "HengstClient"] {
+                    assert!(!json.contains(banned), "{banned} in {json}");
+                }
+            }
+        }
     }
 
     #[test]

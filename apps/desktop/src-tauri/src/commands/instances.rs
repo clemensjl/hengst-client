@@ -64,7 +64,7 @@ fn with_id(code: ErrorCode, id: &str, detail: String) -> ErrorDto {
         code,
         params: BTreeMap::from([("id".to_string(), id.to_string())]),
         action: None,
-        detail: redact(&strip_paths(&detail)),
+        detail: strip_paths(&redact(&detail)),
     }
 }
 

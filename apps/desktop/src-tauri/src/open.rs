@@ -3,7 +3,7 @@
 
 use crate::dto::error::{ErrorCode, ErrorDto, UrlTarget};
 use crate::dto::instances::OpenTarget;
-use crate::error::{error_dto, redact};
+use crate::error::{error_dto, redact, strip_paths};
 use hengst_core::instances;
 use hengst_core::paths::Paths;
 use std::collections::BTreeMap;
@@ -31,7 +31,7 @@ pub fn open_target<E: Display>(
         code: ErrorCode::OpenFailed,
         params: BTreeMap::new(),
         action: None,
-        detail: redact(&e.to_string()),
+        detail: strip_paths(&redact(&e.to_string())),
     })
 }
 
@@ -60,7 +60,7 @@ pub fn open_folder<E: Display>(
         code: ErrorCode::OpenFailed,
         params: BTreeMap::new(),
         action: None,
-        detail: redact(&detail),
+        detail: strip_paths(&redact(&detail)),
     };
     if !std::fs::metadata(dir).is_ok_and(|m| m.is_dir()) {
         return Err(failed("the path is not a folder".to_string()));
@@ -194,6 +194,24 @@ mod tests {
         assert!(err.action.is_none());
         assert!(err.detail.contains("no default browser"));
         assert!(!err.detail.contains("SECRET"), "{}", err.detail);
+    }
+
+    #[test]
+    fn failing_openers_carry_no_local_path_in_the_detail() {
+        let msg = "cannot start \\\\?\\C:\\Users\\someone\\browser.exe: denied";
+        let url = open_target(&UrlTarget::BuildHelp, |_| Err::<(), _>(msg)).unwrap_err();
+        let dir = tempfile::tempdir().unwrap();
+        let folder = open_folder(dir.path(), |_| {
+            Err::<(), _>("no shell for \\\\fileserver\\share\\someone\\x")
+        })
+        .unwrap_err();
+        for dto in [url, folder] {
+            assert!(
+                !dto.detail.contains("someone") && !dto.detail.contains("fileserver"),
+                "{}",
+                dto.detail
+            );
+        }
     }
 
     #[test]
