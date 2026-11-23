@@ -1,6 +1,7 @@
 //! Microsoft identity platform: device code flow and token refresh.
 
-use super::{http_error, AuthError, MicrosoftAuth, SCOPE};
+use super::{AuthError, MicrosoftAuth, SCOPE};
+use crate::download::read_limited;
 use crate::secret::Secret;
 use crate::{Error, Result};
 use serde::Deserialize;
@@ -27,6 +28,9 @@ struct TokenResponse {
     refresh_token: Secret,
 }
 
+/// Largest token endpoint answer read (tokens, or an error); real ones are a few kilobytes.
+pub(super) const MAX_TOKEN_RESPONSE_BYTES: usize = 64 * 1024;
+
 #[derive(Deserialize)]
 struct ErrorResponse {
     error: String,
@@ -43,9 +47,9 @@ pub(crate) fn next_interval(current: Duration, error: &str) -> Duration {
 /// Read the `error` code of a failed token response (HTTP 400, or 401 as Entra
 /// answers `invalid_client`). The free-text
 /// `error_description` is deliberately ignored.
-async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
+pub(super) async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
     let status = resp.status().as_u16();
-    let body = resp.bytes().await.map_err(http_error(url))?;
+    let body = read_limited(resp, url, MAX_TOKEN_RESPONSE_BYTES).await?;
     match serde_json::from_slice::<ErrorResponse>(&body) {
         Ok(e) if status == 400 || status == 401 => Ok(e.error),
         _ => Err(Error::Status {
@@ -57,15 +61,18 @@ async fn error_code(resp: reqwest::Response, url: &str) -> Result<String> {
 
 /// `invalid_client` / `unauthorized_client` mean a misconfigured app;
 /// everything else falls back to `other`.
-fn map_client_error(code: String, other: Error) -> Error {
+pub(super) fn map_client_error(code: String, other: Error) -> Error {
     match code.as_str() {
         "invalid_client" | "unauthorized_client" => AuthError::AppMisconfigured { code }.into(),
         _ => other,
     }
 }
 
-async fn parse_tokens(resp: reqwest::Response, url: &str) -> Result<MsaTokens> {
-    let t: TokenResponse = resp.json().await.map_err(http_error(url))?;
+pub(super) async fn parse_tokens(resp: reqwest::Response, url: &str) -> Result<MsaTokens> {
+    let body = read_limited(resp, url, MAX_TOKEN_RESPONSE_BYTES).await?;
+    // serde's message can quote a value of the body; the error names the endpoint only.
+    let t: TokenResponse = serde_json::from_slice(&body)
+        .map_err(|_| AuthError::BadResponse("the Microsoft token endpoint"))?;
     Ok(MsaTokens {
         access_token: t.access_token,
         refresh_token: t.refresh_token,
@@ -83,7 +90,10 @@ impl MicrosoftAuth {
             let code = error_code(resp, &url).await?;
             return Err(map_client_error(code, Error::Status { url, status }));
         }
-        resp.json().await.map_err(http_error(&url))
+        let body = read_limited(resp, &url, MAX_TOKEN_RESPONSE_BYTES).await?;
+        // serde's message can quote a value of the body; the error names the endpoint only.
+        serde_json::from_slice(&body)
+            .map_err(|_| AuthError::BadResponse("the Microsoft device code endpoint").into())
     }
 
     pub async fn poll_device_login(&self, code: &DeviceCode) -> Result<MsaTokens> {
@@ -215,6 +225,33 @@ mod tests {
         assert_eq!(dc.user_code, "ABCD-EFGH");
         assert_eq!(dc.verification_uri, "https://microsoft.com/link");
         assert_eq!(dc.device_code.expose(), "dc-1");
+    }
+
+    #[tokio::test]
+    async fn device_code_answer_is_size_capped_and_malformed_bodies_do_not_echo() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/devicecode"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("x".repeat(MAX_TOKEN_RESPONSE_BYTES + 1)),
+            )
+            .mount(&server)
+            .await;
+        let err = auth(&server).start_device_login().await.unwrap_err();
+        assert!(matches!(err, Error::TooLarge { .. }), "{err}");
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/devicecode"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"device_code\": 5}"))
+            .mount(&server)
+            .await;
+        let err = auth(&server).start_device_login().await.unwrap_err();
+        assert!(
+            matches!(err, Error::Auth(AuthError::BadResponse(_))),
+            "{err}"
+        );
     }
 
     #[tokio::test]
@@ -355,6 +392,72 @@ mod tests {
             Error::Auth(AuthError::AppMisconfigured { code }) => assert_eq!(code, "invalid_client"),
             other => panic!("unexpected: {other}"),
         }
+    }
+
+    /// A JSON body that is valid but larger than any token response.
+    fn oversized(fields: serde_json::Value) -> ResponseTemplate {
+        let mut body = fields;
+        body["padding"] = json!("x".repeat(MAX_TOKEN_RESPONSE_BYTES + 1));
+        ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    #[tokio::test]
+    async fn oversized_token_responses_are_refused_without_the_body() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(oversized(
+                json!({"access_token": "at-SECRET", "refresh_token": "rt-SECRET"}),
+            ))
+            .mount(&server)
+            .await;
+        let err = auth(&server).poll_device_login(&code()).await.unwrap_err();
+        assert!(
+            matches!(err, Error::TooLarge { limit, .. } if limit == MAX_TOKEN_RESPONSE_BYTES),
+            "{err}"
+        );
+        assert!(!format!("{err} {err:?}").contains("SECRET"));
+        let err = auth(&server)
+            .refresh_msa(&Secret::new("old-rt"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TooLarge { .. }), "{err}");
+    }
+
+    #[tokio::test]
+    async fn oversized_error_responses_are_refused_without_the_body() {
+        let server = MockServer::start().await;
+        let mut body = json!({"error": "invalid_grant", "error_description": "secret detail"});
+        body["padding"] = json!("x".repeat(MAX_TOKEN_RESPONSE_BYTES + 1));
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(ResponseTemplate::new(400).set_body_json(body))
+            .mount(&server)
+            .await;
+        let err = auth(&server)
+            .refresh_msa(&Secret::new("old-rt"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::TooLarge { .. }), "{err}");
+        assert!(!format!("{err} {err:?}").contains("secret detail"));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_token_response_names_no_value() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/token"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"access_token": "at-SECRET", "refresh_token": 5})),
+            )
+            .mount(&server)
+            .await;
+        let err = auth(&server)
+            .refresh_msa(&Secret::new("old-rt"))
+            .await
+            .unwrap_err();
+        assert!(!format!("{err} {err:?}").contains("SECRET"), "{err:?}");
     }
 
     #[test]

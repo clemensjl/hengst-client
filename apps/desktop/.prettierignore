@@ -1,0 +1,6 @@
+node_modules
+dist
+src-tauri
+pnpm-lock.yaml
+src/ipc/bindings
+src/components/ui

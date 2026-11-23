@@ -1,2 +1,19 @@
+# Text files are LF in the repository and in every working tree, whatever core.autocrlf says:
+# tests and format checks read files and expect LF (a Windows clone with autocrlf=true would get
+# CRLF otherwise).
+* text=auto eol=lf
+
+# Windows batch files stay CRLF.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 mod/gradlew text eol=lf
 mod/gradlew.bat text eol=crlf
+
+# Binary files are never converted.
+*.png binary
+*.ico binary
+*.icns binary
+*.jar binary
+*.woff binary
+*.woff2 binary

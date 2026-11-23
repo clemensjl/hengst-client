@@ -14,12 +14,18 @@ use crate::rules::Env;
 use crate::version::VersionJson;
 use crate::{Error, Result};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Serialized as its `slug()`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LoaderKind {
+    #[serde(rename = "fabric")]
     Fabric,
+    #[serde(rename = "quilt")]
     Quilt,
+    #[serde(rename = "legacy-fabric")]
     LegacyFabric,
+    #[serde(rename = "neoforge")]
     NeoForge,
+    #[serde(rename = "forge")]
     Forge,
 }
 
@@ -32,6 +38,37 @@ impl LoaderKind {
             LoaderKind::NeoForge => "neoforge",
             LoaderKind::Forge => "forge",
         }
+    }
+
+    /// The name a user sees; the source for every loader name in a UI or a message.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            LoaderKind::Fabric => "Fabric",
+            LoaderKind::Quilt => "Quilt",
+            LoaderKind::LegacyFabric => "Legacy Fabric",
+            LoaderKind::NeoForge => "NeoForge",
+            LoaderKind::Forge => "Forge",
+        }
+    }
+}
+
+/// A likely reason for "no loader versions", decided without any request.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoaderHint {
+    NeoForgeStartsAt1201,
+    FabricStartsAt114,
+    LegacyFabricServesOld,
+}
+
+impl fmt::Display for LoaderHint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            LoaderHint::NeoForgeStartsAt1201 => "NeoForge starts at 1.20.1",
+            LoaderHint::FabricStartsAt114 => "Fabric starts at 1.14; try --loader legacy-fabric",
+            LoaderHint::LegacyFabricServesOld => {
+                "Legacy Fabric serves 1.13.2 and older; try --loader fabric"
+            }
+        })
     }
 }
 
@@ -163,13 +200,13 @@ fn older_than(game: &str, minor: u64, patch: u64) -> Option<bool> {
 pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
     let hint = match kind {
         LoaderKind::NeoForge if older_than(game, 20, 1) == Some(true) => {
-            Some("NeoForge starts at 1.20.1")
+            Some(LoaderHint::NeoForgeStartsAt1201)
         }
         LoaderKind::Fabric if older_than(game, 14, 0) == Some(true) => {
-            Some("Fabric starts at 1.14; try --loader legacy-fabric")
+            Some(LoaderHint::FabricStartsAt114)
         }
         LoaderKind::LegacyFabric if older_than(game, 14, 0) == Some(false) => {
-            Some("Legacy Fabric serves 1.13.2 and older; try --loader fabric")
+            Some(LoaderHint::LegacyFabricServesOld)
         }
         _ => None,
     };
@@ -309,7 +346,7 @@ async fn list_saved(
         Ok(list) => {
             // Best effort: a list that cannot be saved only means no offline fallback.
             if let Ok(bytes) = serde_json::to_vec(&list) {
-                let _ = write_atomic(&file, &bytes).await;
+                let _ = crate::paths::write_atomic(&file, &bytes).await;
             }
             Ok((list, false))
         }
@@ -350,19 +387,6 @@ async fn read_bounded(file: &std::path::Path, limit: u64) -> Option<Vec<u8>> {
         .await
         .ok()?;
     (buf.len() as u64 <= limit).then_some(buf)
-}
-
-async fn write_atomic(file: &std::path::Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(dir) = file.parent() {
-        tokio::fs::create_dir_all(dir).await?;
-    }
-    let tmp = crate::paths::unique_temp(file);
-    tokio::fs::write(&tmp, bytes).await?;
-    if let Err(e) = tokio::fs::rename(&tmp, file).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// An empty segment counts as the number 0, so it equals a missing one.
@@ -581,6 +605,49 @@ mod tests {
             pick_version(&[], None, LoaderKind::Fabric, "1.8.9"),
             Err(Error::NoLoaderVersions { .. })
         ));
+    }
+
+    #[test]
+    fn display_names_are_the_user_facing_names() {
+        assert_eq!(LoaderKind::Fabric.display_name(), "Fabric");
+        assert_eq!(LoaderKind::Quilt.display_name(), "Quilt");
+        assert_eq!(LoaderKind::LegacyFabric.display_name(), "Legacy Fabric");
+        assert_eq!(LoaderKind::NeoForge.display_name(), "NeoForge");
+        assert_eq!(LoaderKind::Forge.display_name(), "Forge");
+    }
+
+    #[test]
+    fn hints_are_typed_and_keep_their_text() {
+        let e = no_versions(LoaderKind::Fabric, "1.8.9");
+        assert!(matches!(
+            e,
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::FabricStartsAt114),
+                ..
+            }
+        ));
+        assert_eq!(
+            e.to_string(),
+            "no fabric versions available for Minecraft 1.8.9 (Fabric starts at 1.14; try --loader legacy-fabric)"
+        );
+        assert!(matches!(
+            no_versions(LoaderKind::NeoForge, "1.19.4"),
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::NeoForgeStartsAt1201),
+                ..
+            }
+        ));
+        assert!(matches!(
+            no_versions(LoaderKind::LegacyFabric, "1.21.11"),
+            Error::NoLoaderVersions {
+                hint: Some(LoaderHint::LegacyFabricServesOld),
+                ..
+            }
+        ));
+        assert_eq!(
+            no_versions(LoaderKind::LegacyFabric, "1.21.11").to_string(),
+            "no legacy-fabric versions available for Minecraft 1.21.11 (Legacy Fabric serves 1.13.2 and older; try --loader fabric)"
+        );
     }
 
     #[test]

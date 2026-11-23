@@ -1,5 +1,5 @@
 use crate::download::get_bytes;
-use crate::paths::Paths;
+use crate::paths::{write_atomic, Paths};
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
@@ -51,30 +51,49 @@ impl VersionManifest {
     }
 }
 
-/// Downloads the manifest and caches it. Falls back to the cache when the network fails.
+/// Downloads the manifest and caches it. Falls back to the saved copy when the network fails; a
+/// copy that is missing or damaged counts as absent, so the caller gets the network error.
 pub async fn fetch_manifest(
     client: &reqwest::Client,
     paths: &Paths,
     url: &str,
 ) -> Result<VersionManifest> {
-    let cache = paths.manifest_file();
-    match get_bytes(client, url).await {
-        Ok(bytes) => {
-            let manifest: VersionManifest = serde_json::from_slice(&bytes)?;
-            if let Some(parent) = cache.parent() {
-                tokio::fs::create_dir_all(parent).await?;
-            }
-            tokio::fs::write(&cache, &bytes).await?;
-            Ok(manifest)
-        }
+    match download_manifest(client, paths, url).await {
         Err(e @ (Error::Http { .. } | Error::Status { .. })) => {
-            if cache.is_file() {
-                Ok(serde_json::from_slice(&tokio::fs::read(&cache).await?)?)
-            } else {
-                Err(e)
+            match load_cached(paths).await.ok().flatten() {
+                Some(saved) => Ok(saved),
+                None => Err(e),
             }
         }
-        Err(e) => Err(e),
+        other => other,
+    }
+}
+
+/// Downloads the manifest and replaces the saved copy through a temp file and a rename. Unlike
+/// `fetch_manifest` it never falls back to the saved copy, so a caller that refreshes in the
+/// background sees the real failure. A saved copy that cannot be written (for example because
+/// another process holds the file) does not fail the call: the downloaded data is returned and
+/// the problem is logged.
+pub async fn download_manifest(
+    client: &reqwest::Client,
+    paths: &Paths,
+    url: &str,
+) -> Result<VersionManifest> {
+    let bytes = get_bytes(client, url).await?;
+    let manifest: VersionManifest = serde_json::from_slice(&bytes)?;
+    if let Err(e) = write_atomic(&paths.manifest_file(), &bytes).await {
+        eprintln!("could not save the version manifest: {e}");
+    }
+    Ok(manifest)
+}
+
+/// The saved manifest, without touching the network. A missing, truncated or unreadable-as-JSON
+/// file counts as no cache (`Ok(None)`); only a file system read error is an `Err`.
+pub async fn load_cached(paths: &Paths) -> Result<Option<VersionManifest>> {
+    match tokio::fs::read(paths.manifest_file()).await {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes).ok()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(e.into()),
     }
 }
 
@@ -127,5 +146,128 @@ mod tests {
         assert!(paths.manifest_file().is_file());
         let offline = fetch_manifest(&client, &paths, &url).await.unwrap();
         assert_eq!(online.versions.len(), offline.versions.len());
+    }
+
+    #[tokio::test]
+    async fn load_cached_reads_what_fetch_manifest_saved_and_none_without_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        assert!(load_cached(&paths).await.unwrap().is_none());
+        std::fs::create_dir_all(paths.manifest_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.manifest_file(), sample().to_string()).unwrap();
+        assert_eq!(
+            load_cached(&paths).await.unwrap().unwrap().latest.release,
+            "1.21.11"
+        );
+        std::fs::write(paths.manifest_file(), "{").unwrap();
+        assert!(load_cached(&paths).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn fetch_manifest_replaces_the_cache_through_a_temp_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample()))
+            .mount(&server)
+            .await;
+        fetch_manifest(&reqwest::Client::new(), &paths, &server.uri())
+            .await
+            .unwrap();
+        let names: Vec<String> = std::fs::read_dir(paths.manifest_file().parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 1, "no temp file may stay behind: {names:?}");
+        assert_eq!(
+            load_cached(&paths).await.unwrap().unwrap().latest.release,
+            "1.21.11"
+        );
+    }
+
+    #[tokio::test]
+    async fn load_cached_never_sees_a_partial_file_while_the_cache_is_rewritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample()))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        fetch_manifest(&client, &paths, &server.uri())
+            .await
+            .unwrap();
+        let reader_paths = paths.clone();
+        let reader = tokio::spawn(async move {
+            for _ in 0..300 {
+                assert!(
+                    load_cached(&reader_paths).await.unwrap().is_some(),
+                    "a rewrite must never expose a truncated cache"
+                );
+            }
+        });
+        for _ in 0..30 {
+            fetch_manifest(&client, &paths, &server.uri())
+                .await
+                .unwrap();
+        }
+        reader.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_manifest_reports_failure_instead_of_using_the_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::create_dir_all(paths.manifest_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.manifest_file(), sample().to_string()).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let client = reqwest::Client::new();
+        assert!(download_manifest(&client, &paths, &server.uri())
+            .await
+            .is_err());
+        assert!(fetch_manifest(&client, &paths, &server.uri()).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn offline_with_a_damaged_saved_copy_is_the_network_error() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        std::fs::create_dir_all(paths.manifest_file().parent().unwrap()).unwrap();
+        std::fs::write(paths.manifest_file(), "{").unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/manifest.json", listener.local_addr().unwrap());
+        drop(listener);
+        let err = fetch_manifest(&reqwest::Client::new(), &paths, &url)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::Http { .. }), "got {err:?}");
+    }
+
+    #[tokio::test]
+    async fn a_saved_copy_that_cannot_be_replaced_does_not_fail_the_download() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        // A directory where the file belongs: the rename onto it fails, like a locked file.
+        std::fs::create_dir_all(paths.manifest_file()).unwrap();
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(sample()))
+            .mount(&server)
+            .await;
+        let m = download_manifest(&reqwest::Client::new(), &paths, &server.uri())
+            .await
+            .unwrap();
+        assert_eq!(m.latest.release, "1.21.11");
+        let left: Vec<_> = std::fs::read_dir(paths.manifest_file().parent().unwrap())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 1, "no temp file may stay behind: {left:?}");
     }
 }

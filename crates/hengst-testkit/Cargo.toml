@@ -1,0 +1,27 @@
+# DEV ONLY. This crate and its binary `hengst-mock` are test tools: no shipped binary may depend on
+# them (`tests/release_isolation.rs` enforces it) and a release workflow must package by explicit
+# artifact name (`-p hengst-cli`, `-p hengst-desktop`), never by globbing target/release/*.exe.
+[package]
+name = "hengst-testkit"
+version.workspace = true
+edition.workspace = true
+# Same as the core it depends on; the MSRV CI job does not build this crate.
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Mock Microsoft, Xbox, Minecraft, Mojang and Fabric services for tests. Dev only: never a normal dependency of a shipped binary."
+
+[dependencies]
+base64.workspace = true
+hengst-core = { path = "../hengst-core" }
+reqwest.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+url.workspace = true
+wiremock.workspace = true
+zip.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

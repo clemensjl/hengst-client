@@ -133,6 +133,71 @@ pub fn unique_temp(dest: &Path) -> PathBuf {
     PathBuf::from(tmp)
 }
 
+/// Writes `bytes` to `file` through a temp file next to it and a rename, so a reader never sees a
+/// partial file. Creates the parent folder; a failed rename removes the temp file. No fsync: the
+/// callers write caches that are fetched again when they are missing or damaged.
+pub(crate) async fn write_atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    let tmp = unique_temp(file);
+    tokio::fs::write(&tmp, bytes).await?;
+    if let Err(e) = tokio::fs::rename(&tmp, file).await {
+        let _ = tokio::fs::remove_file(&tmp).await;
+        return Err(e);
+    }
+    Ok(())
+}
+
+/// Whether `write_atomic_sync` may replace a file that is already there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Replace {
+    Always,
+    /// Fails with `AlreadyExists` and leaves the existing file alone.
+    Never,
+}
+
+/// The sync sibling of `write_atomic` for data that must not be cut off: temp file next to `file`,
+/// flushed (`sync_all`), then a rename (`Replace::Always`) or a hard link (`Replace::Never`, which
+/// refuses an existing target; on a volume without hard links the file is created directly with
+/// create-new semantics, which is no longer all-or-nothing). Never creates parent folders. A failed
+/// write removes the temp file.
+pub(crate) fn write_atomic_sync(
+    file: &Path,
+    bytes: &[u8],
+    replace: Replace,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let tmp = unique_temp(file);
+    let result = (|| {
+        let mut f = std::fs::File::create_new(&tmp)?;
+        f.write_all(bytes)?;
+        f.sync_all()?;
+        drop(f);
+        match replace {
+            Replace::Always => std::fs::rename(&tmp, file),
+            Replace::Never => match std::fs::hard_link(&tmp, file) {
+                Ok(()) => Ok(()),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
+                Err(_) => {
+                    let mut f = std::fs::File::create_new(file)?;
+                    let written = f.write_all(bytes).and_then(|()| f.sync_all());
+                    drop(f);
+                    if written.is_err() {
+                        let _ = std::fs::remove_file(file);
+                    }
+                    written
+                }
+            },
+        }
+    })();
+    // After a rename the temp file is gone; after a hard link or a failure it is not.
+    if result.is_err() || replace == Replace::Never {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result
+}
+
 /// How long a temp file of another process must have been untouched before it counts as left over
 /// by a crashed run. Real writes finish within seconds.
 const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 60);
@@ -179,11 +244,17 @@ pub fn remove_stale_temps(dest: &Path) {
 
 /// Components Windows strips or maps to something else: trailing dots and spaces, and device
 /// names (with or without an extension, any case).
-fn is_windows_reserved(name: &str) -> bool {
+pub(crate) fn is_windows_reserved(name: &str) -> bool {
     if name.ends_with('.') || name.ends_with(' ') {
         return true;
     }
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
+    // Windows ignores spaces before the extension dot: `AUX .txt` is the device `AUX`.
+    let stem = name
+        .split('.')
+        .next()
+        .unwrap_or(name)
+        .trim_end_matches(' ')
+        .to_ascii_uppercase();
     matches!(
         stem.as_str(),
         "CON"
@@ -269,6 +340,9 @@ mod tests {
             "a/COM1",
             "a/lpt9.jar",
             "prn",
+            "a/AUX .x",
+            "a/CON .txt",
+            "a/nul  .tar.gz",
             "a/a.jar:s",
             "//server/share/x",
         ] {
@@ -326,6 +400,32 @@ mod tests {
         ] {
             assert!(validate_id(bad).is_err(), "{bad:?} must be rejected");
         }
+    }
+
+    #[test]
+    fn write_atomic_sync_replaces_or_refuses_and_never_creates_folders() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("f.json");
+        write_atomic_sync(&file, b"one", Replace::Never).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"one");
+        let err = write_atomic_sync(&file, b"two", Replace::Never).unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&file).unwrap(), b"one");
+        write_atomic_sync(&file, b"three", Replace::Always).unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"three");
+        let missing = dir.path().join("no").join("f.json");
+        assert!(write_atomic_sync(&missing, b"x", Replace::Always).is_err());
+        assert!(write_atomic_sync(&missing, b"x", Replace::Never).is_err());
+        assert!(!dir.path().join("no").exists());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(
+            left,
+            [std::ffi::OsString::from("f.json")],
+            "no temp file is left"
+        );
     }
 
     #[test]
