@@ -11,7 +11,13 @@ import {
   stopMock,
   type Mock,
 } from "./support/app.ts";
-import { abortMarker, guardFailure, portInUse } from "./support/guard.ts";
+import {
+  abortMarker,
+  guardFailure,
+  listenerIsOurs,
+  listenerPids,
+  portInUse,
+} from "./support/guard.ts";
 
 const DRIVER_PORT = 4444;
 const NATIVE_DRIVER = resolve(import.meta.dirname, ".driver/msedgedriver.exe");
@@ -22,9 +28,24 @@ let mock: Mock | undefined;
 let tauriDriver: ChildProcess | undefined;
 let driverError: Error | undefined;
 
-async function waitForPort(port: number, ms: number): Promise<void> {
+/**
+ * Waits until our tauri-driver listens on `port`, and proves the listener is that process: the
+ * owning PID of every listener on the port must be `tauriDriver.pid`. A foreign listener (one that
+ * took the port after the free-port check, or that binds beside ours) fails this instead of
+ * getting our sessions. This holds at the moment of the check, right before the session is
+ * created; the data-folder guard in `before` stays the check that the app really runs on ours.
+ */
+async function waitForOurListener(port: number, ms: number): Promise<void> {
   const until = Date.now() + ms;
-  while (!(await portInUse(port))) {
+  for (;;) {
+    if (!driverRunning()) throw new Error(`it is not running (${driverError ?? "it exited"})`);
+    const pids = await listenerPids(port);
+    if (listenerIsOurs(pids, tauriDriver?.pid)) return;
+    if (pids.some((pid) => pid !== tauriDriver?.pid)) {
+      throw new Error(
+        `port ${port} is held by process ${pids.join(", ")}, not by our tauri-driver`,
+      );
+    }
     if (Date.now() > until) throw new Error(`nothing listens on port ${port}`);
     await new Promise((done) => setTimeout(done, 100));
   }
@@ -45,7 +66,8 @@ async function abortRun(reason: string, withSession: boolean): Promise<never> {
   } catch {
     // The exit code below still fails the run.
   }
-  if (tauriDriver?.pid) killTree(tauriDriver.pid);
+  // Only a driver that still runs: the PID of one that exited may belong to another process now.
+  if (tauriDriver?.pid && tauriDriver.exitCode === null) killTree(tauriDriver.pid);
   if (withSession) await browser.deleteSession().catch(() => {});
   if (mock && mock.process.exitCode === null) mock.process.kill();
   if (home) removeHome(home);
@@ -119,13 +141,10 @@ export const config: WebdriverIO.Config = {
       driverError = e;
     });
     try {
-      await waitForPort(DRIVER_PORT, 15_000);
+      await waitForOurListener(DRIVER_PORT, 15_000);
     } catch (e) {
-      await abortRun(`tauri-driver did not start: ${driverError ?? String(e)}`, false);
+      await abortRun(`tauri-driver did not start: ${String(e)}`, false);
     }
-    // The listener must be ours: a driver that failed to bind exits.
-    await new Promise((done) => setTimeout(done, 300));
-    if (!driverRunning()) await abortRun("our tauri-driver is not running", false);
   },
 
   // The app must run on the temp folder behind our driver: anything else, including a failed

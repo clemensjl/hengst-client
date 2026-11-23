@@ -3,6 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { singleByRole } from "./roles.ts";
 
 /** The workspace's debug binaries: `pnpm e2e` does not build them. */
 const TARGET = resolve(import.meta.dirname, "../../../../target/debug");
@@ -166,11 +167,7 @@ export function focusedName(): Promise<string> {
   });
 }
 
-/**
- * The displayed element with this role and accessible name (computed as in `focusedName`), waited
- * for. Covers explicit roles and the implicit ones the specs need: `heading` (h1 to h6), `button`,
- * `checkbox`, `textbox`.
- */
+/** The single displayed element with this role and accessible name (`singleByRole`), waited for. */
 export async function byRole(
   role: string,
   name: string,
@@ -180,43 +177,10 @@ export async function byRole(
   await browser.waitUntil(
     async () => {
       found = (await browser.execute(
-        (wantedRole, wantedName) => {
-          const implicit: Record<string, string> = {
-            heading: "h1,h2,h3,h4,h5,h6",
-            button: "button",
-            checkbox: 'input[type="checkbox"]',
-            textbox: 'input:not([type]),input[type="text"],textarea',
-          };
-          const selector = [`[role="${wantedRole}"]`, implicit[wantedRole]]
-            .filter(Boolean)
-            .join(",");
-          const text = (node: Element | null) =>
-            (node?.textContent ?? "").replace(/\s+/g, " ").trim();
-          const nameOf = (el: Element) => {
-            const label = el.getAttribute("aria-label");
-            if (label) return label;
-            const ids = el.getAttribute("aria-labelledby");
-            if (ids) {
-              return ids
-                .split(/\s+/)
-                .map((id) => text(document.getElementById(id)))
-                .join(" ");
-            }
-            if (el.id) {
-              const forLabel = document.querySelector(`label[for="${el.id}"]`);
-              if (forLabel) return text(forLabel);
-            }
-            const wrapping = el.closest("label");
-            return wrapping ? text(wrapping) : text(el);
-          };
-          const visible = (el: Element) => el.getClientRects().length > 0;
-          const all = [...document.querySelectorAll(selector)].filter(
-            (el) => visible(el) && nameOf(el) === wantedName,
-          );
-          return all.length === 1 ? all[0] : null;
-        },
+        singleByRole,
         role,
         name,
+        true,
       )) as unknown as WebdriverIO.Element | null;
       return found !== null;
     },

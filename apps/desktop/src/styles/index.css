@@ -295,9 +295,10 @@
   }
 
   /* The rule Base UI would inject as an inline <style>, which the CSP blocks (its style elements
-     are turned off in AppRoot.tsx). Base UI only sets this class on a select popup aligned with its
-     trigger; components/ui/select.tsx sets alignItemWithTrigger={false}, so it matches nothing
-     today. Kept so that turning the alignment on later does not bring back a visible scrollbar. */
+     are turned off in AppRoot.tsx). Base UI sets this class in two cases: on a select popup aligned
+     with its trigger, and on a Select.List that has scroll arrows. components/ui/select.tsx sets
+     alignItemWithTrigger={false} and renders no scroll arrows, so it matches nothing today. Kept
+     so that turning either on later does not bring back a visible scrollbar. */
   .base-ui-disable-scrollbar {
     scrollbar-width: none;
   }

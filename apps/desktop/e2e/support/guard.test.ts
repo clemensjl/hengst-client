@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { createServer, type Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { abortMarker, guardFailure, portInUse } from "./guard.ts";
+import { abortMarker, guardFailure, listenerIsOurs, listenerPids, portInUse } from "./guard.ts";
 
 let server: Server | undefined;
 afterEach(async () => {
@@ -30,6 +30,32 @@ describe("portInUse", () => {
     await new Promise<void>((done) => server!.close(() => done()));
     server = undefined;
     expect(await portInUse(port)).toBe(false);
+  });
+});
+
+describe("listenerPids", () => {
+  it("names the process that listens on the port", async () => {
+    const port = await listen();
+    expect(await listenerPids(port)).toEqual([process.pid]);
+  });
+
+  it("is empty for a free port", async () => {
+    const port = await listen();
+    await new Promise<void>((done) => server!.close(() => done()));
+    server = undefined;
+    expect(await listenerPids(port)).toEqual([]);
+  });
+});
+
+describe("listenerIsOurs", () => {
+  it("only when every listener on the port is our driver", () => {
+    expect(listenerIsOurs([42], 42)).toBe(true);
+    expect(listenerIsOurs([42, 42], 42)).toBe(true);
+    expect(listenerIsOurs([], 42)).toBe(false);
+    expect(listenerIsOurs([7], 42)).toBe(false);
+    // A second process bound to the same port next to ours.
+    expect(listenerIsOurs([42, 7], 42)).toBe(false);
+    expect(listenerIsOurs([42], undefined)).toBe(false);
   });
 });
 
