@@ -653,6 +653,15 @@ describe("SignInDialog click guards and stale events", () => {
     expect(await within(dialog()).findByText("WXYZ")).toBeTruthy();
   });
 
+  it("under StrictMode, use a code instead during the browser wait starts the code", async () => {
+    const backend = await setup(undefined, { strict: true });
+    await startBrowser(backend);
+    act(() => backend.emit({ event: "browserOpened" }));
+    fireEvent.click(button("Use a code instead"));
+    await waitFor(() => expect(backend.count("login_start")).toBe(2));
+    expect(backend.of("login_start")[1]).toMatchObject({ method: "deviceCode" });
+  });
+
   it("use a code instead during the final save starts nothing", async () => {
     const backend = await setup();
     await startBrowser(backend);

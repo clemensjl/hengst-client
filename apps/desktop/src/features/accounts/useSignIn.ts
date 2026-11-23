@@ -178,9 +178,11 @@ export function useSignIn(language: Language): SignIn {
   }, []);
 
   // The dialog went away: nothing it started may speak to it any more, and a sign-in nobody
-  // watches is cancelled (the close paths cancel first; this is the net under them).
-  useEffect(
-    () => () => {
+  // watches is cancelled (the close paths cancel first; this is the net under them). StrictMode
+  // runs this cleanup once right after mounting and then mounts again: the setup undoes `leaving`.
+  useEffect(() => {
+    leaving.current = false;
+    return () => {
       leaving.current = true;
       attempt.current++;
       const left = stateRef.current;
@@ -188,9 +190,8 @@ export function useSignIn(language: Language): SignIn {
       if (!cancelled.current && isActive(left) && left.phase !== "completing" && id !== null) {
         void api.loginCancel(id).catch(() => {});
       }
-    },
-    [],
-  );
+    };
+  }, []);
 
   return { state, start, cancel, switchToCode, reopen };
 }

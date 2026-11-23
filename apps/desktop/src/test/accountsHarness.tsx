@@ -1,4 +1,5 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
+import { StrictMode } from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { toast } from "sonner";
 import { afterEach, beforeEach, expect, vi } from "vitest";
@@ -36,15 +37,21 @@ export function installAccountsTestLifecycle() {
 /** The chip and the dialogs, as the app mounts them, with the list already loaded. */
 export async function setup(
   accounts = [mira],
-  options: { canSignIn?: boolean; open?: { id: string; name: string } | null | "none" } = {},
+  options: {
+    canSignIn?: boolean;
+    open?: { id: string; name: string } | null | "none";
+    /** Renders inside `<StrictMode>`, as the dev build does (effects run, clean up, run again). */
+    strict?: boolean;
+  } = {},
 ) {
   const backend = fakeBackend({ accounts, canSignIn: options.canSignIn ?? true });
-  render(
+  const tree = (
     <TooltipProvider delay={0}>
       <AccountChip />
       <AccountDialogs />
-    </TooltipProvider>,
+    </TooltipProvider>
   );
+  render(options.strict ? <StrictMode>{tree}</StrictMode> : tree);
   await useApp.getState().loadAccounts();
   const resign = options.open === "none" ? undefined : (options.open ?? null);
   if (resign !== undefined) act(() => useApp.getState().openSignIn(resign));
