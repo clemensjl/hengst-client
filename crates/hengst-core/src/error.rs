@@ -29,7 +29,7 @@ pub enum Error {
         loader: String,
         game: String,
         /// A likely reason the launcher can tell without asking anything.
-        hint: Option<&'static str>,
+        hint: Option<crate::loaders::LoaderHint>,
     },
     #[error("{loader} {version} is not available for Minecraft {game} (see `hengst loaders {loader} {game}`)")]
     UnknownLoaderVersion {
@@ -74,6 +74,30 @@ pub enum Error {
         code: i32,
         log: PathBuf,
     },
+    #[error("another install of {label} is still running after {waited_secs} s (lock {}); try again later", .lock.display())]
+    LockTimeout {
+        label: String,
+        waited_secs: u64,
+        lock: PathBuf,
+    },
+    #[error("instance {id} does not exist")]
+    InstanceNotFound { id: String },
+    #[error("instance folder {id} already exists")]
+    InstanceExists { id: String },
+    #[error("instance {id} was saved by a newer Hengst Client (format {format})")]
+    InstanceFormatTooNew { id: String, format: u32 },
+    #[error("invalid instance name: {0}")]
+    InvalidInstanceName(String),
+    #[error("instance {id} cannot be read: {reason}")]
+    InstanceUnreadable { id: String, reason: String },
+    #[error("instance folder {id} is a link, which the launcher does not follow")]
+    InstanceLinked { id: String },
+    #[error("instance {id} was only partly moved to the Recycle Bin")]
+    InstancePartlyMoved { id: String },
+    #[error("moving instance {id} to the Recycle Bin failed, and what it left behind could not be checked")]
+    InstanceMoveUnknown { id: String },
+    #[error("the operation was cancelled")]
+    Cancelled,
     #[error("Windows Credential Manager error: {0}")]
     CredentialStore(String),
     #[error(transparent)]
@@ -86,8 +110,27 @@ pub enum Error {
     Zip(#[from] zip::result::ZipError),
 }
 
-fn hint_suffix(hint: &Option<&'static str>) -> String {
+fn hint_suffix(hint: &Option<crate::loaders::LoaderHint>) -> String {
     hint.map(|h| format!(" ({h})")).unwrap_or_default()
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lock_timeout_and_cancel_keep_their_texts() {
+        let e = Error::LockTimeout {
+            label: "forge for Minecraft 1.20.1".into(),
+            waited_secs: 600,
+            lock: PathBuf::from("C:/h/tmp/x.lock"),
+        };
+        assert_eq!(
+            e.to_string(),
+            "another install of forge for Minecraft 1.20.1 is still running after 600 s (lock C:/h/tmp/x.lock); try again later"
+        );
+        assert_eq!(Error::Cancelled.to_string(), "the operation was cancelled");
+    }
+}

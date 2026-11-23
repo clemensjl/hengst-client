@@ -1,0 +1,7 @@
+# Install scripts of the WebdriverIO dependencies stay off: edgedriver and geckodriver would
+# download browser drivers (the e2e run brings its own msedgedriver, see e2e/setup-driver.ps1),
+# and esbuild (through tsx) works from its platform package without its script.
+allowBuilds:
+  edgedriver: false
+  esbuild: false
+  geckodriver: false

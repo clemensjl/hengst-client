@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "The main window may call the app commands and nothing else.",
+  "windows": ["main"],
+  "permissions": ["allow-app-info", "allow-subscribe-events", "allow-game-versions", "allow-settings-get", "allow-settings-update", "allow-open-url", "allow-accounts-list", "allow-account-select", "allow-account-remove", "allow-login-start", "allow-login-cancel", "allow-login-reopen-browser", "allow-loader-kinds", "allow-loader-versions", "allow-instances-list", "allow-instance-create", "allow-instance-select", "allow-instance-delete", "allow-open-location"]
+}

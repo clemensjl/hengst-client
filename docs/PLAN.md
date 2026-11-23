@@ -193,6 +193,7 @@ Priorität: **M** = MVP (v0.1), **1** = v1.0, **S** = später.
 - Launch-Matrix in CI (Windows-Runner, headless mit Mesa/llvmpipe): je eine Version aus jedem Bereich der Tabelle in 4 startet bis Titelbildschirm, Log wird auf Fehler geprüft.
 - Oberfläche: Komponententests, Sicht- und Funktionsprüfung mit Agentfenster.
 - Benchmark-Läufe vor jedem Release mit Ergebnistabelle im Release-Text.
+- Das Testkit `hengst-testkit` und sein Programm `hengst-mock` sind reine Testwerkzeuge und gehören nie in ein Release: Release-Workflows packen nach ausdrücklichem Artefaktnamen (`hengst`, `hengst-desktop`), nie per Platzhalter über `target/release`.
 - Code-Review pro PR (code-review-Skill), Security-Review vor v1.0.
 
 ## 11. Fahrplan

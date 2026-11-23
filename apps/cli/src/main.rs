@@ -332,16 +332,6 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn loader_name(kind: LoaderKind) -> &'static str {
-    match kind {
-        LoaderKind::Fabric => "Fabric",
-        LoaderKind::Quilt => "Quilt",
-        LoaderKind::LegacyFabric => "Legacy Fabric",
-        LoaderKind::Forge => "Forge",
-        LoaderKind::NeoForge => "NeoForge",
-    }
-}
-
 /// 3402 -> "3,402".
 fn grouped(n: usize) -> String {
     let digits = n.to_string();
@@ -359,10 +349,10 @@ fn grouped(n: usize) -> String {
 fn progress_line(event: &Progress) -> Option<String> {
     Some(match event {
         Progress::ResolvingLoader { kind, game } => {
-            format!("Resolving {} version for {game}", loader_name(*kind))
+            format!("Resolving {} version for {game}", kind.display_name())
         }
         Progress::DownloadingInstaller { kind } => {
-            format!("Downloading the {} installer", loader_name(*kind))
+            format!("Downloading the {} installer", kind.display_name())
         }
         Progress::Downloading { what, count } => {
             let n = grouped(*count);
@@ -379,7 +369,7 @@ fn progress_line(event: &Progress) -> Option<String> {
             game,
         } => format!(
             "Installing {} {version} for {game} (runs the official installer locally)",
-            loader_name(*kind)
+            kind.display_name()
         ),
         Progress::InstallLog { path } => format!("Install log: {}", path.display()),
         Progress::InstallStep { index, total, name } => {

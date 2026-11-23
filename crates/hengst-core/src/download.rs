@@ -1,4 +1,4 @@
-use crate::paths::{remove_stale_temps, unique_temp, validate_sha1};
+use crate::paths::{remove_stale_temps, unique_temp, validate_sha1, write_atomic};
 use crate::progress::{self, Progress, ProgressSink, Transfer};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -312,22 +312,9 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
     if let Some(file) = cache_file {
         // Best effort: the hash is verified in memory; a locked or unwritable cache only means
         // it is asked for again next time.
-        let _ = write_cache_entry(&file, &hash).await;
+        let _ = write_atomic(&file, hash.as_bytes()).await;
     }
     Ok((hash, false))
-}
-
-async fn write_cache_entry(file: &Path, hash: &str) -> std::io::Result<()> {
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp = unique_temp(file);
-    tokio::fs::write(&tmp, hash).await?;
-    if let Err(e) = tokio::fs::rename(&tmp, file).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
-    Ok(())
 }
 
 /// Fetches JSON metadata (at most `MAX_JSON_BYTES`).
@@ -342,6 +329,27 @@ pub async fn get_bytes_limited(
     url: &str,
     limit: usize,
 ) -> Result<Vec<u8>> {
+    let resp = client.get(url).send().await.map_err(|source| Error::Http {
+        url: url.to_string(),
+        source,
+    })?;
+    let status = resp.status();
+    if !status.is_success() {
+        return Err(Error::Status {
+            url: url.to_string(),
+            status: status.as_u16(),
+        });
+    }
+    read_limited(resp, url, limit).await
+}
+
+/// Reads the body of `resp` (from `url`), at most `limit` bytes, enforced on the bytes actually
+/// read; a larger body is `Error::TooLarge` and is never returned.
+pub(crate) async fn read_limited(
+    mut resp: reqwest::Response,
+    url: &str,
+    limit: usize,
+) -> Result<Vec<u8>> {
     let http = |source| Error::Http {
         url: url.to_string(),
         source,
@@ -350,14 +358,6 @@ pub async fn get_bytes_limited(
         url: url.to_string(),
         limit,
     };
-    let mut resp = client.get(url).send().await.map_err(http)?;
-    let status = resp.status();
-    if !status.is_success() {
-        return Err(Error::Status {
-            url: url.to_string(),
-            status: status.as_u16(),
-        });
-    }
     if resp.content_length().is_some_and(|n| n > limit as u64) {
         return Err(too_large());
     }

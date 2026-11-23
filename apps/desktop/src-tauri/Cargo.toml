@@ -1,0 +1,52 @@
+[package]
+name = "hengst-desktop"
+version = "0.1.0"
+edition.workspace = true
+# tauri 2.12 needs Rust 1.90; the core and the CLI keep the workspace value.
+rust-version = "1.90"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "hengst_desktop_lib"
+crate-type = ["rlib"]
+
+[[bin]]
+name = "hengst-desktop"
+path = "src/main.rs"
+
+[features]
+dev-offline = ["hengst-core/dev-offline"]
+# Makes the app load its embedded pages instead of the dev server. `tauri build` turns it on; a
+# release build without it fails to compile (see lib.rs).
+custom-protocol = ["tauri/custom-protocol"]
+# Mock services instead of Microsoft and Mojang, in-memory secrets, a visiting "browser". Debug builds
+# only (compile_error in lib.rs); the kit is not linked without it.
+e2e = ["dep:hengst-testkit"]
+
+[build-dependencies]
+tauri-build = { version = "=2.7.6", features = [] }
+
+[dependencies]
+hengst-core = { path = "../../../crates/hengst-core" }
+hengst-testkit = { path = "../../../crates/hengst-testkit", optional = true }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "=2.12.7", features = [] }
+tauri-plugin-opener = "=2.7.3"
+tauri-plugin-single-instance = "=2.5.5"
+tokio.workspace = true
+trash = "=5.4.0"
+ts-rs = "=12.0.1"
+
+[dev-dependencies]
+hengst-testkit = { path = "../../../crates/hengst-testkit" }
+static_assertions = "1.1"
+tauri = { version = "=2.12.7", features = ["test"] }
+tempfile.workspace = true
+wiremock.workspace = true
+zip.workspace = true
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Registry", "Win32_System_Threading", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
