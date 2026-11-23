@@ -103,7 +103,28 @@ HUD modules added in M1a, all off at first start (enable them in the settings): 
 
 ## What was verified (M1a)
 
-Not yet: the launcher run with the shipped jars (plan task 19) is still to be done. Until then only the unit tests, the adapter tests and the in-game suites of the development build have run; this section is filled after the launcher run.
+Checked on 2026-11-22 and 2026-11-23, one machine (AMD Ryzen 9 5900X, 32 GB, Windows 11 Pro).
+
+In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9, both phases): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
+
+Cost per module per frame (spec 8.8; time the core spends per module, submit time on 1.21.11 and 26.3, including the GL calls on 1.8.9; median of the runs' medians on an otherwise idle machine, in microseconds):
+
+| Version | Runs | Four M0 modules (budget 50) | All eleven (budget 120) | Marginal per new module (budget 10) |
+|---|---|---|---|---|
+| 1.8.9 | 6 | 19.2 (18.2 to 44.5) | 46.5 (30.0 to 69.5) | 1.6 to 6.0 |
+| 1.21.11 | 5 | 23.6 (19.5 to 26.8) | 38.3 (30.7 to 39.0) | 2.1 to 3.4 |
+| 26.3 | 6 | 24.6 (22.0 to 25.9) | 35.7 (34.0 to 36.4) | 1.9 to 3.7 |
+
+The budget definitions (marginal cost, median of runs) are rulings that the project owner has not confirmed yet. A cross-check with paired alternating windows (no per-module timer) agrees within about 1 microsecond.
+
+The shipped jars from `buildAll` (sizes and SHA-256 in the Task 19 report; each contains `LICENSE_hengst`, the jar scan found no test entry), installed into fresh instances started by the Hengst launcher (`hengst launch <version> --loader fabric|legacy-fabric --offline Dev`, a `dev-offline` build of the CLI, loader 0.20.1, Fabric API 0.141.6 / 0.166.2, Legacy Fabric API 1.13.5; Java 8 on 1.8.9, 21 on 1.21.11, 25 on 26.3 as picked by the launcher; sound muted):
+
+- All three: the loader lists `hengst` with its nested common jar; the log has `[hengst] loaded on <version>`; with `-Dmixin.debug.verbose=true` every mod mixin is applied (1.21.11 and 1.8.9 to intermediary classes); no warning or exception from the mod; the game closes cleanly with the window's close command. `options.txt` has the four key lines `key_key.hengst.settings`, `.hud_editor`, `.stopwatch.toggle`, `.stopwatch.reset` (on 1.8.9 after the options were saved once; the game writes the file only then). The mod writes `config/hengst/profiles/default.json` (keys `schema`, `modules`; no paths, no account data) once something changed; a start without any change writes no config file.
+- 1.21.11 and 26.3: the in-game suite above was also run inside the launcher-started game against the shipped jar, with the test jar and Fabric's client game-test module added (`JAVA_TOOL_OPTIONS=-Dfabric.client.gametest`): both phases pass (48 + 5 checks). This is the shipped jar plus a separate test driver jar, not the shipped jar alone.
+- 1.21.11 and 1.8.9, the shipped jar alone, driven by window messages and checked on the game's F2 screenshots: a profile written by the released M0 build is loaded with its positions (FPS middle right, CPS on the hotbar on 1.8.9, Coordinates off); switching Direction on in the settings draws it and rewrites the file with the four M0 entries unchanged and the seven new entries added; after a restart Direction is still on and the other six new modules, switched on in the file before the start, draw plausible text (direction, `0.0 m/s`, `0:00.0`, the time, `RAM ...`; ping and server address nothing in single player); the controls screen lists the category Hengst with the four translated binding names. 1.8.9 also: the first start draws exactly the four M0 modules.
+- 26.3: SDL3 takes no posted keys and the window cannot be captured, so the M0 profile was checked only by a start: no warning, the file is left unchanged (it is rewritten on the first change, which the suite covers with the current format).
+
+Not verified: multiplayer (ping and server address with a value, a server change, the player list over the HUD): it needs a server, and running the server software means accepting Mojang's EULA, which is the owner's decision. Measurements on other hardware. The cause of a state on 1.8.9 in which every measured case took about 2.3 times as long (three of six runs) and of a single 1192-byte allocation in the key dispatch about 67 to 80 s after game start (spec 7.3, 8.8). On 26.3 a real key press or screen capture in a launcher-started game outside the in-game suite.
 
 ## What was verified (M0, 2026-11-21)
 

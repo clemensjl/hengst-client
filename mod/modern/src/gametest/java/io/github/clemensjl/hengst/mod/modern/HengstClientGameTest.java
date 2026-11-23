@@ -78,6 +78,7 @@ import net.minecraft.client.gui.screens.inventory.InventoryScreen;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsList;
 import net.minecraft.client.gui.screens.options.controls.KeyBindsScreen;
 import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.contents.TranslatableContents;
 import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.entity.player.Player;
 import org.slf4j.Logger;
@@ -841,8 +842,10 @@ public final class HengstClientGameTest implements FabricClientGameTest {
                 if (e instanceof KeyBindsList.CategoryEntry) {
                     out.add("C:" + ((AbstractWidget) e.children().get(0)).getMessage().getString());
                 } else if (e instanceof KeyBindsList.KeyEntry) {
-                    KeyMapping key = (KeyMapping) field(e, "key");
-                    Component name = (Component) field(e, "name");
+                    // By type, not by name: in a production run (intermediary names on 1.21.11) the fields of game
+                    // classes are not called "key" and "name".
+                    KeyMapping key = (KeyMapping) fieldOfType(e, KeyMapping.class);
+                    Component name = nameOf(e, key);
                     out.add("K:" + key.getName() + "=" + name.getString());
                 }
             }
@@ -1988,6 +1991,32 @@ public final class HengstClientGameTest implements FabricClientGameTest {
             }
         }
         throw new AssertionError("[hengst-gametest] FAIL no field " + name + " in " + owner.getClass());
+    }
+
+    /** The entry's shown name: its Component field that translates the binding's own key. */
+    private static Component nameOf(Object entry, KeyMapping key) {
+        for (Field f : entry.getClass().getDeclaredFields()) {
+            if (f.getType() == Component.class) {
+                Component c = (Component) get(f, entry);
+                if (c != null && c.getContents() instanceof TranslatableContents tc && tc.getKey().equals(key.getName())) {
+                    return c;
+                }
+            }
+        }
+        throw new AssertionError("[hengst-gametest] FAIL no name translating " + key.getName() + " in " + entry.getClass());
+    }
+
+    /** The one field declared in the owner's own class with exactly this type. */
+    private static Object fieldOfType(Object owner, Class<?> type) {
+        Field found = null;
+        for (Field f : owner.getClass().getDeclaredFields()) {
+            if (f.getType() == type) {
+                check(found == null, "one field of type " + type.getSimpleName() + " in " + owner.getClass());
+                found = f;
+            }
+        }
+        check(found != null, "a field of type " + type.getSimpleName() + " in " + owner.getClass());
+        return get(found, owner);
     }
 
     private static int constant(Class<?> owner, String name) {
