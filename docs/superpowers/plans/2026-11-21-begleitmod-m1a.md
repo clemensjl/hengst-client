@@ -10,6 +10,8 @@
 
 **Spec:** `docs/begleitmod-spec.md` (Abschnitte 4 bis 9 und 12; Meilenstein M1a laut Fahrplan). Dazu die Entscheidungen D1 bis D7, F8 bis F10 und die Lehren aus `.superpowers/sdd/2026-11-20-begleitmod-m0-foundation/progress.md` (Abschnitt "Final review" und die Einträge zu Task 11 bis 14).
 
+**Platzhalter:** `<mod-worktree>` ist der Worktree der Mod (Branch der Mod), `<launcher-checkout>` der Checkout des Launchers daneben, `<jdk-25>` das Verzeichnis des JDK 25, das Gradle nutzt.
+
 **Ausgangslage:** Worktree `<mod-worktree>`, Branch `begleitmod-m0`, nach der Fix-Welle des M0-Abschlussreviews (F1 bis F7, F11 bis F15: Lizenzdatei in den Jars, Dimmung des Einstellungsbildschirms, Optionen der Keystrokes im Tick zwischengespeichert, explizite Versionsmengen, Beschriftungsschlüssel je Funktion, Spec 8.8 als absolutes Budget, neue Meilensteintabelle). Dieser Plan setzt diesen Stand voraus.
 
 ## Global Constraints

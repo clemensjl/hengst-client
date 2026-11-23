@@ -86,7 +86,7 @@ With the Hengst launcher: `hengst launch <version> --loader fabric` (or `legacy-
 
 Both keys open their screen only in a world with no other screen open. The stopwatch has two key bindings, "Stopwatch start/stop" and "Stopwatch reset", both unbound by default: bind them under Options > Controls in the category "Hengst" (the stopwatch's options in the settings say so). Do not put both on the same physical key: on 1.21.11 and 26.3 the stopwatch then toggles and resets in the same tick and ends stopped at zero, and on 1.8.9 only one of the two bindings receives the key.
 
-HUD modules added in M1a, all off at first start (enable them in the settings): Direction, Ping, Clock, Server address, Memory, Speed, Stopwatch (the stopwatch sits in the group Comfort, the others in HUD). Ping and Server address show something only on a multiplayer server.
+HUD modules added in M1a, all off at first start (enable them in the settings): Direction, Ping, Clock, Server address, Memory, Speed, Stopwatch (the stopwatch sits in the group Comfort, the others in HUD). Ping and Server address show something only on a multiplayer server. Coordinates, Direction and Speed show nothing while the server asks for reduced debug info (the game rule `reducedDebugInfo`, `reduced_debug_info` from 1.21.11) or the game's own reduced-debug-info option is set: the game's F3 screen hides the position and the facing then, and the HUD does not show what F3 withholds.
 
 ## Known limitations
 
@@ -95,6 +95,7 @@ HUD modules added in M1a, all off at first start (enable them in the settings): 
 - Ping and Server address were not checked against a real server in the automated in-game tests (in single player they show nothing by design); their cost per frame on a server is not measured.
 - A server-set creative fly speed above 100 m/s reads as a teleport to the Speed module and shows 0. At two decimals a speed on a rounding boundary can flicker between two values (sneaking, about 1.295 m/s).
 - After a profile or settings change the speed shows 0 for one tick, and ping and server address are blank for one tick.
+- The clock reads the system time zone once, when the mod loads; a time zone change of the operating system during a session is not followed (daylight saving changes are).
 - A font change through a resource pack without a language change leaves cached text widths stale until the next text or language change (no platform signal exists).
 - Proxy networks that switch the backend server behind one address are not detected as a server change. The server address is compared as typed, case-sensitive.
 - A feature that a server restriction would switch off while it is enabled in the configuration gets no "disabled" notification yet (a running stopwatch would keep running invisibly); to be defined with the restriction rules in M4.
@@ -105,7 +106,7 @@ HUD modules added in M1a, all off at first start (enable them in the settings): 
 
 Checked on 2026-11-22 and 2026-11-23, one machine (AMD Ryzen 9 5900X, 32 GB, Windows 11 Pro).
 
-In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9; full phase last green on commit 93e9b05 on all three versions, restart phase last green on 60ad758; not re-run on the final commit 01ed2da, see below): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
+In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9; full phase last green on commit 93e9b05 on all three versions, restart phase last green on 60ad758; not re-run on any later commit, see below): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
 
 Cost per module per frame (spec 8.8; time the core spends per module, submit time on 1.21.11 and 26.3, including the GL calls on 1.8.9; median of the runs' medians on an otherwise idle machine, in microseconds):
 
@@ -127,7 +128,8 @@ The shipped jars from `buildAll` (sizes and SHA-256 in the Task 19 report; each 
 Not verified: multiplayer (ping and server address with a value, a server change, the player list over the HUD): it needs a server, and running the server software means accepting Mojang's EULA, which is the owner's decision. Measurements on other hardware. The cause of a state on 1.8.9 in which the measured cases with modules took 1.6 to 2.6 times as long (the empty hook not; three of six runs: 1, 5, 6) and of a single 1192-byte allocation in the key dispatch about 67 to 80 s after game start (spec 7.3, 8.8). On 26.3 a real key press or screen capture in a launcher-started game outside the in-game suite.
 
 Also not verified yet:
-- The three in-game suites on the final commit 01ed2da (they last passed as described above); on 26.3 the development suite has never run with the controls-screen reader changed in 01ed2da (on 1.21.11 it passed inside the launcher-started game).
+- The three in-game suites on any commit after 93e9b05 (full phase) and 60ad758 (restart phase); on 26.3 the development suite has never run with the controls-screen reader changed in 01ed2da (on 1.21.11 it passed inside the launcher-started game). The code changes of the final fix wave (Speed releases the world reference when switched off; Coordinates, Direction and Speed hide under reduced debug info; the guarded hook registration at startup; test-only constructors moved out of the shipped code) have unit tests but no in-game run yet, and the new in-game step for reduced debug info has not run.
+- The Server address module on Realms: it may show the raw host address of the Realms server (the module is off by default; the address is never logged or stored).
 - The 1.8.9 suite against the shipped jar: on the shipped 1.8.9 jar the stopwatch (bind, start, stop, reset), the language switch, and the settings groups and scroll bar at 320 x 240 were not exercised (only on the development classes).
 - On 26.3 without the test jar: the rewrite of an M0 profile and the seven modules drawn from a pre-seeded profile.
 - The frame-rate comparison without the mod, with the four M0 modules and with all eleven (plan task 19, step 2.7): not yet measured.
