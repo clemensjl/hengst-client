@@ -272,5 +272,7 @@
   "instances.form.creating": "Wird angelegt…",
   "instances.form.closeBusy": "Schließen geht erst, wenn die Instanz angelegt ist",
   "instances.form.nameControl": "Keine Steuerzeichen wie Tabulatoren.",
-  "instances.form.loaderKindsFailed": "Die Loader-Liste konnte nicht geladen werden."
+  "instances.form.loaderKindsFailed": "Die Loader-Liste konnte nicht geladen werden.",
+  "instances.createLoadFailed.title": "Der Dialog zum Anlegen konnte nicht geladen werden",
+  "instances.createLoadFailed.body": "Versuche es erneut. Hilft das nicht, starte Hengst Client neu."
 }

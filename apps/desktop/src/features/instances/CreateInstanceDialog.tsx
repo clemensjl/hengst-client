@@ -207,14 +207,15 @@ function CreateForm({
     if (s.status !== "ready" && s.status !== "loading") void loadVersions(ALL_KINDS);
   }, [loadVersions]);
 
-  // Mounted: false once the dialog went away, so a late answer changes nothing.
+  // Mounted: false once the dialog went away, so a late answer changes nothing. Set in the setup
+  // too: StrictMode runs setup, cleanup, setup, and the second setup must undo the cleanup.
   const mounted = useRef(true);
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
   const loadKinds = useCallback(() => {
     setKindsError(null);
     api.loaderKinds().then(

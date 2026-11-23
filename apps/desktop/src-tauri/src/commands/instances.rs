@@ -211,7 +211,8 @@ async fn lock_within(
 /// list on this event, so an event for "nothing changed" (a failed adoption wrote nothing) would
 /// be an endless reload loop. A task that panicked (`None`) announces nothing either: it may have
 /// adopted a folder first, but its answer is an error the UI shows with "Try again", while an
-/// event would make it reload into the same panic again and again.
+/// event would make it reload into the same panic again and again. The price: if that task did
+/// adopt a folder before it panicked, other listeners are not told until the next reload.
 pub(crate) fn list_announces_change<T, E>(adopted: Option<&Option<Result<Vec<T>, E>>>) -> bool {
     matches!(adopted, Some(Some(Ok(adopted))) if !adopted.is_empty())
 }

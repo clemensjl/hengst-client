@@ -1,6 +1,7 @@
 import { clearMocks } from "@tauri-apps/api/mocks";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { toast } from "sonner";
+import { StrictMode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initI18n } from "@/i18n";
@@ -358,9 +359,9 @@ describe("CreateInstanceDialog", () => {
     ).toEqual(["No loader"]);
   });
 
-  it("loader options as the backend maps Fabric: no Unstable badge, only the recommended one marked", async () => {
+  it("stable loader builds get no badge, only the recommended one is marked (the mapping itself is tested in Rust)", async () => {
     await setup(undefined, (b) => {
-      // What loader_versions answers for Fabric since the owner decision: every build stable.
+      // Stable data only: this checks the rendering, not the Fabric mapping.
       b.loaderVersions = () => ({
         versions: [
           { id: "0.20.1", stable: true },
@@ -427,5 +428,19 @@ describe("CreateInstanceDialog", () => {
     await versionsLoaded();
     expect(document.activeElement).toBe(versionTrigger());
     expect(versionTrigger().getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("under StrictMode (as main.tsx renders) the loader list still arrives", async () => {
+    instancesBackend([instance("x", { name: "Existing" })]);
+    render(
+      <StrictMode>
+        <TooltipProvider delay={0}>
+          <InstancesView />
+        </TooltipProvider>
+      </StrictMode>,
+    );
+    await waitFor(() => expect(useApp.getState().instances.status).toBe("ready"));
+    await openDialog();
+    expect(await within(dialog()).findByRole("radio", { name: "Fabric" })).toBeTruthy();
   });
 });

@@ -1,5 +1,14 @@
-import { PlusIcon, TriangleAlertIcon } from "lucide-react";
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
+import { CircleAlertIcon, PlusIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
+import {
+  Component,
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "react-i18next";
 import { Delayed } from "@/components/Delayed";
 import { Button } from "@/components/ui/button";
@@ -22,6 +31,23 @@ import { effectiveSelection } from "./selection";
  */
 const loadCreateDialog = () => import("./CreateInstanceDialog");
 const CreateInstanceDialog = lazy(loadCreateDialog);
+
+/**
+ * Catches a chunk that cannot be loaded: without it React would unmount the whole app. It renders
+ * nothing and tells the view, which closes the dialog and says so.
+ */
+class ChunkBoundary extends Component<{ onError: () => void; children: ReactNode }> {
+  state = { failed: false };
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch() {
+    this.props.onError();
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
 
 const errorOf = (e: unknown): ErrorDto =>
   e instanceof IpcError ? e.dto : { code: "internal", params: {}, action: null, detail: String(e) };
@@ -178,8 +204,15 @@ export function InstancesView() {
   // Mounted from the first opening on, so its closing animation and its draft handling run.
   const [createWanted, setCreateWanted] = useState(false);
   if (createOpen && !createWanted) setCreateWanted(true);
+  // The dialog's chunk could not be loaded; "Try again" asks for it with a fresh lazy component
+  // (a failed one keeps its rejection).
+  const [chunkFailed, setChunkFailed] = useState(false);
+  const [CreateDialog, setCreateDialog] = useState(() => CreateInstanceDialog);
+  const closeCreate = useApp((s) => s.closeCreate);
+  const openCreate = useApp((s) => s.openCreate);
   useEffect(() => {
-    void loadCreateDialog();
+    // A failure here shows when the dialog is opened (the boundary below).
+    loadCreateDialog().catch(() => {});
   }, []);
 
   useEffect(() => {
@@ -258,6 +291,34 @@ export function InstancesView() {
             extraAction={{ label: t("common.close"), onClick: () => setActionError(null) }}
           />
         )}
+        {chunkFailed && (
+          <div role="alert" className="flex flex-col gap-3 rounded-lg border bg-surface-raised p-4">
+            <div className="flex items-start gap-3">
+              <CircleAlertIcon
+                className="mt-[3px] size-[18px] shrink-0 text-danger"
+                aria-hidden="true"
+              />
+              <div className="flex min-w-0 flex-col">
+                <p className="text-body font-semibold">{t("instances.createLoadFailed.title")}</p>
+                <p className="text-small text-muted-foreground">
+                  {t("instances.createLoadFailed.body")}
+                </p>
+              </div>
+            </div>
+            <div className="pl-[30px]">
+              <Button
+                onClick={() => {
+                  setChunkFailed(false);
+                  setCreateDialog(() => lazy(loadCreateDialog));
+                  openCreate();
+                }}
+              >
+                <RefreshCwIcon aria-hidden="true" />
+                {t("common.retry")}
+              </Button>
+            </div>
+          </div>
+        )}
         {incomplete && (
           <p className="flex items-center gap-2 text-small text-muted-foreground">
             <TriangleAlertIcon className="size-4 shrink-0 text-warning" aria-hidden="true" />
@@ -290,9 +351,17 @@ export function InstancesView() {
       {createWanted && (
         // Nothing to show while the chunk loads (it was asked for when the view appeared); the
         // dialog is a layer over the view, so nothing below moves.
-        <Suspense fallback={null}>
-          <CreateInstanceDialog />
-        </Suspense>
+        <ChunkBoundary
+          onError={() => {
+            setChunkFailed(true);
+            setCreateWanted(false);
+            closeCreate();
+          }}
+        >
+          <Suspense fallback={null}>
+            <CreateDialog />
+          </Suspense>
+        </ChunkBoundary>
       )}
       {deleting && (
         <DeleteInstanceDialog
