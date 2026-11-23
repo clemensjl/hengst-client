@@ -80,16 +80,33 @@ export async function startMock(scenario: string): Promise<Mock> {
     windowsHide: true,
   });
   const lines = createInterface({ input: child.stdout! });
-  const url = await new Promise<string>((resolveUrl, reject) => {
-    const timer = setTimeout(() => reject(new Error("hengst-mock did not start in 10 s")), 10_000);
-    child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`hengst-mock exited with ${code}`)));
-    lines.once("line", (line) => {
-      clearTimeout(timer);
-      resolveUrl((JSON.parse(line) as { url: string }).url);
+  try {
+    const url = await new Promise<string>((resolveUrl, reject) => {
+      const timer = setTimeout(
+        () => reject(new Error("hengst-mock did not start in 10 s")),
+        10_000,
+      );
+      const fail = (e: Error) => {
+        clearTimeout(timer);
+        reject(e);
+      };
+      child.once("error", fail);
+      child.once("exit", (code) => fail(new Error(`hengst-mock exited with ${code}`)));
+      lines.once("line", (line) => {
+        clearTimeout(timer);
+        try {
+          resolveUrl((JSON.parse(line) as { url: string }).url);
+        } catch {
+          reject(new Error("hengst-mock's first line is not its address"));
+        }
+      });
     });
-  });
-  return { url, process: child };
+    return { url, process: child };
+  } catch (e) {
+    // Never leave a mock behind that nobody stops.
+    if (child.exitCode === null) child.kill();
+    throw e;
+  }
 }
 
 /** Closing stdin ends the mock; the PID it was started with is the fallback. */
@@ -149,14 +166,90 @@ export function focusedName(): Promise<string> {
   });
 }
 
-/** The focused element shows a focus indicator: an outline or a ring (box-shadow). */
+/**
+ * The displayed element with this role and accessible name (computed as in `focusedName`), waited
+ * for. Covers explicit roles and the implicit ones the specs need: `heading` (h1 to h6), `button`,
+ * `checkbox`, `textbox`.
+ */
+export async function byRole(
+  role: string,
+  name: string,
+  timeout?: number,
+): Promise<WebdriverIO.Element> {
+  let found: WebdriverIO.Element | null = null;
+  await browser.waitUntil(
+    async () => {
+      found = (await browser.execute(
+        (wantedRole, wantedName) => {
+          const implicit: Record<string, string> = {
+            heading: "h1,h2,h3,h4,h5,h6",
+            button: "button",
+            checkbox: 'input[type="checkbox"]',
+            textbox: 'input:not([type]),input[type="text"],textarea',
+          };
+          const selector = [`[role="${wantedRole}"]`, implicit[wantedRole]]
+            .filter(Boolean)
+            .join(",");
+          const text = (node: Element | null) =>
+            (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+          const nameOf = (el: Element) => {
+            const label = el.getAttribute("aria-label");
+            if (label) return label;
+            const ids = el.getAttribute("aria-labelledby");
+            if (ids) {
+              return ids
+                .split(/\s+/)
+                .map((id) => text(document.getElementById(id)))
+                .join(" ");
+            }
+            if (el.id) {
+              const forLabel = document.querySelector(`label[for="${el.id}"]`);
+              if (forLabel) return text(forLabel);
+            }
+            const wrapping = el.closest("label");
+            return wrapping ? text(wrapping) : text(el);
+          };
+          const visible = (el: Element) => el.getClientRects().length > 0;
+          const all = [...document.querySelectorAll(selector)].filter(
+            (el) => visible(el) && nameOf(el) === wantedName,
+          );
+          return all.length === 1 ? all[0] : null;
+        },
+        role,
+        name,
+      )) as unknown as WebdriverIO.Element | null;
+      return found !== null;
+    },
+    { timeout, timeoutMsg: `no single displayed ${role} named "${name}"` },
+  );
+  return found!;
+}
+
+/**
+ * The focused element matches `:focus-visible` and looks different from the same element without
+ * focus (an unfocused, hidden copy next to it): its outline or its ring is the focus indicator,
+ * not a shadow it always has.
+ */
 export function focusIndicatorShown(): Promise<boolean> {
   return browser.execute(() => {
-    const el = document.activeElement;
-    if (!el || el === document.body) return false;
+    const el = document.activeElement as HTMLElement | null;
+    if (!el || el === document.body || !el.matches(":focus-visible")) return false;
+    const look = (s: CSSStyleDeclaration) =>
+      `${s.outlineStyle} ${s.outlineWidth} ${s.outlineColor} | ${s.boxShadow}`;
+    const focused = look(getComputedStyle(el));
+    const copy = el.cloneNode(false) as HTMLElement;
+    copy.removeAttribute("id");
+    copy.setAttribute("aria-hidden", "true");
+    copy.tabIndex = -1;
+    copy.style.position = "absolute";
+    copy.style.visibility = "hidden";
+    copy.style.pointerEvents = "none";
+    el.after(copy);
+    const unfocused = look(getComputedStyle(copy));
+    copy.remove();
     const style = getComputedStyle(el);
-    const outline = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
-    return outline || style.boxShadow !== "none";
+    const visibleOutline = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
+    return focused !== unfocused && (visibleOutline || style.boxShadow !== "none");
   });
 }
 

@@ -2,6 +2,7 @@ import { readdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   alertDialog,
+  byRole,
   cspViolations,
   dialog,
   dialogName,
@@ -43,16 +44,20 @@ async function chooseLoader(name: string) {
   await dialog().$(`[role="radio"]=${name}`).click();
 }
 
-/** Top and height of the elements whose own text is exactly one of `texts`, inside `scope`. */
+/** Top and height of the rendered texts inside `scope` that are exactly one of `texts`. */
 async function rectsByText(scope: ReturnType<typeof $>, texts: string[]) {
   const root = await scope.getElement();
   return browser.execute(
     (root, wanted) => {
       const out: Record<string, { top: number; height: number }> = {};
-      for (const el of root.querySelectorAll("span")) {
-        const own = el.textContent?.trim() ?? "";
+      // Text nodes, whatever element holds them.
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const own = node.textContent?.trim() ?? "";
         if (wanted.includes(own) && !(own in out)) {
-          const r = el.getBoundingClientRect();
+          const range = document.createRange();
+          range.selectNodeContents(node);
+          const r = range.getBoundingClientRect();
           out[own] = { top: r.top, height: r.height };
         }
       }
@@ -70,7 +75,7 @@ describe("instances", () => {
   });
 
   it("creates, lists and deletes an instance", async () => {
-    await expect($("h2=No instances yet")).toBeDisplayed();
+    await byRole("heading", "No instances yet");
     await openCreate();
     // The latest release is preselected.
     await expect(versionTrigger()).toHaveText("9.9");
@@ -98,7 +103,8 @@ describe("instances", () => {
     await expect(alertDialog()).toBeDisplayed();
     expect(await dialogName()).toBe("Delete 9.9 Fabric?");
     await alertDialog().$("button=Move to Recycle Bin").click();
-    await expect($("h2=No instances yet")).toBeDisplayed({ wait: 30_000 });
+    await browser.waitUntil(async () => instanceFolders().length === 0, { timeout: 30_000 });
+    await byRole("heading", "No instances yet");
     expect(instanceFolders()).toEqual([]);
     // The folder this run leaves in the user's Recycle Bin.
     console.log(`moved to the Recycle Bin: instance folder "${folders[0]}"`);
@@ -182,28 +188,31 @@ describe("instances", () => {
 
   it("explains a loader that has no builds for the version", async () => {
     await openCreate();
-    // The checkbox is named by the label around it.
-    await dialog().$("label=Beta").click();
-    await expect(dialog().$("label=Beta").$('[role="checkbox"]')).toHaveAttribute(
-      "aria-checked",
-      "true",
-    );
+    const beta = await byRole("checkbox", "Beta");
+    await beta.click();
+    await expect(beta).toHaveAttribute("aria-checked", "true");
     await chooseVersion("b9.9");
     await chooseLoader("Fabric");
-    await expect(dialog().$("span=No Fabric version for b9.9")).toBeDisplayed();
-    await expect(dialog()).toHaveText(
-      expect.stringContaining("Pick another game version or another loader."),
-    );
     const create = dialog().$("button=Create instance");
     await expect(create).toHaveAttribute("aria-disabled", "true");
-    // The reason is the button's description.
-    const describedBy = await create.getAttribute("aria-describedby");
-    const reason = await browser.execute(
-      (id) => document.getElementById(id)?.textContent ?? "",
-      describedBy ?? "",
-    );
-    expect(reason).toContain("No Fabric version for b9.9");
+    // The note is shown and is the disabled button's description.
+    const describedBy = (await create.getAttribute("aria-describedby")) ?? "";
+    const note = await browser.execute((id) => {
+      const el = document.getElementById(id);
+      return {
+        text: (el?.textContent ?? "").replace(/\s+/g, " ").trim(),
+        shown: !!el && el.getClientRects().length > 0,
+      };
+    }, describedBy);
+    expect(note.shown).toBe(true);
+    expect(note.text).toContain("No Fabric version for b9.9");
+    expect(note.text).toContain("Pick another game version or another loader.");
+    // Pressing it creates nothing: no "Creating…", no new folder, the dialog stays.
+    const before = instanceFolders();
     await create.click();
+    await browser.pause(300);
+    await expect(create).toHaveText("Create instance");
+    expect(instanceFolders()).toEqual(before);
     await expect(dialog()).toBeDisplayed();
     await dialog().$("button=Cancel").click();
     await expect(dialog()).not.toBeExisting();

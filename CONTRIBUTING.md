@@ -39,14 +39,14 @@ Frontend checks:
 
 ### End-to-end tests
 
-The suite in `apps/desktop/e2e` drives the real app through WebDriver ([tauri-driver](https://v2.tauri.app/develop/tests/webdriver/) and Microsoft Edge WebDriver). It only tests debug builds with the `e2e` feature: every service is the local mock `hengst-mock`, secrets stay in memory, and each spec file runs on its own fresh data folder in `%TEMP%` (`HENGST_HOME`). No Microsoft or Mojang server is contacted. One spec moves a test instance folder (`9.9-fabric`) into the Recycle Bin.
+The suite in `apps/desktop/e2e` drives the real app through WebDriver ([tauri-driver](https://v2.tauri.app/develop/tests/webdriver/) and Microsoft Edge WebDriver). It only tests debug builds with the `e2e` feature: every service is the local mock `hengst-mock`, secrets stay in memory, and each spec file runs on its own fresh data folder in `%TEMP%` (`HENGST_HOME`). No Microsoft or Mojang server is contacted. Every run of `instances.e2e.ts` leaves a test instance folder `9.9-fabric` in the Recycle Bin.
 
 One-time setup (tauri-driver, and the Edge WebDriver that matches the installed WebView2 runtime, saved to the git-ignored `apps/desktop/e2e/.driver/`):
 
     cargo install tauri-driver --locked
     powershell -File apps/desktop/e2e/setup-driver.ps1
 
-If no session starts, run the script again with `-UseEdge` to get the driver of the installed Edge instead.
+The script installs the driver only if it is validly signed by Microsoft and reports the expected version, and records both in `.driver/version.txt`. It does not fall back on its own: if no session starts with the WebView2 driver, run it again with `-UseEdge` to get the driver of the installed Edge instead.
 
 Build, then run (`pnpm e2e` does not build; it expects `target/debug/hengst-desktop.exe` and `target/debug/hengst-mock.exe`):
 
@@ -54,9 +54,9 @@ Build, then run (`pnpm e2e` does not build; it expects `target/debug/hengst-desk
     cargo build -p hengst-testkit --bin hengst-mock
     pnpm -C apps/desktop e2e
 
-The app window needs to keep the focus during the run: a window that takes the foreground (a game that starts, for example) closes open menus and popups, and the tests that use them fail.
+The suite needs the app window in the foreground for the whole run: another window that takes the focus (a game that starts, for example) closes open menus and popups, and the tests that use them fail; a failed test logs `document.hasFocus()` to tell this apart. Run it on a desktop that is not in use, or in a VM. The app windows open on the desktop of the process that runs `pnpm -C apps/desktop e2e`.
 
-`tauri:options.args` reach WebView2, not the app; the app gets its data folder and the mock URL from the environment that `wdio.conf.ts` gives `tauri-driver`. Before the first test of each spec file the suite checks that the app really runs on its temp folder and stops otherwise.
+`tauri:options.args` reach WebView2, not the app; the app gets its data folder and the mock URL from the environment that `wdio.conf.ts` gives `tauri-driver`. The run stops with exit code 1 before any app starts if something already listens on port 4444 (a hand-started or leftover tauri-driver would otherwise get the sessions and start the app on the real data folder). Before the first test of each spec file the suite also checks that its own tauri-driver is running and that the app reports the temp folder as its data folder; if not, or if the check itself fails, it ends that app and driver, later spec files stop before they start anything, and the run exits with code 1.
 
 ## Rules
 

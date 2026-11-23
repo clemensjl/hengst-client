@@ -1,3 +1,5 @@
+import { readdirSync } from "node:fs";
+import { join } from "node:path";
 import { alertDialog, cspViolations, focusedName } from "../support/app.ts";
 
 // The data folder starts with two instances the app cannot read as its own: "from-the-future"
@@ -45,10 +47,15 @@ describe("instances this build cannot read", () => {
       disabled: "true",
       description: "Saved by a newer version of Hengst Client. You can delete it only in Explorer.",
     });
-    // Enter on the disabled item asks nothing.
+    // Enter on the disabled item asks nothing and deletes nothing: the menu stays on "Delete".
+    const folders = readdirSync(join(process.env.HENGST_E2E_HOME!, "instances")).sort();
     await browser.keys("Enter");
     await browser.pause(300);
     await expect(alertDialog()).not.toBeExisting();
+    await expect($('[role="menu"]')).toBeDisplayed();
+    expect(await focusedName()).toBe("Delete");
+    expect(readdirSync(join(process.env.HENGST_E2E_HOME!, "instances")).sort()).toEqual(folders);
+    expect(folders).toEqual(["damaged", "from-the-future"]);
     await browser.keys("Escape");
     await expect($('[role="menu"]')).not.toBeDisplayed();
   });

@@ -294,8 +294,10 @@
     outline-offset: 2px;
   }
 
-  /* What Base UI would inject as an inline <style> (blocked by the CSP, turned off in main.tsx):
-     the select popup scrolls without a visible scrollbar. */
+  /* The rule Base UI would inject as an inline <style>, which the CSP blocks (its style elements
+     are turned off in AppRoot.tsx). Base UI only sets this class on a select popup aligned with its
+     trigger; components/ui/select.tsx sets alignItemWithTrigger={false}, so it matches nothing
+     today. Kept so that turning the alignment on later does not bring back a visible scrollbar. */
   .base-ui-disable-scrollbar {
     scrollbar-width: none;
   }

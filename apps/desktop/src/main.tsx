@@ -1,6 +1,6 @@
-import { CSPProvider } from "@base-ui/react/csp-provider";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { AppRoot } from "@/app/AppRoot";
 import { Boot } from "@/app/Boot";
 import { installWebviewDefaults } from "@/lib/webviewDefaults";
 import { installInputMode } from "@/theme/inputMode";
@@ -30,13 +30,11 @@ if (import.meta.env.DEV && location.hash === "#error-gallery") {
     ),
   );
 } else {
-  // `style-src 'self'` blocks inline <style> elements: Base UI renders none, the rule it would
-  // inject (`.base-ui-disable-scrollbar`) is in index.css.
   root.render(
     <StrictMode>
-      <CSPProvider disableStyleElements>
+      <AppRoot>
         <Boot />
-      </CSPProvider>
+      </AppRoot>
     </StrictMode>,
   );
 }

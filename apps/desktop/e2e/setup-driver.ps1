@@ -44,11 +44,25 @@ $driverDir = Join-Path $PSScriptRoot '.driver'
 $driver = Join-Path $driverDir 'msedgedriver.exe'
 New-Item -ItemType Directory -Force -Path $driverDir | Out-Null
 
-$current = $null
-if (Test-Path $driver) {
-    $current = ((& $driver --version) -split ' ' | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
+# A driver is used only with a valid Authenticode signature by Microsoft, checked before it is
+# ever run. Returns the signer, or $null.
+function Get-MicrosoftSigner([string]$path) {
+    $sig = Get-AuthenticodeSignature -FilePath $path
+    $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '' }
+    if ($sig.Status -eq 'Valid' -and $subject -match '(^|, )O=Microsoft Corporation(,|$)') {
+        return $subject
+    }
+    Write-Host "Signature check failed for ${path}: status $($sig.Status), signer '$subject'"
+    return $null
 }
-if ($current -eq $version) {
+
+# The four-part version msedgedriver reports, e.g. 157.0.4341.60.
+function Get-DriverVersion([string]$path) {
+    return ((& $path --version) -split ' ' | Where-Object { $_ -match '^\d+\.\d+\.\d+\.\d+$' } | Select-Object -First 1)
+}
+
+$signer = $null
+if ((Test-Path $driver) -and ($signer = Get-MicrosoftSigner $driver) -and ((Get-DriverVersion $driver) -eq $version)) {
     Write-Host "msedgedriver $version is already in place ($source)."
 } else {
     $zip = Join-Path $driverDir 'edgedriver_win64.zip'
@@ -58,11 +72,28 @@ if ($current -eq $version) {
     Invoke-WebRequest -Uri $url -OutFile $zip -UseBasicParsing
     if (Test-Path $unpacked) { Remove-Item -Recurse -Force $unpacked }
     Expand-Archive -Path $zip -DestinationPath $unpacked
-    Copy-Item -Force (Join-Path $unpacked 'msedgedriver.exe') $driver
-    Remove-Item -Recurse -Force $unpacked
     Remove-Item -Force $zip
+    $candidate = Join-Path $unpacked 'msedgedriver.exe'
+    $signer = Get-MicrosoftSigner $candidate
+    if (-not $signer) {
+        Remove-Item -Recurse -Force $unpacked
+        Write-Error 'The downloaded msedgedriver.exe is not validly signed by Microsoft. Nothing was installed.'
+    }
+    $reported = Get-DriverVersion $candidate
+    if ($reported -ne $version) {
+        Remove-Item -Recurse -Force $unpacked
+        Write-Error "The downloaded driver reports version '$reported', expected $version. Nothing was installed."
+    }
+    Copy-Item -Force $candidate $driver
+    Remove-Item -Recurse -Force $unpacked
 }
-Set-Content -Path (Join-Path $driverDir 'version.txt') -Value "$version ($source)" -Encoding ascii
+$stamp = (Get-Date).ToString('yyyy-MM-ddTHH:mm:ssK')
+Set-Content -Path (Join-Path $driverDir 'version.txt') -Encoding ascii -Value @(
+    "msedgedriver $version for the $source",
+    "version reported by the driver: $(Get-DriverVersion $driver)",
+    "Authenticode: Valid, signer $signer",
+    "verified $stamp"
+)
 & $driver --version
 
 # tauri-driver 2.1.0 has no --version flag: presence is checked, the version comes from cargo.

@@ -2,7 +2,7 @@ import { clearMocks } from "@tauri-apps/api/mocks";
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { toast } from "sonner";
 import { StrictMode } from "react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { initI18n } from "@/i18n";
 import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
@@ -11,6 +11,12 @@ import { deferred, err, instance, instancesBackend } from "@/test/instancesBacke
 import { InstancesHeaderAction, InstancesView } from "./InstancesView";
 
 vi.mock("sonner", () => ({ toast: vi.fn(), Toaster: () => null }));
+
+// The view loads the dialog with React.lazy. Loaded cold, the first test spent most of its 1 s
+// `findByRole("dialog")` on the import under load; loaded here, `lazy` resolves at once.
+beforeAll(async () => {
+  await import("./CreateInstanceDialog");
+});
 
 const initial = useApp.getState();
 beforeEach(() => {

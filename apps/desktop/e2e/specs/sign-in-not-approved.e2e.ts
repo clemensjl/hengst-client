@@ -1,4 +1,4 @@
-import { cspViolations, dialog, dialogName } from "../support/app.ts";
+import { byRole, cspViolations, dialog, dialogName } from "../support/app.ts";
 
 // The mock answers the Minecraft login with 403: Mojang has not approved the app (scenario
 // `not-approved`).
@@ -10,9 +10,7 @@ describe("sign-in before Mojang's approval", () => {
     expect(await dialogName()).toBe("Add account");
     await dialog().$("aria/Sign in with Microsoft").click();
 
-    await expect(dialog().$("h3=Sign-in is not available yet")).toBeDisplayed({
-      wait: 30_000,
-    });
+    await byRole("heading", "Sign-in is not available yet", 30_000);
     await expect(dialog()).toHaveText(
       expect.stringContaining("Mojang has not approved Hengst Client's Microsoft sign-in yet."),
     );
