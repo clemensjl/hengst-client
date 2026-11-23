@@ -12,8 +12,9 @@ use crate::dto::error::{ErrorCode, ErrorDto};
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
 use crate::settings::{Language, Settings, SettingsHandle};
+use hengst_core::args::Account;
 use hengst_core::auth::browser::{BrowserLoginPages, BROWSER_LOGIN_TIMEOUT};
-use hengst_core::auth::flow::LoginSession;
+use hengst_core::auth::flow::{launch_account, LoginSession};
 use hengst_core::auth::store::{load_accounts_file, AccountStore, SecretStore, StoredAccount};
 use hengst_core::auth::{unix_now, AuthError, MicrosoftAuth};
 use hengst_core::paths::Paths;
@@ -156,10 +157,12 @@ pub fn login_pages(language: Language) -> BrowserLoginPages {
 // ---- operations ----
 
 /// The kind of a running operation. Browser and device-code sign-in share `Login`, so "use a code
-/// instead" ends the waiting browser sign-in and frees its port. Phase 4b adds `Play`.
+/// instead" ends the waiting browser sign-in and frees its port. `Play` is the preparation of a
+/// game start (`play`); it never replaces another one, `play` refuses while one runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpKind {
     Login,
+    Play,
 }
 
 struct Entry {
@@ -238,10 +241,19 @@ impl Operations {
     /// Ends an operation that has not started saving its result: abort (dropping the task frees its
     /// listener) and `Cancelled` to its channel. `false` for an unknown, finished or saving one.
     pub fn cancel(&self, id: OperationId) -> bool {
+        self.cancel_if(id, |_| true)
+    }
+
+    /// `cancel`, but only an operation of this kind.
+    pub fn cancel_of(&self, kind: OpKind, id: OperationId) -> bool {
+        self.cancel_if(id, |k| k == kind)
+    }
+
+    fn cancel_if(&self, id: OperationId, kind: impl Fn(OpKind) -> bool) -> bool {
         let entry = {
             let mut inner = lock(&self.inner);
             match inner.running.get(&id) {
-                Some(e) if !e.committing => inner.running.remove(&id),
+                Some(e) if !e.committing && kind(e.kind) => inner.running.remove(&id),
                 _ => None,
             }
         };
@@ -311,7 +323,7 @@ impl Operations {
 
     /// The operation is about to save its result: from now on it cannot be cancelled. `false`
     /// when it was cancelled in the meantime, then it must stop without sending anything.
-    fn try_commit(&self, id: OperationId) -> bool {
+    pub(crate) fn try_commit(&self, id: OperationId) -> bool {
         match lock(&self.inner).running.get_mut(&id) {
             Some(entry) => {
                 entry.committing = true;
@@ -323,7 +335,7 @@ impl Operations {
 
     /// The operation ends by itself. `true`: it owns the terminal event and must send it. `false`:
     /// `cancel` was first and has sent `Cancelled`.
-    fn finish(&self, id: OperationId) -> bool {
+    pub(crate) fn finish(&self, id: OperationId) -> bool {
         lock(&self.inner).running.remove(&id).is_some()
     }
 }
@@ -344,14 +356,21 @@ const REOPEN_GAP: Duration = Duration::from_secs(2);
 /// with the terminal event, under the same small lock `progress` takes: an event of the task
 /// after the terminal event is refused, however far the task still runs before its abort
 /// takes effect. `Started` is queued before the task exists, so it is first by ordering.
-#[derive(Clone)]
-pub struct OpOut {
-    queue: Arc<Mutex<Option<mpsc::UnboundedSender<LoginEvent>>>>,
+pub struct OpOut<E = LoginEvent> {
+    queue: Arc<Mutex<Option<mpsc::UnboundedSender<E>>>>,
 }
 
-impl OpOut {
+impl<E> Clone for OpOut<E> {
+    fn clone(&self) -> Self {
+        OpOut {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<E: Send + 'static> OpOut<E> {
     /// The forwarding task ends once the terminal event has been handed to `sink`.
-    pub fn new(sink: EventSink<LoginEvent>) -> (OpOut, JoinHandle<()>) {
+    pub fn new(sink: EventSink<E>) -> (OpOut<E>, JoinHandle<()>) {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let forwarder = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -370,7 +389,7 @@ impl OpOut {
     }
 
     /// Queues a progress event; `false` (nothing sent) once the operation has ended.
-    pub fn progress(&self, event: LoginEvent) -> bool {
+    pub fn progress(&self, event: E) -> bool {
         match lock(&self.queue).as_ref() {
             Some(tx) => tx.send(event).is_ok(),
             None => false,
@@ -378,7 +397,7 @@ impl OpOut {
     }
 
     /// Queues the terminal event and closes the queue; `false` if it was closed already.
-    pub fn end(&self, event: LoginEvent) -> bool {
+    pub fn end(&self, event: E) -> bool {
         match lock(&self.queue).take() {
             Some(tx) => tx.send(event).is_ok(),
             None => false,
@@ -537,6 +556,36 @@ impl Accounts {
         self.exact(uuid)?;
         self.store.mark_sign_in_required(uuid)?;
         Ok(())
+    }
+
+    /// The account a game starts with: the development account when it is chosen (`dev-offline`
+    /// builds only; other builds never make an offline account, and the core refuses to start one
+    /// anyway), otherwise the selected Microsoft account through the core's `launch_account`, which
+    /// renews its login when it is due. When Microsoft refuses the renewal (`LoginExpired`), the
+    /// account is marked "sign in again" before the error is returned; the flag says so, and the
+    /// caller then refreshes the account list.
+    pub async fn play_account(&self, settings: &Settings) -> (Result<Account>, bool) {
+        if cfg!(feature = "dev-offline") && settings.dev_account {
+            return (Ok(Account::offline("Dev")), false);
+        }
+        let stored = match self.store.find(None) {
+            Ok(stored) => stored,
+            Err(e) => return (Err(e), false),
+        };
+        let result = launch_account(
+            &self.store,
+            self.auth.as_ref(),
+            Some(&stored.uuid),
+            unix_now(),
+        )
+        .await;
+        if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
+            if let Err(e) = self.mark_sign_in_required(&stored.uuid) {
+                self.diag(&format!("play: could not mark the account ({e})"));
+            }
+            return (result, true);
+        }
+        (result, false)
     }
 
     fn diag(&self, line: &str) {

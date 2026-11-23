@@ -1,5 +1,6 @@
 use crate::accounts::{Accounts, Operations};
 use crate::events::EventHub;
+use crate::play::Game;
 use crate::settings::{load_settings, SettingsHandle};
 use hengst_core::auth::unix_now;
 use hengst_core::launch::Endpoints;
@@ -25,11 +26,13 @@ pub struct AppState {
     /// The one lock of `instances_list` (with its adoption of CLI folders), `instance_create` and
     /// `instance_delete`: a list never adopts a folder that a create has made but not yet filled.
     pub instance_lock: tokio::sync::Mutex<()>,
-    /// The instance the app is preparing or running. Always `None` in 4a; 4b sets it. An instance
-    /// the CLI started is invisible to the app and not covered. Task 15 must set it while holding
-    /// `instance_lock`: `instance_delete` reads it under that lock, so a start that sets it
-    /// outside the lock can be overtaken by a delete between its check and its start.
-    pub active_instance: Mutex<Option<String>>,
+    /// The instance the app is preparing or running. An instance the CLI started is invisible to
+    /// the app and not covered. Only `game` changes it, together with its state; a start sets it
+    /// while holding `instance_lock`: `instance_delete` reads it under that lock, so a start that
+    /// set it outside the lock could be overtaken by a delete between its check and its start.
+    pub active_instance: Arc<Mutex<Option<String>>>,
+    /// The one game: its state, the running process and the line hand-off.
+    pub game: Arc<Game>,
     pub trasher: Trasher,
 }
 
@@ -50,16 +53,19 @@ impl AppState {
         if let Some(reason) = &loaded.blocked {
             eprintln!("settings: {reason}; the defaults are used and nothing is saved until the file can be read");
         }
+        let events = EventHub::default();
+        let active_instance: Arc<Mutex<Option<String>>> = Arc::default();
         AppState {
             settings: SettingsHandle::from_loaded(paths.clone(), loaded),
             paths,
             endpoints,
-            events: EventHub::default(),
+            game: Arc::new(Game::new(events.clone(), active_instance.clone())),
+            events,
             versions: VersionsCache::default(),
             accounts: Arc::new(accounts),
             operations: Operations::default(),
             instance_lock: tokio::sync::Mutex::new(()),
-            active_instance: Mutex::new(None),
+            active_instance,
             trasher: Arc::new(crate::recycle::move_to_recycle_bin),
         }
     }

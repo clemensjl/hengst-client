@@ -1,6 +1,7 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, describe, expect, it } from "vitest";
 import type { LoginEvent } from "./bindings/LoginEvent";
+import type { PlayEvent } from "./bindings/PlayEvent";
 import { api } from "./client";
 
 afterEach(() => clearMocks());
@@ -173,6 +174,36 @@ describe("ipc client", () => {
       ["instance_delete", { id: "1.8.9" }],
       ["open_location", { target: { kind: "instance", id: "1.8.9" } }],
       ["open_location", { target: { kind: "dataDir" } }],
+    ]);
+  });
+
+  it("play sends only the instance id and the channel and returns the op", async () => {
+    const seen: [string, unknown][] = [];
+    mockIPC((cmd, args) => {
+      if (cmd === "play") {
+        const a = args as { channel: { onmessage?: (e: PlayEvent) => void } };
+        seen.push([cmd, Object.keys(a)]);
+        a.channel.onmessage?.({ event: "preparing", data: { op: 4 } });
+        return 4;
+      }
+      seen.push([cmd, args]);
+      if (cmd === "game_stop") return "noWindow";
+      if (cmd === "game_state") return { state: "idle", data: { lastExit: null } };
+      return true;
+    });
+    const events: PlayEvent[] = [];
+    expect(await api.play("9.9", (e) => events.push(e))).toBe(4);
+    expect(events).toEqual([{ event: "preparing", data: { op: 4 } }]);
+    expect(await api.playCancel(4)).toBe(true);
+    expect(await api.gameStop()).toBe("noWindow");
+    expect(await api.gameForceStop()).toBe(true);
+    expect(await api.gameState()).toEqual({ state: "idle", data: { lastExit: null } });
+    expect(seen).toEqual([
+      ["play", ["instanceId", "channel"]],
+      ["play_cancel", { op: 4 }],
+      ["game_stop", {}],
+      ["game_force_stop", {}],
+      ["game_state", {}],
     ]);
   });
 

@@ -75,6 +75,11 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
             crate::commands::instances::instance_select,
             crate::commands::instances::instance_delete,
             crate::commands::open::open_location,
+            crate::commands::play::play,
+            crate::commands::play::play_cancel,
+            crate::commands::play::game_stop,
+            crate::commands::play::game_force_stop,
+            crate::commands::play::game_state,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -234,5 +239,59 @@ fn open_location_refuses_a_path_from_the_web_view() {
             err.get("code").is_none(),
             "an argument error, not a command result: {err}"
         );
+    }
+}
+
+#[test]
+fn the_main_window_may_call_the_play_commands_and_others_may_not() {
+    let (app, _dir) = app();
+    assert_eq!(
+        call(&app, "main", "game_state").unwrap(),
+        serde_json::json!({ "state": "idle", "data": { "lastExit": null } })
+    );
+    assert_eq!(
+        call(&app, "main", "game_stop").unwrap(),
+        serde_json::json!("notRunning")
+    );
+    assert_eq!(
+        call(&app, "main", "game_force_stop").unwrap(),
+        serde_json::json!(false)
+    );
+    let cancelled = call_with(
+        &app,
+        "main",
+        "play_cancel",
+        InvokeBody::Json(serde_json::json!({ "op": 5 })),
+    );
+    assert_eq!(cancelled.unwrap(), serde_json::json!(false));
+    for cmd in [
+        "play",
+        "play_cancel",
+        "game_stop",
+        "game_force_stop",
+        "game_state",
+    ] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+}
+
+/// `play` takes an instance id and a channel, nothing else: a path is not an instance, and extra
+/// fields (an account, a Java path, arguments) are not read.
+#[test]
+fn play_takes_nothing_from_the_web_view_but_an_instance_id() {
+    let (app, _dir) = app();
+    for body in [
+        serde_json::json!({ "instanceId": "..\\x", "channel": "__CHANNEL__:1" }),
+        serde_json::json!({
+            "instanceId": "nobody",
+            "channel": "__CHANNEL__:1",
+            "java": "C:\\Windows\\System32\\cmd.exe",
+            "args": ["/c", "calc"],
+            "account": "offline-dev"
+        }),
+    ] {
+        let err = call_with(&app, "main", "play", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "instanceNotFound", "{err}");
     }
 }

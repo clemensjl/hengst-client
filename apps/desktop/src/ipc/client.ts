@@ -3,6 +3,7 @@ import type { AccountsDto } from "./bindings/AccountsDto";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { CreateInstanceRequest } from "./bindings/CreateInstanceRequest";
 import type { ErrorDto } from "./bindings/ErrorDto";
+import type { GameStateDto } from "./bindings/GameStateDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
 import type { InstanceDto } from "./bindings/InstanceDto";
 import type { InstancesDto } from "./bindings/InstancesDto";
@@ -13,8 +14,10 @@ import type { LoaderVersionsDto } from "./bindings/LoaderVersionsDto";
 import type { LoginEvent } from "./bindings/LoginEvent";
 import type { LoginMethod } from "./bindings/LoginMethod";
 import type { OpenTarget } from "./bindings/OpenTarget";
+import type { PlayEvent } from "./bindings/PlayEvent";
 import type { SettingsDto } from "./bindings/SettingsDto";
 import type { SettingsPatch } from "./bindings/SettingsPatch";
+import type { StopResult } from "./bindings/StopResult";
 import type { UrlTarget } from "./bindings/UrlTarget";
 import type { VersionFilter } from "./bindings/VersionFilter";
 
@@ -155,4 +158,23 @@ export const api = {
   /** Opens the data folder or the folder of an instance; the path is made in Rust. */
   openLocation: (target: OpenTarget): Promise<void> =>
     guard(invoke<void>("open_location", { target })),
+  /**
+   * Starts the instance; `onEvent` gets this start's events, `preparing` with the operation id
+   * first (it can arrive before this resolves), then progress and one of `started`, `failed`,
+   * `cancelled`. Only the id travels: account, Java and arguments are chosen in Rust. Running,
+   * stopping and the exit arrive as `gameState` app events. `busy` while a game is prepared or runs.
+   */
+  play: (instanceId: string, onEvent: (e: PlayEvent) => void): Promise<number> => {
+    const channel = new Channel<PlayEvent>();
+    channel.onmessage = onEvent;
+    return guard(invoke<number>("play", { instanceId, channel }));
+  },
+  /** `true` if the start was still being prepared; its channel then gets `cancelled`. */
+  playCancel: (op: number): Promise<boolean> => guard(invoke<boolean>("play_cancel", { op })),
+  /** Asks the game to close; `noWindow` means nothing was sent (offer the force stop). */
+  gameStop: (): Promise<StopResult> => guard(invoke<StopResult>("game_stop")),
+  /** Ends the game at once; `false` when none runs. */
+  gameForceStop: (): Promise<boolean> => guard(invoke<boolean>("game_force_stop")),
+  /** The game's state now, as the last `gameState` event carried it. */
+  gameState: (): Promise<GameStateDto> => guard(invoke<GameStateDto>("game_state")),
 };

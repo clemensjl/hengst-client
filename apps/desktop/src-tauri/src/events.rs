@@ -1,3 +1,4 @@
+use crate::dto::play::GameStateDto;
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 use ts_rs::TS;
@@ -24,8 +25,16 @@ pub enum NoticeKind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "event", content = "data", rename_all = "camelCase")]
 pub enum AppEvent {
-    DataChanged { scope: DataScope },
-    Notice { kind: NoticeKind },
+    DataChanged {
+        scope: DataScope,
+    },
+    Notice {
+        kind: NoticeKind,
+    },
+    /// Every change of the game's state (`play`), in order.
+    GameState {
+        state: GameStateDto,
+    },
 }
 
 pub type EventSink<T> = Arc<dyn Fn(T) + Send + Sync>;

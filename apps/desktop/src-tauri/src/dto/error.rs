@@ -82,7 +82,8 @@ pub enum ErrorCode {
     RecycleBinPending,
     /// The instance is being prepared or runs; it cannot be deleted now. `params.id`.
     InstanceRunning,
-    /// Another create or delete of an instance is in progress.
+    /// Another create or delete of an instance is in progress, or (`play`) a game is already being
+    /// prepared or running: one game at a time.
     Busy,
 }
 

@@ -21,7 +21,12 @@ macro_rules! with_commands {
             instances::instances_list,
             instances::instance_create,
             instances::instance_select,
-            instances::instance_delete
+            instances::instance_delete,
+            play::play,
+            play::play_cancel,
+            play::game_stop,
+            play::game_force_stop,
+            play::game_state
         )
     };
 }

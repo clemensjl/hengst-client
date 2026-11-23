@@ -31,6 +31,7 @@ pub mod dto;
 pub mod error;
 pub mod events;
 pub mod open;
+pub mod play;
 pub mod recycle;
 pub mod settings;
 pub mod startup;

@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod app;
 pub mod error;
 pub mod instances;
+pub mod play;
 pub mod settings;
 pub mod versions;
 
@@ -48,4 +49,10 @@ pub const ALL_TYPES: &[Export] = &[
     crate::settings::SettingsNotice::export_all,
     settings::SettingsDto::export_all,
     settings::SettingsPatch::export_all,
+    play::RunId::export_all,
+    play::TransferDto::export_all,
+    play::PlayEvent::export_all,
+    play::LastExit::export_all,
+    play::GameStateDto::export_all,
+    play::StopResult::export_all,
 ];

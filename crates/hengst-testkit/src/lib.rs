@@ -40,6 +40,57 @@ pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error
         .await
 }
 
+/// The `fake-java` binary of this crate, for tests of other crates (only this crate's own tests
+/// get `CARGO_BIN_EXE_fake-java`). It is looked for in the profile folder of the running test
+/// executable (`<target>/debug`, where `cargo test --workspace` puts it); when it is missing or
+/// older than its source it is built there first with `cargo build -j 6 -p hengst-testkit --bin
+/// fake-java`, once per test process. Panics if that build fails.
+pub fn fake_java() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().expect("the test executable's path");
+        // `<target>/debug/deps/<test>.exe` (unit and integration tests) or `<target>/debug/<x>.exe`.
+        let mut profile = exe.parent().expect("a folder").to_path_buf();
+        if profile.file_name().is_some_and(|n| n == "deps") {
+            profile.pop();
+        }
+        let bin = profile.join(format!("fake-java{}", std::env::consts::EXE_SUFFIX));
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/fake-java.rs");
+        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let fresh = match (modified(&bin), modified(&source)) {
+            (Some(b), Some(s)) => b >= s,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !fresh {
+            let target = profile.parent().expect("the target folder");
+            let status = std::process::Command::new(
+                std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+            )
+            .args([
+                "build",
+                "-j",
+                "6",
+                "-p",
+                "hengst-testkit",
+                "--bin",
+                "fake-java",
+            ])
+            .arg("--target-dir")
+            .arg(target)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("cargo could not be started to build fake-java");
+            assert!(status.success(), "building fake-java failed");
+        }
+        assert!(bin.is_file(), "no fake-java at {}", bin.display());
+        bin
+    })
+    .clone()
+}
+
 /// One mock server with both the sign-in chain (accounts A and B) and the Mojang services
 /// mounted: what the end-to-end binary `hengst-mock` serves.
 pub struct Services {
