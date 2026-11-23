@@ -134,19 +134,30 @@ pub fn unique_temp(dest: &Path) -> PathBuf {
 }
 
 /// Writes `bytes` to `file` through a temp file next to it and a rename, so a reader never sees a
-/// partial file. Creates the parent folder; a failed rename removes the temp file. No fsync: the
-/// callers write caches that are fetched again when they are missing or damaged.
+/// partial file. Creates the parent folder; a failed write or rename removes the temp file. No
+/// fsync: the callers write caches that are fetched again when they are missing or damaged.
 pub(crate) async fn write_atomic(file: &Path, bytes: &[u8]) -> std::io::Result<()> {
-    if let Some(parent) = file.parent() {
-        tokio::fs::create_dir_all(parent).await?;
-    }
-    let tmp = unique_temp(file);
-    tokio::fs::write(&tmp, bytes).await?;
-    if let Err(e) = tokio::fs::rename(&tmp, file).await {
-        let _ = tokio::fs::remove_file(&tmp).await;
-        return Err(e);
-    }
-    Ok(())
+    write_atomic_owned(file.to_path_buf(), bytes.to_vec()).await
+}
+
+/// `write_atomic` taking ownership (no copy of a large body). Temp file, write and rename run as
+/// one blocking task: once started it finishes even when the awaiting task is aborted (a
+/// cancelled launch), so an abort never leaves this process's temp file behind, which
+/// `remove_stale_temps` would keep (it skips the own pid).
+pub(crate) async fn write_atomic_owned(file: PathBuf, bytes: Vec<u8>) -> std::io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        if let Some(parent) = file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let tmp = unique_temp(&file);
+        let result = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &file));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
+    })
+    .await
+    .map_err(|e| std::io::Error::other(format!("the write task failed: {e}")))?
 }
 
 /// Whether `write_atomic_sync` may replace a file that is already there.
@@ -305,6 +316,45 @@ pub fn validate_sha1(hash: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A download task aborted (the play operation cancelled) while it writes: dropping the write
+    /// at any point leaves the finished file or nothing, never this process's temp file, which
+    /// `remove_stale_temps` would keep (own pid).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_write_dropped_midway_leaves_no_temp_file() {
+        use std::future::Future;
+        use std::task::{Context, Poll};
+        for _ in 0..20 {
+            let dir = tempfile::tempdir().unwrap();
+            let file = dir.path().join("client.jar");
+            let temps = || {
+                std::fs::read_dir(dir.path())
+                    .unwrap()
+                    .flatten()
+                    .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+                    .count()
+            };
+            let mut write = Box::pin(write_atomic(&file, &[7u8; 64 * 1024]));
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            let start = std::time::Instant::now();
+            loop {
+                if let Poll::Ready(r) = write.as_mut().poll(&mut cx) {
+                    r.unwrap();
+                    break;
+                }
+                if temps() > 0 || start.elapsed() > std::time::Duration::from_secs(5) {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_micros(200));
+            }
+            // The abort.
+            drop(write);
+            // Whatever was started on a blocking thread settles.
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+            assert_eq!(temps(), 0, "a temp file was left behind");
+        }
+    }
 
     #[test]
     fn join_relative_accepts_plain_paths_only() {

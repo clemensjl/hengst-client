@@ -1,4 +1,4 @@
-use crate::paths::{remove_stale_temps, unique_temp, validate_sha1, write_atomic};
+use crate::paths::{remove_stale_temps, validate_sha1, write_atomic, write_atomic_owned};
 use crate::progress::{self, Progress, ProgressSink, Transfer};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -232,16 +232,9 @@ impl Downloader {
                 });
             }
         }
-        if let Some(parent) = item.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
         remove_stale_temps(&item.path);
-        let tmp = unique_temp(&item.path);
-        tokio::fs::write(&tmp, &bytes).await?;
-        if let Err(e) = tokio::fs::rename(&tmp, &item.path).await {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(e.into());
-        }
+        // One blocking task from temp file to rename: an aborted download leaves no temp file.
+        write_atomic_owned(item.path.clone(), bytes).await?;
         Ok(())
     }
 }
