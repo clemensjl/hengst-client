@@ -55,6 +55,10 @@ describe("play_button_state_precedence", () => {
     expect(kind({ instances: newer })).toBe("chooseInstance");
   });
   it("row 6: no account", () => expect(kind({ account: { kind: "none" } })).toBe("signIn"));
+  it("row 6: accounts exist but none is chosen: choose one, as the header chip does", () => {
+    expect(kind({ account: { kind: "choose" } })).toBe("chooseAccount");
+    expect(kind({ account: { kind: "choose" }, instances: [] })).toBe("noInstance");
+  });
   it("row 7: the account has to sign in again", () => {
     const account = { kind: "signInAgain" as const, id: "u", name: "Mira_K" };
     expect(playButtonState({ ...ready, account })).toEqual(account);

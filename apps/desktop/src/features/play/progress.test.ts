@@ -11,7 +11,8 @@ describe("progress reducer", () => {
     expect(INITIAL).toMatchObject({ op: null, phase: null, files: null, step: null });
     const p = run([{ event: "preparing", data: { op: 7 } }]);
     expect(p.op).toBe(7);
-    expect(p.phase).toBe("launching");
+    // No phase until the first real one: the phase line (a live region) starts empty.
+    expect(p.phase).toBeNull();
     expect(p.outcome).toBeNull();
   });
 
@@ -20,7 +21,6 @@ describe("progress reducer", () => {
       [{ event: "resolvingLoader", data: { kind: "fabric", game: "1.21.11" } }, "resolvingLoader"],
       [{ event: "downloadingInstaller", data: { kind: "forge" } }, "downloadingInstaller"],
       [{ event: "downloading", data: { what: "gameFiles", count: 4118 } }, "downloadingFiles"],
-      [{ event: "downloaded", data: { what: "gameFiles" } }, "launching"],
       [
         { event: "installStarted", data: { kind: "forge", version: "47.4.28", game: "1.20.1" } },
         "installing",
@@ -39,6 +39,28 @@ describe("progress reducer", () => {
     expect(p.files).toEqual({ count: 4118 });
     p = reduce(p, { event: "downloaded", data: { what: "assets" } });
     expect(p.files).toBeNull();
+    // The phase stays: no flip to "launching" and back between batches.
+    expect(p.phase).toBe("downloadingFiles");
+  });
+
+  it("a normal start changes the phase line only when the phase really changes", () => {
+    const phases = [
+      { event: "preparing", data: { op: 1 } },
+      { event: "resolvingLoader", data: { kind: "fabric", game: "1.21.11" } },
+      { event: "downloading", data: { what: "gameFiles", count: 30 } },
+      { event: "downloaded", data: { what: "gameFiles" } },
+      { event: "downloading", data: { what: "assets", count: 4118 } },
+      { event: "downloaded", data: { what: "assets" } },
+      { event: "downloading", data: { what: "java", count: 3 } },
+      { event: "downloaded", data: { what: "java" } },
+    ] as PlayEvent[];
+    const seen: (string | null)[] = [];
+    let p = INITIAL;
+    for (const e of phases) {
+      p = reduce(p, e);
+      if (seen.at(-1) !== p.phase) seen.push(p.phase);
+    }
+    expect(seen).toEqual([null, "resolvingLoader", "downloadingFiles"]);
   });
 
   it("keeps the installer step and drops it for the next phase", () => {

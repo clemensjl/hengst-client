@@ -1,5 +1,5 @@
 import { ChevronDownIcon, LogInIcon, TriangleAlertIcon, UserRoundIcon } from "lucide-react";
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { Badge } from "@/components/Badge";
 import { Delayed } from "@/components/Delayed";
@@ -23,8 +23,13 @@ const initialOf = (name: string) => (Array.from(name)[0] ?? "?").toUpperCase();
 /** Accounts exist but none is selected: the chip says so instead of naming some other account. */
 function ChooseAccountButton({ accounts }: { accounts: AccountDto[] }) {
   const { t } = useTranslation();
+  // Controlled through the store: the Play button's "Choose account" opens this same menu.
+  const open = useApp((s) => s.accountMenuOpen);
+  const setOpen = useApp((s) => s.setAccountMenuOpen);
+  // An account chosen elsewhere replaces this button: the menu must not reopen with the next one.
+  useEffect(() => () => setOpen(false), [setOpen]);
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger ref={setChip} render={<Button />}>
         <UserRoundIcon aria-hidden="true" />
         {t("accounts.choose")}

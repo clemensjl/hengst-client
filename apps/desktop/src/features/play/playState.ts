@@ -5,8 +5,10 @@ import { effectiveSelection } from "@/features/instances/selection";
 /** What the Play button needs to know about the account the game would start with. */
 export type PlayAccount =
   | { kind: "ok" }
-  /** No account selected (none at all, or none chosen). */
+  /** No account at all. */
   | { kind: "none" }
+  /** Accounts exist, none is chosen (the header chip says "Konto wählen"). */
+  | { kind: "choose" }
   | { kind: "signInAgain"; id: string; name: string };
 
 export interface PlayInput {
@@ -30,6 +32,7 @@ export type PlayButtonState =
   | { kind: "noInstance"; unreadable: boolean }
   | { kind: "chooseInstance"; name: string }
   | { kind: "signIn" }
+  | { kind: "chooseAccount" }
   | { kind: "signInAgain"; id: string; name: string }
   | { kind: "ready"; instance: string };
 
@@ -53,6 +56,7 @@ export function playButtonState({ game, launch, instances, account }: PlayInput)
   const chosen = instances.find((i) => i.selected);
   if (chosen && chosen.status !== "ready") return { kind: "chooseInstance", name: chosen.name };
   if (account.kind === "none") return { kind: "signIn" };
+  if (account.kind === "choose") return { kind: "chooseAccount" };
   if (account.kind === "signInAgain") return account;
   return { kind: "ready", instance: effectiveSelection(instances)! };
 }

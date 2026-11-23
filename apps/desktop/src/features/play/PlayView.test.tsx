@@ -55,7 +55,7 @@ async function setup(options: Parameters<typeof playBackend>[0] = {}) {
 
 const playButton = () =>
   screen.getByRole("button", {
-    name: /^(Play|Stop|Cancel|Starting…|Stopping…|Create instance|Sign in|Sign in again|Choose instance)$/,
+    name: /^(Play|Stop|Cancel|Starting…|Stopping…|Create instance|Sign in|Sign in again|Choose instance|Choose account)$/,
   });
 const flush = () => act(async () => {});
 
@@ -104,6 +104,10 @@ describe("start page", () => {
     expect(button.getAttribute("aria-disabled")).toBe("true");
     const reason = document.getElementById(button.getAttribute("aria-describedby")!)!;
     expect(reason.textContent).toMatch(/cannot be canceled right now/);
+    // Inert: no hover fill, no pressed fill, no press scale.
+    expect(button.className).toContain("aria-disabled:hover:bg-primary");
+    expect(button.className).toContain("aria-disabled:active:bg-primary");
+    expect(button.className).not.toContain("play-press");
     fireEvent.click(button);
     await flush();
     expect(b.count("play")).toBe(1);
@@ -393,7 +397,7 @@ describe("states without a game", () => {
     await setup({
       instances: [instance("x", { status: "tooNew", name: "Alt", selected: true }), instance("b")],
     });
-    expect(screen.getByText("Alt cannot be started.")).toBeTruthy();
+    expect(screen.getByText("\u2068Alt\u2069 cannot be started.")).toBeTruthy();
     fireEvent.click(playButton());
     expect(await screen.findByRole("menu")).toBeTruthy();
     expect(screen.getByRole("menuitemradio", { name: /Alt/ }).getAttribute("aria-disabled")).toBe(
@@ -458,5 +462,165 @@ describe("states without a game", () => {
     const b = await setup({ game: IDLE });
     act(() => b.state(running()));
     expect(playButton().textContent).toBe("Stop");
+  });
+});
+
+describe("review fixes", () => {
+  const LONG = "A".repeat(64);
+  const LONG_SPACES = "Wort ".repeat(13).trim().slice(0, 64);
+
+  it.each([LONG, LONG_SPACES])(
+    "a 64-character name stays on the caption line (%#)",
+    async (name) => {
+      await setup({
+        instances: [instance("x", { status: "broken", name, selected: true }), instance("b")],
+      });
+      const text = screen.getByText(/cannot be started\.$/);
+      // One truncated line, the full sentence in its title.
+      expect(text.className).toContain("truncate");
+      expect(text.className).toContain("min-w-0");
+      expect(text.getAttribute("title")).toBe(text.textContent);
+      expect(text.textContent).toContain(name);
+    },
+  );
+
+  it("bidi controls in a name cannot reorder the caption sentence", async () => {
+    const name = "\u202Eevil";
+    await setup({
+      instances: [instance("x", { status: "broken", name, selected: true }), instance("b")],
+    });
+    expect(screen.getByText(/cannot be started\.$/).textContent).toBe(
+      "\u2068\u202Eevil\u2069 cannot be started.",
+    );
+  });
+
+  it("the progress panel cannot grow past its 160 px and a zero step total draws no bar", async () => {
+    const b = await setup();
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    act(() => b.play({ event: "installStep", data: { index: 1, total: 0, name: "x" } }));
+    const panel = document.querySelector<HTMLElement>('[data-slot="launch-progress"]')!;
+    expect(panel.className).toContain("h-40");
+    expect(panel.className).toContain("overflow-hidden");
+    expect(screen.queryByRole("progressbar")).toBeNull();
+    expect(panel.innerHTML).not.toContain("NaN");
+    // Log link, two notices and a failed open: the failure takes a notice's place.
+    act(() => b.play({ event: "installLog", data: { path: "logs/i.log" } }));
+    act(() => b.play({ event: "notice", data: { message: "first" } }));
+    act(() => b.play({ event: "notice", data: { message: "second" } }));
+    b.openFails = { code: "openFailed", params: {}, action: null, detail: "d" };
+    fireEvent.click(screen.getByRole("button", { name: "Open install log" }));
+    await flush();
+    const bottom = panel.querySelector('[data-slot="launch-notes"]')!;
+    expect(bottom.children).toHaveLength(2);
+    expect(bottom.textContent).toContain("The install log could not be opened.");
+    expect(bottom.textContent).toContain("second");
+    expect(bottom.textContent).not.toContain("first");
+  });
+
+  it("the phase line starts empty for a start of this page", async () => {
+    const b = await setup();
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    const panel = document.querySelector<HTMLElement>('[data-slot="launch-progress"]')!;
+    expect(panel.querySelector("[aria-live]")!.textContent).toBe("");
+  });
+
+  it("a second cancel while the first is on its way is not sent", async () => {
+    const b = await setup();
+    await useApp.getState().startGame("survival");
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    await Promise.all([useApp.getState().cancelStart(), useApp.getState().cancelStart()]);
+    expect(b.count("play_cancel")).toBe(1);
+  });
+
+  it("the 600 ms guard is not armed when the button turns into Play", async () => {
+    const b = await setup({ accounts: { accounts: [], canSignIn: true } });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    expect(playButton().textContent).toBe("Sign in");
+    // Signed in meanwhile: the button turns into Play and works at once.
+    b.accounts = { accounts: [mira], canSignIn: true };
+    await act(() => useApp.getState().loadAccounts());
+    expect(playButton().textContent).toBe("Play");
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("play")).toBe(1);
+  });
+
+  it("the 600 ms guard is armed when the button turns into Stop", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    act(() => b.state(running()));
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("game_stop")).toBe(0);
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("game_stop")).toBe(1);
+  });
+
+  it("running and the end of the game are announced once in the caption region", async () => {
+    const b = await setup();
+    const region = document.querySelector<HTMLElement>('[data-slot="play-caption"]')!;
+    expect(region.getAttribute("aria-live")).toBe("polite");
+    expect(region.textContent).toBe("");
+    act(() => b.state(running()));
+    expect(region.textContent).toMatch(/^Running since /);
+    act(() => b.state(stopping()));
+    act(() => b.state(exited(0, true)));
+    expect(region.textContent).toBe("The game has ended.");
+    // The same element all along: a region that exists before its text.
+    expect(document.querySelector('[data-slot="play-caption"]')).toBe(region);
+  });
+
+  it("Choose instance: picking the readable instance in the switcher selects it", async () => {
+    const b = await setup({
+      instances: [
+        instance("x", { status: "broken", name: "Alt", selected: true }),
+        instance("b", { name: "Zwei" }),
+      ],
+    });
+    fireEvent.click(playButton());
+    // The check stays with what is selected (the unreadable one), not with the fallback.
+    const zwei = await screen.findByRole("menuitemradio", { name: "Zwei" });
+    expect(zwei.getAttribute("aria-checked")).toBe("false");
+    fireEvent.click(zwei);
+    await waitFor(() => expect(b.of("instance_select")).toEqual([{ id: "b" }]));
+  });
+
+  it("accounts but none selected: Choose account opens the account choice", async () => {
+    await setup({ accounts: { accounts: [account("u", "Mira_K")], canSignIn: true } });
+    expect(playButton().textContent).toBe("Choose account");
+    fireEvent.click(playButton());
+    expect(useApp.getState().accountMenuOpen).toBe(true);
+    expect(useApp.getState().accountDialog).toBeNull();
+  });
+
+  it("the install log is offered once, whether the backend or the page names it", async () => {
+    for (const action of [{ kind: "openLog" as const, path: "logs/from-backend.log" }, null]) {
+      const b = await setup();
+      fireEvent.click(playButton());
+      await flush();
+      act(() => b.play({ event: "preparing", data: { op: 1 } }));
+      act(() => b.play({ event: "installLog", data: { path: "logs/from-backend.log" } }));
+      act(() =>
+        b.play({
+          event: "failed",
+          data: { error: { code: "installStepFailed", params: {}, action, detail: "d" } },
+        }),
+      );
+      expect(screen.getAllByRole("button", { name: "Open install log" })).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Open install log" }));
+      await flush();
+      expect(b.of("open_location")).toEqual([
+        { target: { kind: "logFile", path: "logs/from-backend.log" } },
+      ]);
+      cleanup();
+      clearMocks();
+      useApp.setState(initial, true);
+    }
   });
 });

@@ -308,5 +308,6 @@
   "play.progress.openLog": "Installationsprotokoll öffnen",
   "play.progress.label": "Fortschritt",
   "play.logOpenFailed": "Das Installationsprotokoll ließ sich nicht öffnen.",
-  "errors.action.openLog": "Installationsprotokoll öffnen"
+  "errors.action.openLog": "Installationsprotokoll öffnen",
+  "play.ended": "Das Spiel wurde beendet."
 }

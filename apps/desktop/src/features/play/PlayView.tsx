@@ -38,7 +38,7 @@ function accountOf(accounts: Resource<AccountsDto>): PlayAccount {
   const list = accounts.data?.accounts;
   if (!list) return { kind: "ok" };
   const selected = list.find((a) => a.selected);
-  if (!selected) return { kind: "none" };
+  if (!selected) return list.length === 0 ? { kind: "none" } : { kind: "choose" };
   if (selected.signInRequired) return { kind: "signInAgain", id: selected.id, name: selected.name };
   return { kind: "ok" };
 }
@@ -168,6 +168,17 @@ export function PlayView() {
 
   const forceDue = useReached(stoppingSeen?.at ?? null, FORCE_STOP_AFTER_MS);
 
+  // A run this page saw end: announced once in the caption region, cleared by the next state.
+  const gameState = game.data?.state;
+  const [ended, setEnded] = useState(false);
+  const previous = useRef(gameState);
+  useEffect(() => {
+    const was = previous.current;
+    previous.current = gameState;
+    if (was === gameState) return;
+    setEnded((was === "running" || was === "stopping") && gameState === "idle");
+  }, [gameState]);
+
   const list = instances.data;
   const loaded = list && game.data && (accounts.data || accounts.status === "error");
 
@@ -237,6 +248,9 @@ export function PlayView() {
         return setSwitcherOpen(true);
       case "signIn":
         return app().openSignIn(null, button);
+      case "chooseAccount":
+        // The menu of the header chip, as "Konto wählen" there (DESIGN.md 10.3).
+        return app().setAccountMenuOpen(true);
       case "signInAgain":
         return app().openSignIn({ id: s.id, name: s.name }, button);
       default:
@@ -264,20 +278,33 @@ export function PlayView() {
     if (selectedId) void app().startGame(selectedId);
   };
 
+  // One line, cut with the full text as its title: a 64-character name must not wrap over the
+  // button. A name is isolated (U+2068 .. U+2069) so bidi characters in it cannot reorder the
+  // sentence around it.
+  const line = (text: string) => (
+    <span className="min-w-0 truncate" title={text}>
+      {text}
+    </span>
+  );
   const caption =
     state.kind === "running" ? (
-      <span className="flex items-center gap-2">
+      <>
         <span aria-hidden="true" className="size-2 shrink-0 rounded-pill bg-success" />
-        {t("play.running", {
-          time: new Intl.DateTimeFormat(i18n.language, { timeStyle: "short" }).format(
-            new Date(state.since),
-          ),
-        })}
-      </span>
+        {line(
+          t("play.running", {
+            time: new Intl.DateTimeFormat(i18n.language, { timeStyle: "short" }).format(
+              new Date(state.since),
+            ),
+          }),
+        )}
+      </>
     ) : state.kind === "noInstance" && state.unreadable ? (
-      t("play.noneStartable")
+      line(t("play.noneStartable"))
     ) : state.kind === "chooseInstance" ? (
-      t("play.cannotStart", { name: state.name })
+      line(t("play.cannotStart", { name: `⁨${state.name}⁩` }))
+    ) : ended && !exit ? (
+      // Heard, not seen: the button saying "Play" again shows the end.
+      <span className="sr-only">{t("play.ended")}</span>
     ) : null;
 
   return (
@@ -303,7 +330,9 @@ export function PlayView() {
           {!busy && (
             <Switcher
               list={list}
-              selected={selectedId}
+              // The check marks what is selected, also an unreadable selection (row 5 of 10.2),
+              // so choosing the readable fallback is a change.
+              selected={list.find((i) => i.selected)?.id ?? selectedId}
               open={switcherOpen}
               onOpenChange={setSwitcherOpen}
               onSelect={(id) => void select(id)}
@@ -313,7 +342,14 @@ export function PlayView() {
         </div>
       )}
       {/* The caption above the button has its own line, so the button never moves. */}
-      <p className="mt-2 mb-1 flex h-5 items-center text-small text-muted-foreground">{caption}</p>
+      {/* Always there, so screen readers hear what appears in it: running, ended, why not. */}
+      <p
+        data-slot="play-caption"
+        aria-live="polite"
+        className="mt-2 mb-1 flex h-5 min-w-0 items-center gap-2 text-small text-muted-foreground"
+      >
+        {caption}
+      </p>
       <div className="flex flex-wrap items-center gap-2">
         <PlayButton state={state} onActivate={activate} buttonRef={buttonRef} />
         {showForce && (

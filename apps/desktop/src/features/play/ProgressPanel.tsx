@@ -14,10 +14,13 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
   const { t, i18n } = useTranslation();
   const [openFailed, setOpenFailed] = useState(false);
   const opening = useRef(false);
-  const phase = progress?.phase ?? "launching";
+  // A start of this page shows no phase until its first real one; a start found after a reload
+  // (no channel, nothing known) shows "Launching game".
+  const phase = progress ? progress.phase : "launching";
   const count = progress && countLine(progress, t, i18n.language);
   const step = progress?.step;
   const log = progress?.installLog ?? null;
+  const notices = (progress?.notices ?? []).slice(openFailed ? -1 : -2);
 
   const openLog = async (path: string) => {
     if (opening.current) return;
@@ -34,10 +37,11 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
   };
 
   return (
-    <div data-slot="launch-progress" className="flex h-40 max-w-120 flex-col">
+    // Fixed height and nothing drawn past it: the bottom slot holds at most two lines.
+    <div data-slot="launch-progress" className="flex h-40 max-w-120 flex-col overflow-hidden">
       {/* The phase is announced; the counts below are not, they change too often. */}
       <p aria-live="polite" className="text-body">
-        {t(`play.progress.phase.${phase}`)}
+        {phase && t(`play.progress.phase.${phase}`)}
       </p>
       <p className="mt-1 flex h-5 min-w-0 gap-1 text-small text-muted-foreground tabular-nums">
         {count && <span className="shrink-0">{count.text}</span>}
@@ -46,7 +50,7 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
         {count?.name && <bdi className="min-w-0 truncate">{count.name}</bdi>}
       </p>
       <div className="mt-2 h-1.5">
-        {step && (
+        {step && step.total > 0 && (
           <div
             role="progressbar"
             aria-label={t("play.progress.label")}
@@ -66,23 +70,25 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
         )}
       </div>
       {log && (
-        <div className="mt-3 flex flex-col items-start gap-1">
+        <div className="mt-3">
           <Button variant="link" onClick={() => void openLog(log)}>
             {t("play.progress.openLog")}
           </Button>
+        </div>
+      )}
+      {/* The bottom slot, two lines at most: a failed log open takes the place of the older
+          notice (an inline error stays next to what failed, DESIGN.md 10.11). */}
+      {(openFailed || notices.length > 0) && (
+        <div data-slot="launch-notes" className="mt-auto flex flex-col">
           {openFailed && (
             <p role="alert" className="flex items-center gap-2 text-small text-danger">
               <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
-              {t("play.logOpenFailed")}
+              <span className="min-w-0 truncate">{t("play.logOpenFailed")}</span>
             </p>
           )}
-        </div>
-      )}
-      {progress && progress.notices.length > 0 && (
-        // The core writes notices in English (like error details).
-        <div lang="en" className="mt-auto flex flex-col">
-          {progress.notices.map((n, i) => (
-            <p key={i} className="truncate text-caption text-muted-foreground">
+          {notices.map((n, i) => (
+            // The core writes notices in English (like error details).
+            <p key={i} lang="en" className="truncate text-caption text-muted-foreground">
               {n}
             </p>
           ))}

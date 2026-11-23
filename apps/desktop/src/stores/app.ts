@@ -101,6 +101,9 @@ interface AppState {
   versionsSummary: Resource<VersionsSummary>;
   accounts: Resource<AccountsDto>;
   accountDialog: AccountDialog | null;
+  /** The account menu of the "Choose account" chip is open (the Play button can open it too). */
+  accountMenuOpen: boolean;
+  setAccountMenuOpen: (open: boolean) => void;
   instances: Resource<InstanceDto[]>;
   /** Some folders could not be read: the list may miss instances. */
   instancesIncomplete: boolean;
@@ -179,6 +182,8 @@ let signInOpenings = 0;
 let launchTokens = 0;
 // A stop or force stop request is on its way: a second click is ignored until it answers.
 let stopBusy = false;
+// A cancel request is on its way: a second click is ignored until it answers (DESIGN.md 10.0).
+let cancelBusy = false;
 
 /**
  * Takes a game state the backend reported (event or `game_state()` answer). A start of this page
@@ -238,6 +243,8 @@ export const useApp = create<AppState>()((set, get) => ({
   versionsSummary: idle(),
   accounts: idle(),
   accountDialog: null,
+  accountMenuOpen: false,
+  setAccountMenuOpen: (open) => set({ accountMenuOpen: open }),
   instances: idle(),
   instancesIncomplete: false,
   activeInstance: null,
@@ -351,7 +358,7 @@ export const useApp = create<AppState>()((set, get) => ({
   },
 
   openSignIn: (resign, from = null) => {
-    // Focus returns to rom (the Play button) when the dialog closes, else to the chip.
+    // Focus returns to `from` (the Play button) when the dialog closes, else to the chip.
     setDialogOpener(from);
     // `false` is only known once the list is: until then the backend decides (it refuses with
     // `missingClientId`, which the dialog shows).
@@ -421,7 +428,8 @@ export const useApp = create<AppState>()((set, get) => ({
   cancelStart: async () => {
     const l = get().launch;
     const op = l?.progress.op;
-    if (!l || op === null || op === undefined || l.cancelRefused) return;
+    if (cancelBusy || !l || op === null || op === undefined || l.cancelRefused) return;
+    cancelBusy = true;
     try {
       // `true`: `cancelled` follows on the channel. `false`: too late, the start goes on.
       const cancelled = await api.playCancel(op);
@@ -429,6 +437,8 @@ export const useApp = create<AppState>()((set, get) => ({
         set((s) => ({ launch: s.launch && { ...s.launch, cancelRefused: true } }));
     } catch (e) {
       set({ playActionError: errorOf(e) });
+    } finally {
+      cancelBusy = false;
     }
   },
 

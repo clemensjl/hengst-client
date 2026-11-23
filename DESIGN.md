@@ -508,13 +508,14 @@ State precedence, first match wins:
 
 | # | State | Label (de / en) | Variant, icon | On click |
 |---|---|---|---|---|
-| 1 | Stopping | "Wird beendet…" / "Stopping…" | secondary, spinner, inert | nothing; after 10 s a second button "Sofort beenden" / "Force stop" (`destructive`, default size) appears to the right |
-| 2 | Running | "Beenden" / "Stop" | secondary, `square` | stop the game gracefully; a status line above the button: 8 px `--success` dot plus "Läuft seit {{time}}" / "Running since {{time}}" |
+| 1 | Stopping | "Wird beendet…" / "Stopping…" | secondary, spinner, inert | nothing; after 10 s a second button "Sofort beenden" / "Force stop" (`destructive`, default size) appears to the right and stays while the state lasts. The 10 s count from the moment the page first sees the run stopping, so after a reload they start again |
+| 2 | Running | "Beenden" / "Stop" | secondary, `square` | stop the game gracefully; a status line above the button: 8 px `--success` dot plus "Läuft seit {{time}}" / "Running since {{time}}". If the game has no window yet, nothing is asked to close: the button stays "Beenden", a status line 24 px below it says "Das Spiel hat noch kein Fenster und wurde nicht gebeten, sich zu schließen." / "The game has no window yet and was not asked to close.", and "Sofort beenden" appears at once |
 | 3 | Starting (click until the first progress event) | "Wird gestartet…" / "Starting…" | primary, spinner, inert | nothing |
 | 3 | Preparing | "Abbrechen" / "Cancel" | secondary, `x`; 600 ms click guard after the change | cancel the launch; the progress panel shows below (10.12) |
 | 4 | No readable instance (none at all, or only unreadable or newer-format ones) | "Instanz anlegen" / "Create instance" | primary, `plus` | open the create dialog; if unreadable instances exist, the caption above the button says "Keine Instanz lässt sich starten." / "No instance can be started." |
 | 5 | Selected instance unreadable or newer format, and at least one readable instance exists | "Instanz wählen" / "Choose instance" | primary, `boxes` | open the instance switcher (it is shown, because there are at least two instances); above the button the caption "{{name}} lässt sich nicht starten." / "{{name}} cannot be started." |
 | 6 | No account | "Anmelden" / "Sign in" | primary, `log-in` | open the sign-in dialog; if this build has no client id (`can_sign_in` false), the dialog is not opened and the no-client-id block of 11.6 is shown instead |
+| 6 | Accounts, but none selected | "Konto wählen" / "Choose account" | primary, `user-round` | open the account menu of the header chip, as its own "Konto wählen" does (10.3) |
 | 7 | Account needs sign-in again | "Erneut anmelden" / "Sign in again" | primary, `log-in` | start sign-in for that account |
 | 8 | Ready | "Spielen" / "Play" | primary, `play` | start the selected instance |
 
@@ -627,8 +628,8 @@ Inline error: under a field or setting, `circle-alert` 16 plus one sentence in `
 24 px below the Play button, width at most 480, only in the preparing state. Its height is fixed at 160 px from the moment preparing starts, so nothing jumps between phases.
 
 - Line 1, phase (16/24 `--text`): "Loader wird aufgelöst" / "Resolving loader", "Installer wird geladen" / "Downloading installer", "Dateien werden geladen" / "Downloading files", "Installation wird geprüft" / "Verifying installation", "Wird installiert" / "Installing", "Spiel wird gestartet" / "Launching game". 4 px below:
-- Line 2 (secondary, tabular): "3.402 von 4.118 Dateien" / "3,402 of 4,118 files", or "Schritt 3 von 6: jarsplitter" / "Step 3 of 6: jarsplitter" (a real sequence). 8 px below:
-- Bar: 6 px, pill, track `--border-strong` (1.79 / 1.95 against `--surface`, enough to read the remaining length), fill `--text` (9.06 / 7.14 against the track), determinate when counts or steps are known (value and max exposed); hidden during phases without counts, never looped. 12 px below:
+- Line 2 (secondary, tabular): the size of the download batch, "4.118 Dateien" / "4,118 files" (the core reports a batch's size when it starts and its end, no running count), or "Schritt 3 von 6: jarsplitter" / "Step 3 of 6: jarsplitter" (a real sequence). The phase line keeps its phase between two batches, so it does not flip. 8 px below:
+- Bar: 6 px, pill, track `--border-strong` (1.79 / 1.95 against `--surface`, enough to read the remaining length), fill `--text` (9.06 / 7.14 against the track), determinate for installer steps only (value and max exposed); hidden during downloads and every other phase, never looped. 12 px below:
 - When an install log exists: link button "Installationsprotokoll öffnen" / "Open install log" (40 px).
 - Notice events as caption lines at the bottom, at most the last two.
 - The phase line is a polite live region; counts are not announced on every change.
@@ -836,7 +837,8 @@ Spielen                                                          (M Mira_K v)
 - Header: h1 "Spielen" / "Play", chip; no header action (the Play button is the action).
 - Content: one left-aligned block, 48 px from the top, max-width 640: start title (32/40, two lines max), 8 px, meta line (secondary 14/20: version, loader, last played as three spans with 24 px gaps, no separators), 16 px, `ghost` "Instanz wechseln" / "Switch instance" with `chevron-down` (DropdownMenu with the instances as radio items; hidden when the list holds exactly one instance, so it is always shown when state 5 of 10.2 applies), 32 px, the Play button (10.2), 24 px, progress panel (10.12) or ErrorPanel, and in the running state a link button "Log anzeigen" / "Show log".
 - Loading: skeleton title (320 × 40), meta (240 × 20), button (240 × 56).
-- Empty: no instance: h2-sized title "Noch keine Instanz" / "No instances yet" in place of the start title, the first-run text (11.0), Play button in its "Instanz anlegen" state. No account: the instance shows normally, the button says "Anmelden".
+- Empty: no instance: h2-sized title "Noch keine Instanz" / "No instances yet" in place of the start title, the first-run text (11.0), Play button in its "Instanz anlegen" state. Only unreadable or newer-format instances: no start title, the first-run text, the caption "Keine Instanz lässt sich starten." above the button. No account: the instance shows normally, the button says "Anmelden".
+- While a game is being started, runs or stops, the block shows that game's instance and "Instanz wechseln" is hidden; its 40 px stay, so the button does not move.
 - Error: instance or game state failed to load: ErrorPanel in place of the block with "Erneut versuchen". Launch failure and abnormal exit: 10.2 and 10.12.
 - Height at 960 × 600: 56 header + 48 + 80 title + 8 + 20 meta + 16 + 40 switcher + 32 + 56 Play + 24 + 160 panel = 540 px, 572 px with the 32 px bottom padding; it fits.
 - Keyboard: Tab to "Instanz wechseln", then the Play button. The Play button gets initial focus when the view opens from the sidebar, so Enter plays. No global hotkey.

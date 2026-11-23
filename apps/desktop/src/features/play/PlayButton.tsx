@@ -5,6 +5,7 @@ import {
   PlayIcon,
   PlusIcon,
   SquareIcon,
+  UserRoundIcon,
   XIcon,
   type LucideIcon,
 } from "lucide-react";
@@ -51,6 +52,8 @@ function lookOf(state: PlayButtonState, t: (k: string) => string): Look {
       return { label: t("play.button.choose"), variant: "primary", icon: BoxesIcon };
     case "signIn":
       return { label: t("accounts.signInButton"), variant: "primary", icon: LogInIcon };
+    case "chooseAccount":
+      return { label: t("accounts.choose"), variant: "primary", icon: UserRoundIcon };
     case "signInAgain":
       return { label: t("accounts.needsSignIn"), variant: "primary", icon: LogInIcon };
     case "ready":
@@ -60,11 +63,15 @@ function lookOf(state: PlayButtonState, t: (k: string) => string): Look {
 
 const REASON_ID = "play-button-reason";
 
+/** The states that undo what the click before started: the click guard arms on these. */
+const OPPOSITE: PlayButtonState["kind"][] = ["preparing", "running"];
+
 /**
  * DESIGN.md 10.2: one button whose label, variant and icon follow the state; it never moves,
  * never changes height and is never `disabled`. An inert state keeps the button focusable with
- * `aria-disabled` and its reason as the description. After every change of the state a click
- * within 600 ms is ignored, so the second click of a double click never hits the new action.
+ * `aria-disabled` and its reason as the description. When the button turns into the opposite
+ * action (Cancel, Stop) a click within 600 ms is ignored, so the second click of a double click
+ * never hits it (DESIGN.md 10.0); a change into any other state takes the next click at once.
  */
 export function PlayButton({
   state,
@@ -83,7 +90,7 @@ export function PlayButton({
   useLayoutEffect(() => {
     if (kind.current !== state.kind) {
       kind.current = state.kind;
-      changedAt.current = Date.now();
+      if (OPPOSITE.includes(state.kind)) changedAt.current = Date.now();
     }
   }, [state.kind]);
 

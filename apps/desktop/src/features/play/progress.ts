@@ -48,7 +48,8 @@ export function reduce(p: LaunchProgress, e: PlayEvent): LaunchProgress {
   const phase = (phase: LaunchPhase): LaunchProgress => ({ ...p, phase, files: null, step: null });
   switch (e.event) {
     case "preparing":
-      return { ...phase("launching"), op: e.data.op };
+      // No phase yet: the phase line starts empty until the first real phase.
+      return { ...p, op: e.data.op };
     case "resolvingLoader":
       return phase("resolvingLoader");
     case "downloadingInstaller":
@@ -56,6 +57,9 @@ export function reduce(p: LaunchProgress, e: PlayEvent): LaunchProgress {
     case "downloading":
       return { ...phase("downloadingFiles"), files: { count: e.data.count } };
     case "downloaded":
+      // The batch is done; the next one (or the next phase) follows. Keeping the phase avoids a
+      // flip to "launching" and back, which the live region would announce each time.
+      return { ...p, files: null };
     case "installFinished":
     case "installReused":
       return phase("launching");

@@ -308,5 +308,6 @@
   "play.progress.openLog": "Open install log",
   "play.progress.label": "Progress",
   "play.logOpenFailed": "The install log could not be opened.",
-  "errors.action.openLog": "Open install log"
+  "errors.action.openLog": "Open install log",
+  "play.ended": "The game has ended."
 }
