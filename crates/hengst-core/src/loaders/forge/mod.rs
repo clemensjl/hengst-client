@@ -1351,6 +1351,52 @@ mod tests {
     }
 
     #[test]
+    fn cancel_stops_a_running_processor_and_writes_no_marker() {
+        use crate::process::{CancelFlag, JobRunner};
+        let s = setup();
+        // A good install first: its marker must go too when a later run is cancelled.
+        s.finish(&Patcher::default()).unwrap();
+        std::fs::write(s.patched(), b"tampered").unwrap();
+        // The "java" is a batch file: cmd.exe starts powershell with the processor arguments,
+        // which writes part of the `--output`, records its process id and sleeps.
+        let dir = tempfile::tempdir().unwrap();
+        let java = dir.path().join("java.cmd");
+        std::fs::write(
+            &java,
+            "@powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"%~dp0processor.ps1\" %*\r\n",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("processor.ps1"),
+            "$out = $args[[array]::IndexOf($args, '--output') + 1]\r\n\
+             Set-Content -LiteralPath $out -Value partial\r\n\
+             Set-Content -LiteralPath (Join-Path $PSScriptRoot 'pid.txt') -Value $PID\r\n\
+             Start-Sleep 60\r\n",
+        )
+        .unwrap();
+        let pid_file = dir.path().join("pid.txt");
+        let cancel = CancelFlag::new();
+        let flag = cancel.clone();
+        let watcher = std::thread::spawn(move || {
+            let pid = crate::process::tests::wait_for_pid(&pid_file);
+            let processor = crate::process::job::tests::open_process(pid);
+            flag.cancel();
+            crate::process::job::tests::ends_within(&processor, Duration::from_secs(30))
+        });
+        let err = s.finish_with(&JobRunner::new(cancel), &java).unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "{err}");
+        assert!(watcher.join().unwrap(), "the processor survived the cancel");
+        assert!(!s.marker().exists());
+        assert_eq!(std::fs::read(s.patched()).unwrap(), b"partial\r\n");
+        // The partial output is not taken as an install: the next run starts the processor again.
+        let patcher = Patcher::default();
+        s.finish(&patcher).unwrap();
+        assert_eq!(patcher.runs.load(Ordering::SeqCst), 1);
+        assert_eq!(std::fs::read(s.patched()).unwrap(), b"patched");
+        assert!(s.marker().is_file());
+    }
+
+    #[test]
     fn patched_jar_listed_without_url_is_produced_by_the_processors_not_the_installer() {
         let s = setup_with(&[patched_library(&sha1_hex(b"patched"))]);
         let patcher = Patcher::default();
