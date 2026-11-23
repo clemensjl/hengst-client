@@ -105,7 +105,7 @@ export async function startMock(scenario: string): Promise<Mock> {
     return { url, process: child };
   } catch (e) {
     // Never leave a mock behind that nobody stops.
-    if (child.exitCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
     throw e;
   }
 }
@@ -113,7 +113,7 @@ export async function startMock(scenario: string): Promise<Mock> {
 /** Closing stdin ends the mock; the PID it was started with is the fallback. */
 export async function stopMock(mock: Mock) {
   const child = mock.process;
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<void>((done) => child.once("exit", () => done()));
   child.stdin?.end();
   const timeout = new Promise<"timeout">((done) => setTimeout(() => done("timeout"), 5_000));
@@ -173,20 +173,16 @@ export async function byRole(
   name: string,
   timeout?: number,
 ): Promise<WebdriverIO.Element> {
-  let found: WebdriverIO.Element | null = null;
+  let found: unknown = null;
   await browser.waitUntil(
     async () => {
-      found = (await browser.execute(
-        singleByRole,
-        role,
-        name,
-        true,
-      )) as unknown as WebdriverIO.Element | null;
+      found = await browser.execute(singleByRole, role, name, true);
       return found !== null;
     },
     { timeout, timeoutMsg: `no single displayed ${role} named "${name}"` },
   );
-  return found!;
+  // `execute` hands back a plain WebDriver element reference; `$` turns it into an element.
+  return await $(found as Parameters<typeof $>[0]);
 }
 
 /**

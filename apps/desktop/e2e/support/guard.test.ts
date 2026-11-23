@@ -1,7 +1,15 @@
 // @vitest-environment node
 import { createServer, type Server } from "node:net";
 import { afterEach, describe, expect, it } from "vitest";
-import { abortMarker, guardFailure, listenerIsOurs, listenerPids, portInUse } from "./guard.ts";
+import {
+  abortMarker,
+  guardFailure,
+  listenerIsOurs,
+  listenerPids,
+  listenerQuery,
+  parseListenerPids,
+  portInUse,
+} from "./guard.ts";
 
 let server: Server | undefined;
 afterEach(async () => {
@@ -34,17 +42,50 @@ describe("portInUse", () => {
 });
 
 describe("listenerPids", () => {
-  it("names the process that listens on the port", async () => {
-    const port = await listen();
-    expect(await listenerPids(port)).toEqual([process.pid]);
+  it("asks for the listeners of exactly that port and reads one PID per line", async () => {
+    const asked: string[] = [];
+    const pids = await listenerPids(4444, async (command) => {
+      asked.push(command);
+      return "1234\r\n1234\r\n";
+    });
+    expect(pids).toEqual([1234, 1234]);
+    expect(asked).toHaveLength(1);
+    expect(asked[0]).toContain("Get-NetTCPConnection -State Listen -LocalPort 4444 ");
   });
 
-  it("is empty for a free port", async () => {
-    const port = await listen();
-    await new Promise<void>((done) => server!.close(() => done()));
-    server = undefined;
-    expect(await listenerPids(port)).toEqual([]);
+  it("is empty when the query prints nothing (nothing listens)", async () => {
+    expect(await listenerPids(4444, async () => "")).toEqual([]);
+    expect(await listenerPids(4444, async () => "\r\n")).toEqual([]);
   });
+
+  it("a failing query is an error, never 'nothing listens'", async () => {
+    await expect(
+      listenerPids(4444, () => Promise.reject(new Error("exit code 2"))),
+    ).rejects.toThrow("exit code 2");
+  });
+
+  it("refuses a port that is not one", () => {
+    expect(() => listenerQuery(0)).toThrow();
+    expect(() => listenerQuery(65536)).toThrow();
+    expect(() => listenerQuery(4444.5)).toThrow();
+    expect(listenerQuery(1)).toContain("-LocalPort 1 ");
+  });
+
+  it("keeps only whole numbers from the output", () => {
+    expect(parseListenerPids(" 12\n\nwarning\n34 ")).toEqual([12, 34]);
+  });
+
+  // The one real query: a fresh powershell.exe plus the NetTCPIP (CIM) module needs seconds on a
+  // busy machine (more than vitest's 5 s default on the CI runner), so it gets its own budget. The
+  // port is an ephemeral one of this test process, never a fixed one.
+  it(
+    "names this test process for a port it listens on (real Get-NetTCPConnection)",
+    { timeout: 30_000 },
+    async () => {
+      const port = await listen();
+      expect(await listenerPids(port)).toEqual([process.pid]);
+    },
+  );
 });
 
 describe("listenerIsOurs", () => {

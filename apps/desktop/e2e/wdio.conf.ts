@@ -71,7 +71,9 @@ async function abortRun(reason: string, withSession: boolean): Promise<never> {
   if (tauriDriver?.pid && tauriDriver.exitCode === null && tauriDriver.signalCode === null)
     killTree(tauriDriver.pid);
   if (withSession) await browser.deleteSession().catch(() => {});
-  if (mock && mock.process.exitCode === null) mock.process.kill();
+  if (mock && mock.process.exitCode === null && mock.process.signalCode === null) {
+    mock.process.kill();
+  }
   if (home) removeHome(home);
   process.exit(1);
 }
@@ -154,6 +156,19 @@ export const config: WebdriverIO.Config = {
   before: async () => {
     let failure: string | null;
     try {
+      // The app's own page must be loaded: from any other page (a blank first document, or the
+      // error page of a build that wants the dev server, i.e. not an e2e build) the IPC call fails
+      // with "Origin header is not a valid URL", which says nothing about the cause.
+      const loaded = () =>
+        browser.execute(
+          () => location.origin === "http://tauri.localhost" && document.readyState === "complete",
+        );
+      await browser.waitUntil(loaded, { timeout: 20_000 }).catch(async () => {
+        const href = await browser.execute(() => location.href).catch(() => "unknown");
+        throw new Error(
+          `the app page did not load (the web view shows ${href}; is this an e2e build?)`,
+        );
+      });
       const info = await browser.execute(async () => {
         const internals = (
           window as unknown as {
