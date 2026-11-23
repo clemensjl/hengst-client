@@ -10,13 +10,13 @@
 
 **Spec:** `docs/begleitmod-spec.md` (Abschnitte 4 bis 9 und 12; Meilenstein M1a laut Fahrplan). Dazu die Entscheidungen D1 bis D7, F8 bis F10 und die Lehren aus `.superpowers/sdd/2026-11-20-begleitmod-m0-foundation/progress.md` (Abschnitt "Final review" und die Einträge zu Task 11 bis 14).
 
-**Ausgangslage:** Worktree `C:\Users\jelec\Documents\Projekte\hengst-client-mod`, Branch `begleitmod-m0`, nach der Fix-Welle des M0-Abschlussreviews (F1 bis F7, F11 bis F15: Lizenzdatei in den Jars, Dimmung des Einstellungsbildschirms, Optionen der Keystrokes im Tick zwischengespeichert, explizite Versionsmengen, Beschriftungsschlüssel je Funktion, Spec 8.8 als absolutes Budget, neue Meilensteintabelle). Dieser Plan setzt diesen Stand voraus.
+**Ausgangslage:** Worktree `<mod-worktree>`, Branch `begleitmod-m0`, nach der Fix-Welle des M0-Abschlussreviews (F1 bis F7, F11 bis F15: Lizenzdatei in den Jars, Dimmung des Einstellungsbildschirms, Optionen der Keystrokes im Tick zwischengespeichert, explizite Versionsmengen, Beschriftungsschlüssel je Funktion, Spec 8.8 als absolutes Budget, neue Meilensteintabelle). Dieser Plan setzt diesen Stand voraus.
 
 ## Global Constraints
 
 - Alles aus den Global Constraints des M0-Plans gilt weiter: Mod-ID `hengst`, Paket `io.github.clemensjl.hengst.mod`, `mod_version=0.1.0`, Jar-Namen, `fabric.mod.json`-Regeln, Code und Logtexte Englisch, `docs/` Deutsch, UI-Texte nur über `hengst/lang/en_us.json` und `de_de.json`, keine Emojis, Lizenz GPL-3.0-or-later.
 - `common`- und `legacy`-Hauptcode: Java 8 (`options.release = 8`), keine Java-9+-API, keine Abhängigkeit. Test-Code von `common` kompiliert mit Release 17.
-- Befehle laufen aus `mod/` mit `export JAVA_HOME="C:/Users/jelec/.jdks/openjdk-25.0.1"`. Einheitstests `./gradlew -p common test` (startet danach `interpretedTest` mit `-Xint`), Adapter `./gradlew -p legacy test`, `./gradlew -p modern :1.21.11:test`, `./gradlew -p modern :26.3:test`, Jars `./gradlew buildAll`, Spieltests `./gradlew -p modern :26.3:clientGameTests`, `./gradlew -p modern :1.21.11:clientGameTests`, `./gradlew -p legacy gameTests`, Quellen `./gradlew -p modern :26.3:genSources`, `./gradlew -p modern :1.21.11:genSources`, `./gradlew -p legacy genSources`. Am Ende jedes Tasks `./gradlew --stop`. Regeln aus `C:/Users/jelec/Documents/Projekte/hengst-client/.superpowers/sdd/mod-implementer-rules.md` gelten.
+- Befehle laufen aus `mod/` mit `export JAVA_HOME="<jdk-25>"`. Einheitstests `./gradlew -p common test` (startet danach `interpretedTest` mit `-Xint`), Adapter `./gradlew -p legacy test`, `./gradlew -p modern :1.21.11:test`, `./gradlew -p modern :26.3:test`, Jars `./gradlew buildAll`, Spieltests `./gradlew -p modern :26.3:clientGameTests`, `./gradlew -p modern :1.21.11:clientGameTests`, `./gradlew -p legacy gameTests`, Quellen `./gradlew -p modern :26.3:genSources`, `./gradlew -p modern :1.21.11:genSources`, `./gradlew -p legacy genSources`. Am Ende jedes Tasks `./gradlew --stop`. Regeln aus `<launcher-checkout>/.superpowers/sdd/mod-implementer-rules.md` gelten.
 - Jeder Task, der Hauptcode von `common` oder einem Adapter ändert, endet mit grünem `./gradlew buildAll`; Tasks, die Adapter oder deren Spieltests ändern, zusätzlich mit allen drei Spieltests.
 - Jeder Commit endet mit der Zeile `Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>`. Dateien einzeln stagen, nie `git add -A`.
 - Bekanntes Windows-Ärgernis: `buildAll` oder ein Test-Task kann mit "Unable to delete directory ... test-results ... binary" scheitern. Dann die leeren `binary`-Verzeichnisse unter den betroffenen `build/test-results` löschen und den Lauf wiederholen; das ist kein Fehler des Codes.
@@ -1651,7 +1651,7 @@ Co-Authored-By: Claude Fable 5.2 <noreply@anthropic.com>"
 - Modify: `mod/README.md` (Abschnitt "What was verified (M1a)"), `docs/begleitmod-spec.md` (Abschnitt 12: M1a erledigt mit Datum)
 
 **Interfaces:**
-- Consumes: `mod/dist/` aus `./gradlew clean buildAll`; Launcher-Checkout `C:\Users\jelec\Documents\Projekte\hengst-client`.
+- Consumes: `mod/dist/` aus `./gradlew clean buildAll`; Launcher-Checkout `<launcher-checkout>`.
 
 - [ ] **Step 1: Bauen**
 

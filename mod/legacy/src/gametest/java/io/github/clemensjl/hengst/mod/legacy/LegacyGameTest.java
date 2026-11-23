@@ -1055,8 +1055,9 @@ public final class LegacyGameTest implements ClientModInitializer {
         pass(lang + ": the controls screen lists the mod's category and its four bindings translated " + listed);
     }
 
-    // A single dispatch call of 1192 bytes was seen once per game start at 67 to 80 s JVM uptime on the modern versions
-    // (cause unknown, spec 8.8). The asserted window starts no earlier than this; inside it the check stays exact.
+    // A single dispatch call of 1192 bytes was seen at most once per game start, at 67 to 80 s JVM uptime, on the modern
+    // versions only (cause unknown, spec 8.8); on 1.8.9 it was never seen. The wait is applied here for symmetry with
+    // the modern harness: the asserted window starts no earlier than 90 s; inside it the check stays exact.
     private static final long ASSERTED_WINDOW_UPTIME_MS = 90_000;
 
     private static void waitForSteadyJvm() throws InterruptedException {

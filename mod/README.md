@@ -105,17 +105,17 @@ HUD modules added in M1a, all off at first start (enable them in the settings): 
 
 Checked on 2026-11-22 and 2026-11-23, one machine (AMD Ryzen 9 5900X, 32 GB, Windows 11 Pro).
 
-In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9, both phases): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
+In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9; full phase last green on commit 93e9b05 on all three versions, restart phase last green on 60ad758; not re-run on the final commit 01ed2da, see below): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
 
 Cost per module per frame (spec 8.8; time the core spends per module, submit time on 1.21.11 and 26.3, including the GL calls on 1.8.9; median of the runs' medians on an otherwise idle machine, in microseconds):
 
 | Version | Runs | Four M0 modules (budget 50) | All eleven (budget 120) | Marginal per new module (budget 10) |
 |---|---|---|---|---|
 | 1.8.9 | 6 | 19.2 (18.2 to 44.5) | 46.5 (30.0 to 69.5) | 1.6 to 6.0 |
-| 1.21.11 | 5 | 23.6 (19.5 to 26.8) | 38.3 (30.7 to 39.0) | 2.1 to 3.4 |
+| 1.21.11 | 5 (all eleven: 4) | 23.6 (19.5 to 26.8) | 38.3 (30.7 to 39.0) | 2.1 to 3.4 |
 | 26.3 | 6 | 24.6 (22.0 to 25.9) | 35.7 (34.0 to 36.4) | 1.9 to 3.7 |
 
-The budget definitions (marginal cost, median of runs) are rulings that the project owner has not confirmed yet. A cross-check with paired alternating windows (no per-module timer) agrees within about 1 microsecond.
+The budget definitions (marginal cost, median of runs) are rulings that the project owner has not confirmed yet. A cross-check with paired alternating windows (no per-module timer) agrees within about 1 microsecond outside the 1.8.9 slow state and outside the runs under load (1.21.11 run 2's paired windows are not counted). The 1.8.9 all-eleven median of 46.5 lies between two clusters of runs (30.0 to 31.1 normal, 61.8 to 69.5 in the slow state).
 
 The shipped jars from `buildAll` (sizes and SHA-256 in the Task 19 report; each contains `LICENSE_hengst`, the jar scan found no test entry), installed into fresh instances started by the Hengst launcher (`hengst launch <version> --loader fabric|legacy-fabric --offline Dev`, a `dev-offline` build of the CLI, loader 0.20.1, Fabric API 0.141.6 / 0.166.2, Legacy Fabric API 1.13.5; Java 8 on 1.8.9, 21 on 1.21.11, 25 on 26.3 as picked by the launcher; sound muted):
 
@@ -124,7 +124,13 @@ The shipped jars from `buildAll` (sizes and SHA-256 in the Task 19 report; each 
 - 1.21.11 and 1.8.9, the shipped jar alone, driven by window messages and checked on the game's F2 screenshots: a profile written by the released M0 build is loaded with its positions (FPS middle right, CPS on the hotbar on 1.8.9, Coordinates off); switching Direction on in the settings draws it and rewrites the file with the four M0 entries unchanged and the seven new entries added; after a restart Direction is still on and the other six new modules, switched on in the file before the start, draw plausible text (direction, `0.0 m/s`, `0:00.0`, the time, `RAM ...`; ping and server address nothing in single player); the controls screen lists the category Hengst with the four translated binding names. 1.8.9 also: the first start draws exactly the four M0 modules.
 - 26.3: SDL3 takes no posted keys and the window cannot be captured, so the M0 profile was checked only by a start: no warning, the file is left unchanged (it is rewritten on the first change, which the suite covers with the current format).
 
-Not verified: multiplayer (ping and server address with a value, a server change, the player list over the HUD): it needs a server, and running the server software means accepting Mojang's EULA, which is the owner's decision. Measurements on other hardware. The cause of a state on 1.8.9 in which every measured case took about 2.3 times as long (three of six runs) and of a single 1192-byte allocation in the key dispatch about 67 to 80 s after game start (spec 7.3, 8.8). On 26.3 a real key press or screen capture in a launcher-started game outside the in-game suite.
+Not verified: multiplayer (ping and server address with a value, a server change, the player list over the HUD): it needs a server, and running the server software means accepting Mojang's EULA, which is the owner's decision. Measurements on other hardware. The cause of a state on 1.8.9 in which the measured cases with modules took 1.6 to 2.6 times as long (the empty hook not; three of six runs: 1, 5, 6) and of a single 1192-byte allocation in the key dispatch about 67 to 80 s after game start (spec 7.3, 8.8). On 26.3 a real key press or screen capture in a launcher-started game outside the in-game suite.
+
+Also not verified yet:
+- The three in-game suites on the final commit 01ed2da (they last passed as described above); on 26.3 the development suite has never run with the controls-screen reader changed in 01ed2da (on 1.21.11 it passed inside the launcher-started game).
+- The 1.8.9 suite against the shipped jar: on the shipped 1.8.9 jar the stopwatch (bind, start, stop, reset), the language switch, and the settings groups and scroll bar at 320 x 240 were not exercised (only on the development classes).
+- On 26.3 without the test jar: the rewrite of an M0 profile and the seven modules drawn from a pre-seeded profile.
+- The frame-rate comparison without the mod, with the four M0 modules and with all eleven (plan task 19, step 2.7): not yet measured.
 
 ## What was verified (M0, 2026-11-21)
 
