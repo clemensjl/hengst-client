@@ -294,6 +294,15 @@
     outline-offset: 2px;
   }
 
+  /* What Base UI would inject as an inline <style> (blocked by the CSP, turned off in main.tsx):
+     the select popup scrolls without a visible scrollbar. */
+  .base-ui-disable-scrollbar {
+    scrollbar-width: none;
+  }
+  .base-ui-disable-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+
   ::selection {
     background-color: var(--selection);
     color: var(--text);

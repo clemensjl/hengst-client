@@ -1,3 +1,4 @@
+import { CSPProvider } from "@base-ui/react/csp-provider";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { Boot } from "@/app/Boot";
@@ -29,9 +30,13 @@ if (import.meta.env.DEV && location.hash === "#error-gallery") {
     ),
   );
 } else {
+  // `style-src 'self'` blocks inline <style> elements: Base UI renders none, the rule it would
+  // inject (`.base-ui-disable-scrollbar`) is in index.css.
   root.render(
     <StrictMode>
-      <Boot />
+      <CSPProvider disableStyleElements>
+        <Boot />
+      </CSPProvider>
     </StrictMode>,
   );
 }
