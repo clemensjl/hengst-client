@@ -26,6 +26,11 @@ async function highlightDelete(row: string) {
 }
 
 describe("instances this build cannot read", () => {
+  // From 4b the app starts on the start page; these tests are about the Instances view.
+  before(async () => {
+    await $('nav button[aria-label="Instances"]').click();
+  });
+
   it("offers Delete on a too-new row only as a disabled item with its reason", async () => {
     await expect($("aria/Actions for from-the-future")).toBeDisplayed();
     await expect($("button*=from-the-future")).toHaveText(expect.stringContaining("Newer format"));

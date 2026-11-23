@@ -4,6 +4,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AccountDialogs } from "@/features/accounts/AccountDialogs";
 import { InstancesHeaderAction, InstancesView } from "@/features/instances/InstancesView";
+import { PlayView } from "@/features/play/PlayView";
 import { SettingsView } from "@/features/settings/SettingsView";
 import i18n, { pickLanguage, setLanguage } from "@/i18n";
 import type { SettingsNotice } from "@/ipc/bindings/SettingsNotice";
@@ -42,7 +43,13 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
         devBuild={devBuild}
         action={view === "instances" ? <InstancesHeaderAction /> : null}
       >
-        {view === "settings" ? <SettingsView /> : <InstancesView />}
+        {view === "settings" ? (
+          <SettingsView />
+        ) : view === "instances" ? (
+          <InstancesView />
+        ) : (
+          <PlayView />
+        )}
       </Shell>
       <AccountDialogs />
       <Toaster theme={resolved} />

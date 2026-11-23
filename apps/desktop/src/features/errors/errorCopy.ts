@@ -116,6 +116,8 @@ function actionLabel(action: ErrorDto["action"], t: TFunction): string | undefin
       return t("errors.action.openSettings");
     case "openUrl":
       return t(`errors.action.openUrl.${action.target}`);
+    case "openLog":
+      return t("errors.action.openLog");
     default:
       return undefined;
   }

@@ -15,7 +15,7 @@ import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { Language } from "@/ipc/bindings/Language";
 import { api } from "@/ipc/client";
 import { useApp } from "@/stores/app";
-import { chipRef } from "./AccountChip";
+import { dialogReturnRef } from "./dialogReturn";
 import { InfoBlock, useOpenUrl } from "./InfoBlock";
 import { signedInMessage, signInErrorAction, type SignInState } from "./signIn";
 import { useSignIn, type SignIn } from "./useSignIn";
@@ -453,7 +453,7 @@ export function SignInDialog({
         closeLabel={t("common.close")}
         closeBusyReason={state.phase === "completing" ? t("signIn.closeBusy") : undefined}
         initialFocus={primaryRef}
-        finalFocus={chipRef}
+        finalFocus={dialogReturnRef}
       >
         <DialogTitle>{title}</DialogTitle>
         <DialogBody>

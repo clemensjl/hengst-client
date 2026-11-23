@@ -7,6 +7,7 @@ const flat = (o: Record<string, string>) => Object.entries(o);
 const params = (s: string) => [...s.matchAll(/\{\{\s*([\w.]+)[^}]*\}\}/g)].map((m) => m[1]).sort();
 const PREFIXES = [
   ...["nav.", "settings.", "about.", "errors.", "accounts.", "signIn.", "instances.", "common."],
+  "play.",
 ];
 const both = [...flat(de), ...flat(en)];
 

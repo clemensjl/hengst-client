@@ -1,14 +1,5 @@
-import { CircleAlertIcon, PlusIcon, RefreshCwIcon, TriangleAlertIcon } from "lucide-react";
-import {
-  Component,
-  lazy,
-  Suspense,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type ReactNode,
-} from "react";
+import { PlusIcon, TriangleAlertIcon } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Delayed } from "@/components/Delayed";
 import { Button } from "@/components/ui/button";
@@ -21,34 +12,10 @@ import { api, IpcError } from "@/ipc/client";
 import { cn } from "@/lib/utils";
 import { useMediaQuery } from "@/lib/useMediaQuery";
 import { useApp, type InstanceFocus } from "@/stores/app";
+import { useCreateDialogHost } from "./CreateDialogHost";
 import { DeleteInstanceDialog } from "./DeleteInstanceDialog";
 import { InstanceRow, NARROW_GRID, ROW_GRID } from "./InstanceRow";
 import { effectiveSelection } from "./selection";
-
-/**
- * The create dialog is its own chunk (combobox, select and checkbox stay out of the start). The
- * view asks for it as soon as it shows, so it is there by the time it is opened.
- */
-const loadCreateDialog = () => import("./CreateInstanceDialog");
-const CreateInstanceDialog = lazy(loadCreateDialog);
-
-/**
- * Catches any error while the create dialog renders: a chunk that cannot be loaded, and also an
- * error thrown by the dialog itself. Without it React would unmount the whole app. It renders
- * nothing and tells the view, which closes the dialog and says the dialog could not be loaded.
- */
-class ChunkBoundary extends Component<{ onError: () => void; children: ReactNode }> {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
-  }
-  componentDidCatch() {
-    this.props.onError();
-  }
-  render() {
-    return this.state.failed ? null : this.props.children;
-  }
-}
 
 const errorOf = (e: unknown): ErrorDto =>
   e instanceof IpcError ? e.dto : { code: "internal", params: {}, action: null, detail: String(e) };
@@ -201,31 +168,7 @@ export function InstancesView() {
   const [actionError, setActionError] = useState<{ error: ErrorDto; folder: boolean } | null>(null);
   const parts = useRef(new Map<string, { row?: HTMLElement; action?: HTMLElement }>());
 
-  const createOpen = useApp((s) => s.createOpen);
-  // Mounted from the first opening on, so its closing animation and its draft handling run.
-  const [createWanted, setCreateWanted] = useState(false);
-  // The dialog's chunk could not be loaded. A failed lazy component keeps its rejection, so the
-  // failure puts a fresh one in place: the next opening (Try again, or any "New instance") loads
-  // the chunk again, and the old failure goes away until that attempt fails too.
-  const [chunkFailed, setChunkFailed] = useState(false);
-  if (createOpen && !createWanted) {
-    setCreateWanted(true);
-    setChunkFailed(false);
-  }
-  const [CreateDialog, setCreateDialog] = useState(() => CreateInstanceDialog);
-  const chunkTitle = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    if (!chunkFailed) return;
-    // As after a failed create (DESIGN.md 11.2): the focus goes to the title of the failure.
-    chunkTitle.current?.focus();
-    chunkTitle.current?.scrollIntoView?.({ block: "nearest" });
-  }, [chunkFailed]);
-  const closeCreate = useApp((s) => s.closeCreate);
-  const openCreate = useApp((s) => s.openCreate);
-  useEffect(() => {
-    // A failure here shows when the dialog is opened (the boundary below).
-    loadCreateDialog().catch(() => {});
-  }, []);
+  const create = useCreateDialogHost();
 
   useEffect(() => {
     if (instances.status === "idle") void loadInstances();
@@ -303,34 +246,7 @@ export function InstancesView() {
             extraAction={{ label: t("common.close"), onClick: () => setActionError(null) }}
           />
         )}
-        {chunkFailed && (
-          <div role="alert" className="flex flex-col gap-3 rounded-lg border bg-surface-raised p-4">
-            <div className="flex items-start gap-3">
-              <CircleAlertIcon
-                className="mt-[3px] size-[18px] shrink-0 text-danger"
-                aria-hidden="true"
-              />
-              <div className="flex min-w-0 flex-col">
-                <p
-                  ref={chunkTitle}
-                  tabIndex={-1}
-                  className="text-body font-semibold [overflow-wrap:anywhere]"
-                >
-                  {t("instances.createLoadFailed.title")}
-                </p>
-                <p className="text-small text-muted-foreground">
-                  {t("instances.createLoadFailed.body")}
-                </p>
-              </div>
-            </div>
-            <div className="pl-[30px]">
-              <Button onClick={openCreate}>
-                <RefreshCwIcon aria-hidden="true" />
-                {t("common.retry")}
-              </Button>
-            </div>
-          </div>
-        )}
+        {create.failure}
         {incomplete && (
           <p className="flex items-center gap-2 text-small text-muted-foreground">
             <TriangleAlertIcon className="size-4 shrink-0 text-warning" aria-hidden="true" />
@@ -360,22 +276,7 @@ export function InstancesView() {
           </div>
         )}
       </div>
-      {createWanted && (
-        // Nothing to show while the chunk loads (it was asked for when the view appeared); the
-        // dialog is a layer over the view, so nothing below moves.
-        <ChunkBoundary
-          onError={() => {
-            setChunkFailed(true);
-            setCreateWanted(false);
-            setCreateDialog(() => lazy(loadCreateDialog));
-            closeCreate();
-          }}
-        >
-          <Suspense fallback={null}>
-            <CreateDialog />
-          </Suspense>
-        </ChunkBoundary>
-      )}
+      {create.dialog}
       {deleting && (
         <DeleteInstanceDialog
           key={deleting.instance.id}

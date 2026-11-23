@@ -10,12 +10,9 @@ import { useTruncated } from "@/lib/useTruncated";
 import type { AccountDto } from "@/ipc/bindings/AccountDto";
 import { useApp } from "@/stores/app";
 import { AccountErrorMenuContent, AccountMenuContent } from "./AccountMenu";
+import { chipRef } from "./dialogReturn";
 
-/**
- * The chip (or the sign-in button, or the unavailable button) the dialogs of the accounts feature
- * return focus to when they close.
- */
-export const chipRef: { current: HTMLElement | null } = { current: null };
+export { chipRef } from "./dialogReturn";
 const setChip = (el: HTMLElement | null) => {
   chipRef.current = el;
 };

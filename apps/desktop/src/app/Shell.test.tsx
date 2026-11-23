@@ -34,7 +34,13 @@ describe("Shell", () => {
     const focusable = [...container.querySelectorAll("button, a[href], input")].map(
       (el) => el.getAttribute("aria-label") ?? el.textContent,
     );
-    expect(focusable).toEqual(["Instances", "Settings", "Account: Mira_K", "Content action"]);
+    expect(focusable).toEqual([
+      "Play",
+      "Instances",
+      "Settings",
+      "Account: Mira_K",
+      "Content action",
+    ]);
     const header = container.querySelector("header")!;
     expect(header.querySelector("[aria-label='Account: Mira_K']")).not.toBeNull();
     act(() => useApp.setState({ accounts: { status: "idle" } }));
@@ -57,7 +63,7 @@ describe("Shell", () => {
     const focusable = [...container.querySelectorAll("button, a[href], input")].map(
       (el) => el.getAttribute("aria-label") ?? el.textContent,
     );
-    expect(focusable).toEqual(["Instances", "Settings", "Content action"]);
+    expect(focusable).toEqual(["Play", "Instances", "Settings", "Content action"]);
     // 8 px from the header to the first content (DESIGN.md 7.2): the main's own padding; the
     // sentinel for the header line takes no space and the scroller has no top padding.
     const main = container.querySelector("main")!;
