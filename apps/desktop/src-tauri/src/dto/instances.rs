@@ -143,11 +143,18 @@ pub struct CreateInstanceRequest {
     pub loader: Option<LoaderRequestDto>,
 }
 
-/// A folder the web view may ask the app to open. Paths are chosen in Rust, from the id of an
-/// instance or from the data folder; JavaScript never supplies one.
+/// A folder (or a log file) the web view may ask the app to open. Folder paths are chosen in
+/// Rust, from the id of an instance or from the data folder; JavaScript never supplies one.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum OpenTarget {
     DataDir,
-    Instance { id: String },
+    Instance {
+        id: String,
+    },
+    /// A log the core reported (`PlayEvent::InstallLog`, `ErrorAction::OpenLog`), relative to the
+    /// data folder. Treated as hostile: `open::resolve_log_path` decides whether it is opened.
+    LogFile {
+        path: String,
+    },
 }

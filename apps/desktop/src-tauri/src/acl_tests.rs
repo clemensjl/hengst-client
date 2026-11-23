@@ -243,6 +243,27 @@ fn open_location_refuses_a_path_from_the_web_view() {
 }
 
 #[test]
+fn open_location_refuses_a_log_path_outside_the_logs_folders() {
+    let (app, dir) = app();
+    std::fs::write(dir.path().join("settings.log"), "x").unwrap();
+    for path in [
+        "settings.log",
+        "logs/../settings.log",
+        "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "\\\\server\\share\\x.log",
+        "logs/x.log:stream",
+        "logs/missing.log",
+    ] {
+        let body = serde_json::json!({ "target": { "kind": "logFile", "path": path } });
+        let err = call_with(&app, "main", "open_location", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "openFailed", "{path}: {err}");
+        assert!(err["action"].is_null(), "{path}: {err}");
+        let detail = err["detail"].as_str().unwrap();
+        assert!(!detail.contains("Windows\\System32"), "{detail}");
+    }
+}
+
+#[test]
 fn the_main_window_may_call_the_play_commands_and_others_may_not() {
     let (app, _dir) = app();
     assert_eq!(

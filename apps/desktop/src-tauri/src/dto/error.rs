@@ -101,13 +101,21 @@ pub enum UrlTarget {
 }
 
 /// The one thing the user can do about an error, besides trying again on their own.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ErrorAction {
     Retry,
     SignIn,
-    OpenUrl { target: UrlTarget },
+    OpenUrl {
+        target: UrlTarget,
+    },
     OpenSettings,
+    /// Opens the log of a failed installer step, relative to the data folder (the form of
+    /// `PlayEvent::InstallLog`). The web view hands it back as `OpenTarget::LogFile`, which goes
+    /// through `open::resolve_log_path` like any other path from it.
+    OpenLog {
+        path: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]

@@ -4,4 +4,4 @@ import type { UrlTarget } from "./UrlTarget";
 /**
  * The one thing the user can do about an error, besides trying again on their own.
  */
-export type ErrorAction = { "kind": "retry" } | { "kind": "signIn" } | { "kind": "openUrl", target: UrlTarget, } | { "kind": "openSettings" };
+export type ErrorAction = { "kind": "retry" } | { "kind": "signIn" } | { "kind": "openUrl", target: UrlTarget, } | { "kind": "openSettings" } | { "kind": "openLog", path: string, };
