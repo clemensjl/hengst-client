@@ -27,6 +27,37 @@ Run the same checks as CI:
 
     cargo test -p hengst-core --features dev-offline --test loader_live -- --ignored --test-threads=1
 
+## Desktop app tests
+
+Toolchain: the core and the CLI build with Rust 1.89 or newer. `cargo test --workspace` and `cargo clippy --workspace` also compile the desktop crate (`apps/desktop/src-tauri`) and therefore need Rust 1.90 or newer, but neither pnpm nor WebView2: the crate builds against a placeholder `dist` and its tests use Tauri's mock runtime. Node and pnpm versions for the frontend come from `apps/desktop/.nvmrc` and the `packageManager` field of `apps/desktop/package.json`.
+
+Frontend checks:
+
+    pnpm -C apps/desktop typecheck
+    pnpm -C apps/desktop test
+    pnpm -C apps/desktop format:check
+
+### End-to-end tests
+
+The suite in `apps/desktop/e2e` drives the real app through WebDriver ([tauri-driver](https://v2.tauri.app/develop/tests/webdriver/) and Microsoft Edge WebDriver). It only tests debug builds with the `e2e` feature: every service is the local mock `hengst-mock`, secrets stay in memory, and each spec file runs on its own fresh data folder in `%TEMP%` (`HENGST_HOME`). No Microsoft or Mojang server is contacted. One spec moves a test instance folder (`9.9-fabric`) into the Recycle Bin.
+
+One-time setup (tauri-driver, and the Edge WebDriver that matches the installed WebView2 runtime, saved to the git-ignored `apps/desktop/e2e/.driver/`):
+
+    cargo install tauri-driver --locked
+    powershell -File apps/desktop/e2e/setup-driver.ps1
+
+If no session starts, run the script again with `-UseEdge` to get the driver of the installed Edge instead.
+
+Build, then run (`pnpm e2e` does not build; it expects `target/debug/hengst-desktop.exe` and `target/debug/hengst-mock.exe`):
+
+    pnpm -C apps/desktop tauri build --debug --no-bundle --features e2e,dev-offline
+    cargo build -p hengst-testkit --bin hengst-mock
+    pnpm -C apps/desktop e2e
+
+The app window needs to keep the focus during the run: a window that takes the foreground (a game that starts, for example) closes open menus and popups, and the tests that use them fail.
+
+`tauri:options.args` reach WebView2, not the app; the app gets its data folder and the mock URL from the environment that `wdio.conf.ts` gives `tauri-driver`. Before the first test of each spec file the suite checks that the app really runs on its temp folder and stops otherwise.
+
 ## Rules
 
 - Code, error messages and the README are in English. Files under `docs/` are in German.
