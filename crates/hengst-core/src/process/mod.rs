@@ -248,7 +248,9 @@ pub(crate) mod tests {
     }
 
     /// The child is created with `CREATE_NO_WINDOW` (`SPAWN_FLAGS`, the only flags `Job::spawn`
-    /// sets), and a real child started through the runner sees no visible console window.
+    /// sets), and a real child started through the runner has no console window at all
+    /// (`GetConsoleWindow()` is NULL; without the flag it would share the runner's console, also
+    /// under ConPTY or a headless runner, where that window is merely hidden).
     #[test]
     fn no_console_window_flag_is_set() {
         use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
@@ -257,11 +259,9 @@ pub(crate) mod tests {
         let out = dir.path().join("console.txt");
         let mut cmd = powershell(
             "Add-Type -Namespace HengstTest -Name Con -MemberDefinition '\
-             [DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow();\
-             [DllImport(\"user32.dll\")] public static extern bool IsWindowVisible(System.IntPtr h);'; \
+             [DllImport(\"kernel32.dll\")] public static extern System.IntPtr GetConsoleWindow();'; \
              $h = [HengstTest.Con]::GetConsoleWindow(); \
-             $v = ($h -ne [System.IntPtr]::Zero) -and [HengstTest.Con]::IsWindowVisible($h); \
-             Set-Content -LiteralPath $env:HENGST_OUT -Value ('VISIBLE ' + $v)",
+             Set-Content -LiteralPath $env:HENGST_OUT -Value ('CONSOLE ' + ($h -ne [System.IntPtr]::Zero))",
         );
         cmd.env("HENGST_OUT", &out)
             .stdout(Stdio::null())
@@ -271,6 +271,6 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(code, Some(0));
         let text = std::fs::read_to_string(&out).unwrap();
-        assert_eq!(read_tagged(text.as_bytes(), "VISIBLE "), "False", "{text}");
+        assert_eq!(read_tagged(text.as_bytes(), "CONSOLE "), "False", "{text}");
     }
 }

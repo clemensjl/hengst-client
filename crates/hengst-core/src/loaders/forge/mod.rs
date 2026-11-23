@@ -1350,6 +1350,7 @@ mod tests {
         assert!(!s.marker().exists());
     }
 
+    #[cfg(windows)]
     #[test]
     fn cancel_stops_a_running_processor_and_writes_no_marker() {
         use crate::process::{CancelFlag, JobRunner};

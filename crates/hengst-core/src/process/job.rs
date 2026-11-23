@@ -5,7 +5,7 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
-use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
@@ -51,24 +51,45 @@ fn resume_process(pid: u32) -> io::Result<()> {
         dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
         ..Default::default()
     };
-    let mut resumed = 0;
+    let mut threads = Vec::new();
     // SAFETY: `snapshot` is a valid snapshot handle and `entry` a writable THREADENTRY32 with
     // `dwSize` set, as both calls require.
-    let mut more = unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } != 0;
-    while more {
-        if entry.th32OwnerProcessID == pid {
-            // SAFETY: plain call without pointers; the result is checked by `owned`.
-            let thread =
-                owned(unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, entry.th32ThreadID) })?;
-            // SAFETY: `thread` is a valid thread handle opened with THREAD_SUSPEND_RESUME.
-            if unsafe { ResumeThread(thread.as_raw_handle()) } == u32::MAX {
-                return Err(io::Error::last_os_error());
-            }
-            resumed += 1;
+    if unsafe { Thread32First(snapshot.as_raw_handle(), &mut entry) } == 0 {
+        let e = io::Error::last_os_error();
+        if e.raw_os_error() != Some(ERROR_NO_MORE_FILES as i32) {
+            return Err(e);
         }
-        // SAFETY: as for `Thread32First`.
-        more = unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } != 0;
+    } else {
+        loop {
+            if entry.th32OwnerProcessID == pid {
+                threads.push(entry.th32ThreadID);
+            }
+            // SAFETY: as for `Thread32First`.
+            if unsafe { Thread32Next(snapshot.as_raw_handle(), &mut entry) } == 0 {
+                break;
+            }
+        }
     }
+    resume_threads(&threads, |id| {
+        // SAFETY: plain call without pointers; the result is checked by `owned`.
+        let thread = owned(unsafe { OpenThread(THREAD_SUSPEND_RESUME, 0, id) })?;
+        // SAFETY: `thread` is a valid thread handle opened with THREAD_SUSPEND_RESUME.
+        match unsafe { ResumeThread(thread.as_raw_handle()) } {
+            u32::MAX => Err(io::Error::last_os_error()),
+            previous => Ok(previous),
+        }
+    })
+}
+
+/// Resumes each thread through `resume` (which returns the previous suspend count). A thread that
+/// cannot be opened or resumed is skipped: it may be a short-lived thread another program injected
+/// that has exited meanwhile. Only threads that were really suspended (previous count >= 1) count;
+/// the call fails when there was none, since then the process's own main thread was not resumed.
+fn resume_threads(ids: &[u32], mut resume: impl FnMut(u32) -> io::Result<u32>) -> io::Result<()> {
+    let resumed = ids
+        .iter()
+        .filter(|&&id| resume(id).is_ok_and(|previous| previous >= 1))
+        .count();
     if resumed == 0 {
         return Err(io::Error::other("the new process has no thread to resume"));
     }
@@ -267,12 +288,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn resume_skips_threads_that_fail_and_counts_only_suspended_ones() {
+        let fail = || Err(io::Error::other("gone"));
+        // A thread that vanished before it could be opened does not abort the spawn.
+        let mut seen = Vec::new();
+        resume_threads(&[1, 2, 3], |id| {
+            seen.push(id);
+            if id == 2 {
+                Ok(1)
+            } else {
+                fail()
+            }
+        })
+        .unwrap();
+        assert_eq!(seen, [1, 2, 3]);
+        // Threads that were not suspended (previous count 0) do not count as resumed.
+        assert!(resume_threads(&[1, 2], |_| Ok(0)).is_err());
+        assert!(resume_threads(&[1], |_| fail()).is_err());
+        assert!(resume_threads(&[], |_| Ok(1)).is_err());
+    }
+
+    #[test]
     fn terminate_ends_every_process_in_the_job() {
         let job = Job::new_kill_on_close().unwrap();
-        let mut child = job
-            .spawn(powershell("Start-Sleep 60").stdout(Stdio::null()))
+        // cmd.exe starts powershell, which prints its own id and sleeps.
+        let mut cmd = Command::new("cmd");
+        // Passed verbatim: cmd.exe does not read the `\"` escaping `arg` would use.
+        cmd.raw_arg(
+            "/d /c powershell -NoProfile -NonInteractive -c \"'PID '+$PID; Start-Sleep 60\"",
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped());
+        let mut child = job.spawn(&mut cmd).unwrap();
+        let pid: u32 = read_tagged(child.stdout.take().unwrap(), "PID ")
+            .parse()
             .unwrap();
+        let grandchild = open_process(pid);
         job.terminate(7);
+        assert!(ends_within(&grandchild, DEATH), "the grandchild survived");
         assert!(ends_within(&child, DEATH));
         assert_eq!(child.wait().unwrap().code(), Some(7));
     }
@@ -305,26 +358,37 @@ pub(crate) mod tests {
             let _ = child.wait();
             return;
         }
-        let mut launcher = Command::new(std::env::current_exe().unwrap())
-            .args([
-                "process::job::tests::children_die_when_the_launcher_dies",
-                "--exact",
-                "--nocapture",
-                "--test-threads=1",
-            ])
-            .env(HELPER_ENV, "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .unwrap();
-        let pid: u32 = read_tagged(launcher.stdout.take().unwrap(), "CHILD ")
+        /// Kills the helper launcher however this test ends, so a failed assertion cannot leave
+        /// it (and its sleeping child) running.
+        struct KillOnDrop(Child);
+        impl Drop for KillOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let mut launcher = KillOnDrop(
+            Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "process::job::tests::children_die_when_the_launcher_dies",
+                    "--exact",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(HELPER_ENV, "1")
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .creation_flags(CREATE_NO_WINDOW)
+                .spawn()
+                .unwrap(),
+        );
+        let pid: u32 = read_tagged(launcher.0.stdout.take().unwrap(), "CHILD ")
             .parse()
             .unwrap();
         let child = open_process(pid);
-        launcher.kill().unwrap();
-        let _ = launcher.wait();
+        launcher.0.kill().unwrap();
+        let _ = launcher.0.wait();
         assert!(
             ends_within(&child, DEATH),
             "the child outlived the launcher"
