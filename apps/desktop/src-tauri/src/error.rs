@@ -266,7 +266,9 @@ pub fn redact(text: &str) -> String {
 /// text has them) by `...\<last component>`, so a detail shown to the user or copied into a bug
 /// report carries neither the Windows user name nor a server or share name. A path ends at `: `, a
 /// line break, the end of the text, or the quote that opened it (one not followed by a letter or
-/// digit, so `O'Brien` stays inside).
+/// digit, so `O'Brien` stays inside). Known residual case: in a path quoted with `'`, a name whose
+/// apostrophe is followed by something else (`'C:\Users\O' Brien\x'`) ends the path at that
+/// apostrophe, so the rest of the name stays in the text.
 pub fn strip_paths(text: &str) -> String {
     let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
@@ -922,6 +924,16 @@ mod mapping_tests {
                 "could not read \"...\\settings.json\": access denied",
             ),
             ("open \\\\fileserver\\share\\O'Brien\\t2", "open ...\\t2"),
+            // An apostrophe followed by a letter stays in the path, one followed by a space ends
+            // a quoted one.
+            (
+                "could not read C:\\Users\\someone\\world's end: access denied",
+                "could not read ...\\world's end: access denied",
+            ),
+            (
+                "could not read 'C:\\Users\\someone\\world' and more",
+                "could not read '...\\world' and more",
+            ),
         ] {
             assert_eq!(strip_paths(text), want, "{text}");
         }

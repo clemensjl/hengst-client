@@ -105,7 +105,7 @@ export async function startMock(scenario: string): Promise<Mock> {
     return { url, process: child };
   } catch (e) {
     // Never leave a mock behind that nobody stops.
-    if (child.exitCode === null) child.kill();
+    if (child.exitCode === null && child.signalCode === null) child.kill();
     throw e;
   }
 }
@@ -113,7 +113,7 @@ export async function startMock(scenario: string): Promise<Mock> {
 /** Closing stdin ends the mock; the PID it was started with is the fallback. */
 export async function stopMock(mock: Mock) {
   const child = mock.process;
-  if (child.exitCode !== null) return;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   const exited = new Promise<void>((done) => child.once("exit", () => done()));
   child.stdin?.end();
   const timeout = new Promise<"timeout">((done) => setTimeout(() => done("timeout"), 5_000));

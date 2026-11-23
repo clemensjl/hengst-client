@@ -71,7 +71,9 @@ async function abortRun(reason: string, withSession: boolean): Promise<never> {
   if (tauriDriver?.pid && tauriDriver.exitCode === null && tauriDriver.signalCode === null)
     killTree(tauriDriver.pid);
   if (withSession) await browser.deleteSession().catch(() => {});
-  if (mock && mock.process.exitCode === null) mock.process.kill();
+  if (mock && mock.process.exitCode === null && mock.process.signalCode === null) {
+    mock.process.kill();
+  }
   if (home) removeHome(home);
   process.exit(1);
 }

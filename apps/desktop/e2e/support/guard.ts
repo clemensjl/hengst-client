@@ -25,29 +25,46 @@ export function portInUse(port: number): Promise<boolean> {
  * (its output does not depend on the Windows display language, unlike `netstat`). Empty when
  * nothing listens; a failing query is an error, never "nothing".
  */
-export function listenerPids(port: number): Promise<number[]> {
-  // "No such connection" is the answer "nothing listens" (category ObjectNotFound); any other
-  // error fails the query.
-  const command =
-    `$c = @(Get-NetTCPConnection -State Listen -LocalPort ${Math.trunc(port)}` +
+export function listenerPids(
+  port: number,
+  run: (command: string) => Promise<string> = runPowerShell,
+): Promise<number[]> {
+  return run(listenerQuery(port)).then(parseListenerPids);
+}
+
+/**
+ * The PowerShell command behind `listenerPids`. "No such connection" is the answer "nothing
+ * listens" (category ObjectNotFound); any other error exits with 2 and fails the query.
+ */
+export function listenerQuery(port: number): string {
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`bad port ${port}`);
+  return (
+    `$c = @(Get-NetTCPConnection -State Listen -LocalPort ${port}` +
     " -ErrorAction SilentlyContinue -ErrorVariable e);" +
     " if ($e | Where-Object { $_.CategoryInfo.Category -ne 'ObjectNotFound' }) { exit 2 };" +
-    " $c | ForEach-Object { $_.OwningProcess }; exit 0";
+    " $c | ForEach-Object { $_.OwningProcess }; exit 0"
+  );
+}
+
+/** One PID per line of the query's output; anything else in it is ignored. */
+export function parseListenerPids(stdout: string): number[] {
+  return stdout
+    .split(/\s+/)
+    .filter((word) => /^\d+$/.test(word))
+    .map(Number);
+}
+
+/**
+ * Runs a command in a fresh Windows PowerShell and resolves with its output; a non-zero exit is
+ * an error. A cold start plus the NetTCPIP (CIM) module takes seconds on a busy machine.
+ */
+function runPowerShell(command: string): Promise<string> {
   return new Promise((done, fail) => {
     execFile(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-Command", command],
       { windowsHide: true, timeout: 15_000 },
-      (error, stdout) => {
-        if (error) return fail(error);
-        done(
-          stdout
-            .split(/\s+/)
-            .filter(Boolean)
-            .map(Number)
-            .filter((pid) => Number.isInteger(pid)),
-        );
-      },
+      (error, stdout) => (error ? fail(error) : done(stdout)),
     );
   });
 }

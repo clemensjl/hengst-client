@@ -83,6 +83,13 @@ describe("ipc client", () => {
       'could not read "C:\\Users\\O\'Brien\\AppData\\settings.json": access denied',
       'could not read "...\\settings.json": access denied',
     ],
+    ["open \\\\fileserver\\share\\O'Brien\\t2", "open ...\\t2"],
+    // An apostrophe followed by a letter stays in the path, one followed by a space ends a quoted one.
+    [
+      "could not read C:\\Users\\someone\\world's end: access denied",
+      "could not read ...\\world's end: access denied",
+    ],
+    ["could not read 'C:\\Users\\someone\\world' and more", "could not read '...\\world' and more"],
   ])("an apostrophe in a user name does not end the path: %s", async (text, want) => {
     mockIPC(() => {
       throw text;
