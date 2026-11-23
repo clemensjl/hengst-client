@@ -75,7 +75,10 @@ pub async fn mount_mojang(server: &MockServer) {
         let version = serde_json::to_vec(&json!({
             "id": id, "type": kind, "mainClass": "net.minecraft.client.main.Main",
             "arguments": {
-                "game": ["--username", "${auth_player_name}"],
+                // The auth arguments of real versions, so a started (fake) game sees the token.
+                "game": ["--username", "${auth_player_name}", "--uuid", "${auth_uuid}",
+                    "--accessToken", "${auth_access_token}", "--userType", "${user_type}",
+                    "--xuid", "${auth_xuid}"],
                 "jvm": ["-Djava.library.path=${natives_directory}", "-cp", "${classpath}"]
             },
             "assetIndex": {"id": "9", "sha1": sha1_hex(&index), "size": index.len(), "totalSize": 3,

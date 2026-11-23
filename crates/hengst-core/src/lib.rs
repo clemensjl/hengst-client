@@ -6,6 +6,8 @@ pub mod assets;
 pub mod auth;
 pub mod download;
 pub mod error;
+pub mod game;
+pub mod gamelog;
 pub mod instances;
 pub mod java;
 pub mod launch;

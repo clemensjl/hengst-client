@@ -5,13 +5,14 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle, RawHandle};
 use std::os::windows::process::CommandExt;
 use std::process::{Child, Command};
 
-use windows_sys::Win32::Foundation::{ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_NO_MORE_FILES, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, Thread32First, Thread32Next, TH32CS_SNAPTHREAD, THREADENTRY32,
 };
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    SetInformationJobObject, TerminateJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectBasicProcessIdList,
+    JobObjectExtendedLimitInformation, QueryInformationJobObject, SetInformationJobObject,
+    TerminateJobObject, JOBOBJECT_BASIC_PROCESS_ID_LIST, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
 use windows_sys::Win32::System::Threading::{
@@ -100,13 +101,16 @@ fn resume_threads(ids: &[u32], mut resume: impl FnMut(u32) -> io::Result<u32>) -
 /// also when the launcher is a GUI app without a console), and suspended until it is in the job.
 pub(crate) const SPAWN_FLAGS: u32 = CREATE_NO_WINDOW | CREATE_SUSPENDED;
 
-/// A job object with kill-on-close: when the `Job` is dropped, or the launcher process ends in
-/// any way (also killed, or Ctrl+C in the CLI), Windows closes the handle and terminates every
-/// process in the job. Processes started by a process in the job are in it too (no breakaway is
-/// allowed), so a processor's helpers die with it.
+/// A job object. With kill-on-close (`new_kill_on_close`): when the `Job` is dropped, or the
+/// launcher process ends in any way (also killed, or Ctrl+C in the CLI), Windows closes the handle
+/// and terminates every process in the job. Without it (`new`, for the game): the processes
+/// outlive the handle, the job only groups them for `terminate` and `process_ids`. Processes
+/// started by a process in the job are in it too (no breakaway is allowed), so a processor's
+/// helpers die with it.
 ///
 /// If the launcher itself already runs inside a job (a terminal, a CI runner), the new job is
-/// nested in it, which Windows 8 and later support.
+/// nested in it, which Windows 8 and later support. The outer job's limits still apply: an outer
+/// kill-on-close job ends the game with the launcher whatever this job says.
 #[derive(Debug)]
 pub struct Job {
     handle: OwnedHandle,
@@ -118,10 +122,22 @@ impl Job {
         Ok(Self::create()?)
     }
 
+    /// A new, unnamed job object without limits: closing it leaves its processes running.
+    pub fn new() -> Result<Job> {
+        Ok(Self::create_with(false)?)
+    }
+
     pub(super) fn create() -> io::Result<Job> {
+        Self::create_with(true)
+    }
+
+    fn create_with(kill_on_close: bool) -> io::Result<Job> {
         // SAFETY: null attributes (default security, handle not inheritable, so no child holds
         // the job open) and a null name are allowed; the result is checked by `owned`.
         let handle = owned(unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) })?;
+        if !kill_on_close {
+            return Ok(Job { handle });
+        }
         let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
         // SAFETY: `handle` is a valid job handle; the pointer and size describe `info`, which
@@ -172,8 +188,57 @@ impl Job {
     /// Terminates every process in the job with exit code `code`. A failure is ignored: the
     /// processes still die when the job is dropped.
     pub fn terminate(&self, code: u32) {
+        let _ = self.try_terminate(code);
+    }
+
+    /// `terminate` that reports a failure. Terminating a job whose processes have all ended
+    /// succeeds.
+    pub fn try_terminate(&self, code: u32) -> io::Result<()> {
         // SAFETY: the handle is valid for the duration of the call (owned by `self`).
-        let _ = unsafe { TerminateJobObject(self.handle.as_raw_handle(), code) };
+        check(unsafe { TerminateJobObject(self.handle.as_raw_handle(), code) })
+    }
+
+    /// The ids of the processes in the job right now (none once they have all ended).
+    pub fn process_ids(&self) -> io::Result<Vec<u32>> {
+        // The list is a header of two u32 followed by usize ids; a usize buffer keeps it aligned.
+        let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
+            / std::mem::size_of::<usize>();
+        let mut capacity = 64;
+        loop {
+            let mut buf = vec![0usize; header + capacity];
+            let bytes = std::mem::size_of_val(buf.as_slice()) as u32;
+            // SAFETY: the handle is valid; the pointer and size describe `buf`, which is aligned
+            // for JOBOBJECT_BASIC_PROCESS_ID_LIST and lives for the duration of the call.
+            let ok = unsafe {
+                QueryInformationJobObject(
+                    self.handle.as_raw_handle(),
+                    JobObjectBasicProcessIdList,
+                    buf.as_mut_ptr().cast(),
+                    bytes,
+                    std::ptr::null_mut(),
+                )
+            };
+            // SAFETY: `buf` starts with an initialized (zeroed, then written) list header.
+            let list = unsafe { &*(buf.as_ptr() as *const JOBOBJECT_BASIC_PROCESS_ID_LIST) };
+            let (assigned, listed) = (
+                list.NumberOfAssignedProcesses as usize,
+                list.NumberOfProcessIdsInList as usize,
+            );
+            if ok != 0 && listed >= assigned {
+                return Ok(buf[header..header + listed.min(capacity)]
+                    .iter()
+                    .map(|&id| id as u32)
+                    .collect());
+            }
+            let e = io::Error::last_os_error();
+            if ok == 0 && e.raw_os_error() != Some(ERROR_MORE_DATA as i32) {
+                return Err(e);
+            }
+            if capacity >= 1 << 16 {
+                return Err(io::Error::other("too many processes in the job"));
+            }
+            capacity = (assigned + 16).max(capacity * 4);
+        }
     }
 }
 
@@ -328,6 +393,41 @@ pub(crate) mod tests {
         assert!(ends_within(&grandchild, DEATH), "the grandchild survived");
         assert!(ends_within(&child, DEATH));
         assert_eq!(child.wait().unwrap().code(), Some(7));
+    }
+
+    #[test]
+    fn plain_job_lists_its_processes_and_lets_them_outlive_it() {
+        let job = Job::new().unwrap();
+        let mut child = job
+            .spawn(powershell("Start-Sleep 60").stdout(Stdio::null()))
+            .unwrap();
+        assert_eq!(job.process_ids().unwrap(), [child.id()]);
+        drop(job);
+        let survived = !ends_within(&child, Duration::from_millis(500));
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(survived, "the child died with a job without kill-on-close");
+    }
+
+    #[test]
+    fn terminating_an_ended_job_succeeds_and_lists_nothing() {
+        let job = Job::new().unwrap();
+        let mut child = job
+            .spawn(powershell("exit 3").stdout(Stdio::null()))
+            .unwrap();
+        assert_eq!(child.wait().unwrap().code(), Some(3));
+        // Windows drops an ended process from the list shortly after its handle is signalled
+        // (seen once in 25 runs), so the list is polled.
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !job.process_ids().unwrap().is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the list stays filled"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        job.try_terminate(1).unwrap();
+        job.try_terminate(1).unwrap();
     }
 
     #[test]

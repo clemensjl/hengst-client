@@ -1,6 +1,7 @@
 use crate::args::{build_args, Account, AccountKind, LaunchContext};
 use crate::assets::{install_assets, AssetsLayout, RESOURCES_URL};
 use crate::download::{fill_missing_sha1, http_client, sha1_file, Download, Downloader};
+use crate::game::Redactor;
 use crate::java::{component_for, ensure_runtime, RUNTIME_INDEX_URL};
 use crate::libraries;
 use crate::loaders::forge;
@@ -11,7 +12,6 @@ use crate::manifest::{fetch_manifest, MANIFEST_URL};
 use crate::paths::{validate_id, Paths};
 use crate::progress::{self, ProgressSink, Transfer};
 use crate::rules::Env;
-use crate::secret::REDACTED;
 use crate::version::fetch_version;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -58,22 +58,20 @@ pub struct Prepared {
     pub loader: Option<ResolvedLoader>,
     /// The loader build was picked from the saved version list (its service was unreachable).
     pub loader_list_from_cache: bool,
-    account: Account,
+    pub(crate) account: Account,
+    /// The instance folder name, validated: names the game's launcher log files.
+    pub(crate) instance: String,
+    /// `<root>/logs/game` of the data folder the game was prepared in. Private, so nothing outside
+    /// the core decides where game logs are written (or deleted).
+    pub(crate) game_log_dir: PathBuf,
 }
 
 impl Prepared {
-    /// Arguments safe to print: a Microsoft access token is replaced everywhere.
+    /// Arguments safe to print: the secrets `Redactor` knows (a Microsoft access token, also
+    /// URL- or JSON-encoded) are replaced everywhere.
     pub fn redacted_args(&self) -> Vec<String> {
-        match self.account.kind() {
-            AccountKind::Microsoft => {
-                let token = self.account.access_token().expose();
-                self.args
-                    .iter()
-                    .map(|a| a.replace(token, REDACTED))
-                    .collect()
-            }
-            AccountKind::Offline => self.args.clone(),
-        }
+        let r = Redactor::for_prepared(self);
+        self.args.iter().map(|a| r.redact(a)).collect()
     }
 }
 
@@ -87,6 +85,7 @@ impl std::fmt::Debug for Prepared {
             .field("loader", &self.loader)
             .field("loader_list_from_cache", &self.loader_list_from_cache)
             .field("account", &self.account)
+            .field("instance", &self.instance)
             .finish()
     }
 }
@@ -261,6 +260,8 @@ pub async fn prepare_with_progress(
         loader_list_from_cache: setup.as_ref().is_some_and(|s| s.list_from_cache),
         loader: setup.map(|s| s.resolved),
         account: opts.account.clone(),
+        instance: instance.to_string(),
+        game_log_dir: paths.logs().join("game"),
     })
 }
 
@@ -337,6 +338,8 @@ mod tests {
             loader: None,
             loader_list_from_cache: false,
             account,
+            instance: "1.21".into(),
+            game_log_dir: PathBuf::from("logs/game"),
         }
     }
 

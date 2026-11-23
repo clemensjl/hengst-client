@@ -23,5 +23,9 @@ url.workspace = true
 wiremock.workspace = true
 zip.workspace = true
 
+[target.'cfg(windows)'.dependencies]
+# For the hidden window of `fake-java`; same pin as the core and the desktop app.
+windows-sys = { version = "=0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
+
 [dev-dependencies]
 tempfile.workspace = true
