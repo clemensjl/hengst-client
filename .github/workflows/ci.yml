@@ -25,6 +25,13 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --all-features
       - run: cargo test -p hengst-core --lib
+      # Without features: the release-only branches (no dev account listed, real services) run.
+      - run: cargo test -p hengst-desktop
+      # The release configuration `tauri build` compiles (the placeholder dist is enough to check it).
+      - run: cargo check --release -p hengst-desktop --features custom-protocol
+      # The e2e feature must never compile into a release build.
+      - shell: bash
+        run: "! cargo check --release -p hengst-desktop --features custom-protocol,e2e"
 
   msrv:
     # The core and the CLI promise Rust 1.89; the desktop crate needs 1.90 and is left out.

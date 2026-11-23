@@ -2,7 +2,7 @@
 
 An open-source Minecraft: Java Edition launcher focused on a clean interface and maximum FPS on every game version, with mods and modpacks from Modrinth and CurseForge.
 
-**Status:** pre-alpha. The CLI has Microsoft sign-in (`hengst login`), multiple accounts, vanilla launching and mod loader launching (Fabric, Quilt, Legacy Fabric, Forge, NeoForge) implemented; sign-in is not usable until Mojang approves the app id (see below). The desktop app, mod and modpack management are still to come, see [docs/PLAN.md](docs/PLAN.md) (German).
+**Status:** pre-alpha. The CLI has Microsoft sign-in (`hengst login`), multiple accounts, vanilla launching and mod loader launching (Fabric, Quilt, Legacy Fabric, Forge, NeoForge) implemented; sign-in is not usable until Mojang approves the app id (see below). A desktop app is in progress: it manages accounts and instances; starting the game from it, mod and modpack management are still to come, see [docs/PLAN.md](docs/PLAN.md) (German). Windows x64 only.
 
 Microsoft sign-in is implemented, tested against mocked service responses; no real sign-in has been verified yet. It becomes usable once Mojang approves the launcher's Azure app id; until then the Minecraft services answer with HTTP 403 and the CLI reports that the app is not approved. In the meantime, set `HENGST_MS_CLIENT_ID` to your own approved app id.
 
@@ -15,14 +15,25 @@ Requires Rust 1.89 or newer. No prebuilt binaries yet.
 
 ## Build
 
-Requires Rust 1.89 or newer.
+Windows x64 only. The CLI requires Rust 1.89 or newer.
 
-    cargo build --release
+    cargo build --release -p hengst-cli
     target/release/hengst versions
     target/release/hengst launch 1.21.11 --offline Dev --dry-run
     target/release/hengst loaders fabric 1.21.11
     target/release/hengst launch 1.21.11 --loader fabric --offline Dev --dry-run
     target/release/hengst launch 1.20.1 --loader forge --offline Dev --dry-run
+
+A plain `cargo build --release` of the whole workspace fails on purpose: it includes the desktop app, whose release build needs the `custom-protocol` feature that `tauri build` turns on.
+
+### Desktop app
+
+The desktop app in `apps/desktop` needs Rust 1.90 or newer with the MSVC toolchain (Visual Studio Build Tools with the C++ workload), Node.js 22.12 or newer and pnpm (the version is pinned in the `packageManager` field of `apps/desktop/package.json`), and the WebView2 runtime, which Windows 11 ships.
+
+    pnpm -C apps/desktop install
+    pnpm -C apps/desktop tauri build
+
+This builds the front end and then `target/release/hengst-desktop.exe`. No installer is produced yet.
 
 ### Microsoft client id
 
