@@ -5,14 +5,17 @@ import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { singleByRole } from "./roles.ts";
 
+/** The cargo workspace root (where cargo is run from). */
+const WORKSPACE = resolve(import.meta.dirname, "../../../..");
+
 /**
- * Where cargo put the debug binaries: `CARGO_TARGET_DIR` when it is set (as for cargo), else the
- * workspace's `target/`.
+ * Where cargo put the debug binaries: `CARGO_TARGET_DIR` when it is set, else the workspace's
+ * `target/`. A relative `CARGO_TARGET_DIR` counts from the workspace root, where cargo is run,
+ * not from the folder `pnpm` runs in.
  */
 export function targetDebugDir(env: Record<string, string | undefined> = process.env): string {
   const dir = env.CARGO_TARGET_DIR?.trim();
-  if (dir) return resolve(dir, "debug");
-  return resolve(import.meta.dirname, "../../../../target/debug");
+  return resolve(WORKSPACE, dir || "target", "debug");
 }
 
 /** The workspace's debug binaries: `pnpm e2e` does not build them. */

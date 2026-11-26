@@ -54,7 +54,7 @@ Build, then run (`pnpm e2e` does not build; it expects `target/debug/hengst-desk
     cargo build -p hengst-testkit --bin hengst-mock
     pnpm -C apps/desktop e2e
 
-If cargo writes its output somewhere else (a `target-dir` in a cargo config, for example), set `CARGO_TARGET_DIR` to that folder when running `pnpm e2e`: the suite then looks in `<CARGO_TARGET_DIR>/debug`.
+If cargo writes its output somewhere else (a `target-dir` in a cargo config, for example), set `CARGO_TARGET_DIR` to that folder when running `pnpm e2e`: the suite then looks in `<CARGO_TARGET_DIR>/debug` (a relative path counts from the workspace root).
 
 `cargo test` and `cargo build` of the workspace write a plain debug `hengst-desktop.exe` to the same path; build the e2e app again after them. The suite stops with "the app page did not load" when it finds such a build.
 
