@@ -4,6 +4,8 @@ import type { PlayEvent } from "@/ipc/bindings/PlayEvent";
 
 /** The phase line of the launch panel (DESIGN.md 10.12). */
 export type LaunchPhase =
+  /** Neutral: the start runs, the core has reported no phase (a warm start reports none at all). */
+  | "preparing"
   | "resolvingLoader"
   | "downloadingInstaller"
   | "downloadingFiles"
@@ -48,8 +50,7 @@ export function reduce(p: LaunchProgress, e: PlayEvent): LaunchProgress {
   const phase = (phase: LaunchPhase): LaunchProgress => ({ ...p, phase, files: null, step: null });
   switch (e.event) {
     case "preparing":
-      // No phase yet: the phase line starts empty until the first real phase.
-      return { ...p, op: e.data.op };
+      return { ...phase("preparing"), op: e.data.op };
     case "resolvingLoader":
       return phase("resolvingLoader");
     case "downloadingInstaller":

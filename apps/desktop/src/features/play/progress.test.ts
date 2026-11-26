@@ -11,8 +11,8 @@ describe("progress reducer", () => {
     expect(INITIAL).toMatchObject({ op: null, phase: null, files: null, step: null });
     const p = run([{ event: "preparing", data: { op: 7 } }]);
     expect(p.op).toBe(7);
-    // No phase until the first real one: the phase line (a live region) starts empty.
-    expect(p.phase).toBeNull();
+    // A neutral phase from the first moment, so the panel is never empty (warm starts send no phase).
+    expect(p.phase).toBe("preparing");
     expect(p.outcome).toBeNull();
   });
 
@@ -60,7 +60,7 @@ describe("progress reducer", () => {
       p = reduce(p, e);
       if (seen.at(-1) !== p.phase) seen.push(p.phase);
     }
-    expect(seen).toEqual([null, "resolvingLoader", "downloadingFiles"]);
+    expect(seen).toEqual(["preparing", "resolvingLoader", "downloadingFiles"]);
   });
 
   it("keeps the installer step and drops it for the next phase", () => {

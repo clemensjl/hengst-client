@@ -21,6 +21,7 @@ import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import type { GameStateDto } from "@/ipc/bindings/GameStateDto";
 import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
 import { api, IpcError } from "@/ipc/client";
+import { isolate } from "@/lib/bidi";
 import { useApp, type Launch, type Resource } from "@/stores/app";
 import type { AccountsDto } from "@/ipc/bindings/AccountsDto";
 import { PlayButton } from "./PlayButton";
@@ -279,8 +280,8 @@ export function PlayView() {
   };
 
   // One line, cut with the full text as its title: a 64-character name must not wrap over the
-  // button. A name is isolated (U+2068 .. U+2069) so bidi characters in it cannot reorder the
-  // sentence around it.
+  // button. A name is isolated (`isolate`) so bidi characters in it cannot reorder the sentence
+  // around it.
   const line = (text: string) => (
     <span className="min-w-0 truncate" title={text}>
       {text}
@@ -301,7 +302,7 @@ export function PlayView() {
     ) : state.kind === "noInstance" && state.unreadable ? (
       line(t("play.noneStartable"))
     ) : state.kind === "chooseInstance" ? (
-      line(t("play.cannotStart", { name: `⁨${state.name}⁩` }))
+      line(t("play.cannotStart", { name: isolate(state.name) }))
     ) : ended && !exit ? (
       // Heard, not seen: the button saying "Play" again shows the end.
       <span className="sr-only">{t("play.ended")}</span>

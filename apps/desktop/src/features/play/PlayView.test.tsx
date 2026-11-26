@@ -9,6 +9,7 @@ import { useApp } from "@/stores/app";
 import { account } from "@/test/fakeBackend";
 import { instance } from "@/test/instancesBackend";
 import { IDLE, mira, playBackend } from "@/test/playBackend";
+import { AccountChip } from "@/features/accounts/AccountChip";
 import { PlayView } from "./PlayView";
 
 const initial = useApp.getState();
@@ -330,7 +331,7 @@ describe("after a reload the page rebuilds from game_state()", () => {
   it("preparing: starting, with the progress area and nothing to cancel", async () => {
     const b = await setup({ game: preparing });
     expect(playButton().textContent).toBe("Starting…");
-    expect(screen.getByText("Launching game")).toBeTruthy();
+    expect(screen.getByText("Preparing")).toBeTruthy();
     fireEvent.click(playButton());
     await flush();
     expect(b.count("play_cancel") + b.count("play")).toBe(0);
@@ -484,14 +485,15 @@ describe("review fixes", () => {
     },
   );
 
-  it("bidi controls in a name cannot reorder the caption sentence", async () => {
-    const name = "\u202Eevil";
+  it.each([
+    ["\u202Eevil", "\u2068evil\u2069 cannot be started."],
+    // A closing isolate in the name would end the isolation early: controls are dropped first.
+    ["\u2069\u202Eevil", "\u2068evil\u2069 cannot be started."],
+  ])("bidi controls in a name cannot reorder the caption sentence (%#)", async (name, want) => {
     await setup({
       instances: [instance("x", { status: "broken", name, selected: true }), instance("b")],
     });
-    expect(screen.getByText(/cannot be started\.$/).textContent).toBe(
-      "\u2068\u202Eevil\u2069 cannot be started.",
-    );
+    expect(screen.getByText(/cannot be started\.$/).textContent).toBe(want);
   });
 
   it("the progress panel cannot grow past its 160 px and a zero step total draws no bar", async () => {
@@ -519,13 +521,69 @@ describe("review fixes", () => {
     expect(bottom.textContent).not.toContain("first");
   });
 
-  it("the phase line starts empty for a start of this page", async () => {
+  it("a warm start without any phase from the core says Preparing, never an empty panel", async () => {
     const b = await setup();
     fireEvent.click(playButton());
     await flush();
     act(() => b.play({ event: "preparing", data: { op: 1 } }));
     const panel = document.querySelector<HTMLElement>('[data-slot="launch-progress"]')!;
-    expect(panel.querySelector("[aria-live]")!.textContent).toBe("");
+    expect(panel.querySelector("[aria-live]")!.textContent).toBe("Preparing");
+  });
+
+  it("after the last download batch the line returns to Preparing, not between batches", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    const line = () =>
+      document.querySelector('[data-slot="launch-progress"] [aria-live]')!.textContent;
+    act(() => b.play({ event: "downloading", data: { what: "gameFiles", count: 30 } }));
+    act(() => b.play({ event: "downloaded", data: { what: "gameFiles" } }));
+    // The next batch follows at once: the line stays.
+    act(() => vi.advanceTimersByTime(200));
+    act(() => b.play({ event: "downloading", data: { what: "assets", count: 4118 } }));
+    expect(line()).toBe("Downloading files");
+    act(() => b.play({ event: "downloaded", data: { what: "assets" } }));
+    act(() => vi.advanceTimersByTime(999));
+    expect(line()).toBe("Downloading files");
+    // Nothing follows for a second: the downloads are over.
+    act(() => vi.advanceTimersByTime(1));
+    expect(line()).toBe("Preparing");
+  });
+
+  it("a double click on Cancel never starts the game again", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    act(() => vi.advanceTimersByTime(600));
+    // First click of a double click on Cancel; cancelled arrives before the second one.
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "cancelled" }));
+    expect(playButton().textContent).toBe("Play");
+    act(() => vi.advanceTimersByTime(150));
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("play")).toBe(1);
+    // After the guard Play works again.
+    act(() => vi.advanceTimersByTime(450));
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("play")).toBe(2);
+  });
+
+  it("a double click on Stop when the game exits first never starts it again", async () => {
+    const b = await setup({ game: running() });
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.state(exited(0, true)));
+    expect(playButton().textContent).toBe("Play");
+    fireEvent.click(playButton());
+    await flush();
+    expect(b.count("play")).toBe(0);
   });
 
   it("a second cancel while the first is on its way is not sent", async () => {
@@ -587,16 +645,48 @@ describe("review fixes", () => {
     // The check stays with what is selected (the unreadable one), not with the fallback.
     const zwei = await screen.findByRole("menuitemradio", { name: "Zwei" });
     expect(zwei.getAttribute("aria-checked")).toBe("false");
+    expect(screen.getByRole("menuitemradio", { name: /Alt/ }).getAttribute("aria-checked")).toBe(
+      "true",
+    );
     fireEvent.click(zwei);
     await waitFor(() => expect(b.of("instance_select")).toEqual([{ id: "b" }]));
   });
 
-  it("accounts but none selected: Choose account opens the account choice", async () => {
-    await setup({ accounts: { accounts: [account("u", "Mira_K")], canSignIn: true } });
-    expect(playButton().textContent).toBe("Choose account");
-    fireEvent.click(playButton());
-    expect(useApp.getState().accountMenuOpen).toBe(true);
+  it("accounts but none selected: Choose account opens the header chip's menu", async () => {
+    playBackend({ accounts: { accounts: [account("u", "Mira_K")], canSignIn: true } });
+    await useApp.getState().startEventLoop();
+    await useApp.getState().loadAccounts();
+    render(
+      <TooltipProvider delay={0}>
+        <AccountChip />
+        <PlayView />
+      </TooltipProvider>,
+    );
+    const button = await screen.findByRole("button", { name: "Choose account", hidden: false });
+    const play = screen
+      .getAllByRole("button", { name: "Choose account" })
+      .find((b) => b.getAttribute("data-variant") === "primary")!;
+    expect(play).toBeTruthy();
+    expect(button).toBeTruthy();
+    // A whole pointer press on the Play button, as a mouse makes it.
+    fireEvent.pointerDown(play, { pointerType: "mouse", button: 0 });
+    fireEvent.mouseDown(play, { button: 0 });
+    fireEvent.pointerUp(play, { pointerType: "mouse", button: 0 });
+    fireEvent.mouseUp(play, { button: 0 });
+    fireEvent.click(play);
+    const menu = await screen.findByRole("menu");
+    expect(within(menu).getByRole("menuitemradio", { name: /Mira_K/ })).toBeTruthy();
+    // Not closed again by the press that opened it.
+    await act(() => new Promise((r) => setTimeout(r, 50)));
+    expect(screen.getByRole("menu")).toBe(menu);
     expect(useApp.getState().accountDialog).toBeNull();
+    // Escape closes it; focus goes to the chip, the menu's own trigger (DESIGN.md 11.4).
+    fireEvent.keyDown(menu, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-variant")).not.toBe("primary"),
+    );
+    expect(document.activeElement?.textContent).toContain("Choose account");
   });
 
   it("the install log is offered once, whether the backend or the page names it", async () => {

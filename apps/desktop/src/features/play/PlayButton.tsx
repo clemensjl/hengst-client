@@ -66,12 +66,16 @@ const REASON_ID = "play-button-reason";
 /** The states that undo what the click before started: the click guard arms on these. */
 const OPPOSITE: PlayButtonState["kind"][] = ["preparing", "running"];
 
+/** A game is on its way, runs or ends: leaving these for Play (or any other action) arms the guard too. */
+const BUSY: PlayButtonState["kind"][] = ["starting", "preparing", "running", "stopping"];
+
 /**
  * DESIGN.md 10.2: one button whose label, variant and icon follow the state; it never moves,
  * never changes height and is never `disabled`. An inert state keeps the button focusable with
  * `aria-disabled` and its reason as the description. When the button turns into the opposite
- * action (Cancel, Stop) a click within 600 ms is ignored, so the second click of a double click
- * never hits it (DESIGN.md 10.0); a change into any other state takes the next click at once.
+ * action (Play into Cancel or Stop, and Cancel or Stop back into Play when the start ends or the
+ * game exits) a click within 600 ms is ignored, so the second click of a double click never hits
+ * it (DESIGN.md 10.0); any other change (Sign in into Play) takes the next click at once.
  */
 export function PlayButton({
   state,
@@ -89,8 +93,10 @@ export function PlayButton({
   // Before the browser paints the new label, so no click can reach it unguarded.
   useLayoutEffect(() => {
     if (kind.current !== state.kind) {
+      const left = kind.current;
       kind.current = state.kind;
-      if (OPPOSITE.includes(state.kind)) changedAt.current = Date.now();
+      const leftAGame = BUSY.includes(left) && !BUSY.includes(state.kind);
+      if (OPPOSITE.includes(state.kind) || leftAGame) changedAt.current = Date.now();
     }
   }, [state.kind]);
 

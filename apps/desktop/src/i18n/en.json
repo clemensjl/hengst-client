@@ -321,5 +321,6 @@
   "tray.stopGame": "Stop game",
   "tray.quit": "Quit Hengst Client",
   "tray.tooltip.idle": "Hengst Client",
-  "tray.tooltip.running": "Hengst Client: {{instance}} is running"
+  "tray.tooltip.running": "Hengst Client: {{instance}} is running",
+  "play.progress.phase.preparing": "Preparing"
 }

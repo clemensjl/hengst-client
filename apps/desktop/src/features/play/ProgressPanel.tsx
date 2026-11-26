@@ -1,9 +1,12 @@
 import { CircleAlertIcon } from "lucide-react";
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { api } from "@/ipc/client";
 import { countLine, type LaunchProgress } from "./progress";
+
+/** After a download batch, a second without the next one means the downloads are over. */
+export const DOWNLOADS_OVER_MS = 1000;
 
 /**
  * DESIGN.md 10.12: 160 px high from the moment preparing starts, so nothing below moves between
@@ -14,9 +17,19 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
   const { t, i18n } = useTranslation();
   const [openFailed, setOpenFailed] = useState(false);
   const opening = useRef(false);
-  // A start of this page shows no phase until its first real one; a start found after a reload
-  // (no channel, nothing known) shows "Launching game".
-  const phase = progress ? progress.phase : "launching";
+  // After a batch the line keeps "Downloading files", because the next batch usually follows at
+  // once; when none has started for a second, the downloads are over and the line goes back to
+  // the neutral phase. So between batches it never flips, and after the last one it changes once.
+  const betweenBatches = progress?.phase === "downloadingFiles" && progress.files === null;
+  const [downloadsOver, setDownloadsOver] = useState(false);
+  useEffect(() => {
+    setDownloadsOver(false);
+    if (!betweenBatches) return;
+    const id = setTimeout(() => setDownloadsOver(true), DOWNLOADS_OVER_MS);
+    return () => clearTimeout(id);
+  }, [betweenBatches]);
+  // Neutral until the core names a phase, and for a start found after a reload (nothing known).
+  const phase = (downloadsOver && betweenBatches ? null : progress?.phase) ?? "preparing";
   const count = progress && countLine(progress, t, i18n.language);
   const step = progress?.step;
   const log = progress?.installLog ?? null;
@@ -41,7 +54,7 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
     <div data-slot="launch-progress" className="flex h-40 max-w-120 flex-col overflow-hidden">
       {/* The phase is announced; the counts below are not, they change too often. */}
       <p aria-live="polite" className="text-body">
-        {phase && t(`play.progress.phase.${phase}`)}
+        {t(`play.progress.phase.${phase}`)}
       </p>
       <p className="mt-1 flex h-5 min-w-0 gap-1 text-small text-muted-foreground tabular-nums">
         {count && <span className="shrink-0">{count.text}</span>}

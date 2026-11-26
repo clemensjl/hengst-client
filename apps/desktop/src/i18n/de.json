@@ -321,5 +321,6 @@
   "tray.stopGame": "Spiel beenden",
   "tray.quit": "Hengst Client beenden",
   "tray.tooltip.idle": "Hengst Client",
-  "tray.tooltip.running": "Hengst Client: {{instance}} läuft"
+  "tray.tooltip.running": "Hengst Client: {{instance}} läuft",
+  "play.progress.phase.preparing": "Wird vorbereitet"
 }

@@ -21,7 +21,7 @@ const buttonVariants = cva(
           "border-transparent text-foreground hover:bg-hover active:bg-selected aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent disabled:text-text-disabled",
         destructive:
           "border-transparent bg-destructive text-destructive-foreground hover:bg-danger-hover active:bg-danger-pressed aria-disabled:hover:bg-destructive aria-disabled:active:bg-destructive disabled:border-border disabled:bg-hover disabled:text-text-disabled",
-        link: "border-transparent text-foreground underline decoration-1 underline-offset-[3px] hover:decoration-2 active:text-muted-foreground disabled:text-text-disabled disabled:no-underline",
+        link: "border-transparent text-foreground underline decoration-1 underline-offset-[3px] hover:decoration-2 active:text-muted-foreground aria-disabled:hover:decoration-1 aria-disabled:active:text-foreground disabled:text-text-disabled disabled:no-underline",
       },
       size: {
         default: `h-10 text-label ${svg}:size-4`,
