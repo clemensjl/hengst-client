@@ -123,6 +123,8 @@ describe("quit while a game runs", () => {
     expect(destructive().textContent).toBe("Force stop and quit");
     expect(destructive().getAttribute("aria-disabled")).toBeNull();
     expect(keep().getAttribute("aria-disabled")).toBeNull();
+    // Past the click guard of the changed button.
+    act(() => vi.advanceTimersByTime(600));
     fireEvent.click(destructive());
     await flush();
     expect(b.count("game_force_stop")).toBe(1);
@@ -141,6 +143,8 @@ describe("quit while a game runs", () => {
     expect(screen.queryByText("The game is not responding")).toBeNull();
     expect(destructive().textContent).toBe("Force stop and quit");
     expect(keep().getAttribute("aria-disabled")).toBeNull();
+    // Past the click guard of the changed button.
+    await act(() => new Promise((r) => setTimeout(r, 650)));
     fireEvent.click(destructive());
     await flush();
     expect(b.count("game_force_stop")).toBe(1);
@@ -155,11 +159,94 @@ describe("quit while a game runs", () => {
     await waitFor(() => expect(b.count("app_quit")).toBe(1));
   });
 
-  it("a game that ends by itself before the answer closes the dialog without quitting", async () => {
+  it("a game that ends by itself while the dialog asks quits the app (the user chose to quit)", async () => {
     const b = await setup();
     act(() => b.state(exited(false)));
+    await waitFor(() => expect(b.count("app_quit")).toBe(1));
+  });
+
+  it("a double click does not run into the force stop when the game has no window", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    b.stopAnswer = "noWindow";
+    fireEvent.click(destructive());
+    await flush();
+    expect(destructive().textContent).toBe("Force stop and quit");
+    // The second click of the double click lands on the changed button.
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(0);
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(1);
+  });
+
+  it("the switch to the force stop after 10 s takes no click for 600 ms", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    fireEvent.click(destructive());
+    await flush();
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(destructive().textContent).toBe("Force stop and quit");
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(0);
+    act(() => vi.advanceTimersByTime(599));
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(0);
+    act(() => vi.advanceTimersByTime(1));
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(1);
+  });
+
+  it("while it stops, Keep playing says why it does nothing", async () => {
+    await setup();
+    fireEvent.click(destructive());
+    await flush();
+    const reason = screen.getByText(
+      "Keep playing works again once the game has closed or stops responding.",
+    );
+    expect(keep().getAttribute("aria-describedby")).toBe(reason.id);
+    expect(reason.id).not.toBe("");
+  });
+
+  it("a force stop that never ends unlocks after 10 s, and a later tray quit opens the dialog again", async () => {
+    const b = await setup();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    b.stopAnswer = "noWindow";
+    fireEvent.click(destructive());
+    await flush();
+    act(() => vi.advanceTimersByTime(600));
+    fireEvent.click(destructive());
+    await flush();
+    expect(b.count("game_force_stop")).toBe(1);
+    expect(keep().getAttribute("aria-disabled")).toBe("true");
+    act(() => vi.advanceTimersByTime(10_000));
+    expect(keep().getAttribute("aria-disabled")).toBeNull();
+    expect(screen.getByRole("alert").textContent).toContain("The game is not responding");
+    vi.useRealTimers();
+    fireEvent.click(keep());
     await waitFor(() => expect(dialog()).toBeNull());
-    expect(b.count("app_quit")).toBe(0);
+    act(() => b.app({ event: "quitRequested" }));
+    expect(await screen.findByRole("alertdialog")).toBeTruthy();
+  });
+
+  it("a failed quit after the game is gone keeps the dialog with the error and a retry", async () => {
+    const b = await setup();
+    b.quitFails = { code: "internal", params: {}, action: null, detail: "x" };
+    fireEvent.click(destructive());
+    await flush();
+    act(() => b.state(exited(true)));
+    await waitFor(() => expect(b.count("app_quit")).toBe(1));
+    await flush();
+    expect(dialog()).not.toBeNull();
+    expect(screen.getByRole("alert")).toBeTruthy();
+    b.quitFails = null;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    await waitFor(() => expect(b.count("app_quit")).toBe(2));
   });
 
   it("a failed stop shows the error in the dialog and lets the user try again or keep playing", async () => {

@@ -315,6 +315,7 @@
   "play.quit.keep": "Weiterspielen",
   "play.quit.confirm": "Spiel beenden und schließen",
   "play.quit.busy": "Wird beendet…",
+  "play.quit.keepReason": "Weiterspielen geht wieder, sobald das Spiel beendet ist oder nicht reagiert.",
   "play.quit.notResponding": "Das Spiel reagiert nicht",
   "play.quit.force": "Sofort beenden und schließen",
   "tray.open": "Hengst Client öffnen",

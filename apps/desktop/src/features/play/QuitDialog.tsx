@@ -14,6 +14,7 @@ import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import { api, IpcError } from "@/ipc/client";
 import { useApp } from "@/stores/app";
+import { useChangeGuard } from "./changeGuard";
 
 /** DESIGN.md 11.11: after this long without an exit the dialog offers the force stop. */
 export const NOT_RESPONDING_MS = 10_000;
@@ -25,13 +26,29 @@ const errorOf = (e: unknown): ErrorDto =>
  * - `ask`: the question, nothing sent yet.
  * - `stopping`: the game was asked to close; waiting for its exit (busy).
  * - `noWindow`: the game has no window, so it was not asked; only the force stop is left.
- * - `notResponding`: asked, but no exit within 10 s.
+ * - `notResponding`: no exit within 10 s of the stop or of the force stop.
  * - `forcing`: the force stop runs; waiting for the exit (busy).
  * - `quitting`: the game is gone, the app quits (busy).
+ * - `quitFailed`: the game is gone but the app could not quit; the error stays with a retry.
  */
-type Phase = "ask" | "stopping" | "noWindow" | "notResponding" | "forcing" | "quitting";
+type Phase =
+  "ask" | "stopping" | "noWindow" | "notResponding" | "forcing" | "quitting" | "quitFailed";
 
 const BUSY: Phase[] = ["stopping", "forcing", "quitting"];
+/** The phases that wait for the game's exit: after 10 s they give the buttons back. */
+const WAITING: Phase[] = ["stopping", "forcing"];
+const FORCE: Phase[] = ["noWindow", "notResponding"];
+
+/** What the destructive button does right now. */
+type Action = "stop" | "force" | "none";
+const actionOf = (phase: Phase): Action =>
+  BUSY.includes(phase) || phase === "quitFailed"
+    ? "none"
+    : FORCE.includes(phase)
+      ? "force"
+      : "stop";
+
+const REASON_ID = "quit-keep-reason";
 
 /** The quit dialog while the tray asked for it (`quitAsked`). */
 export function QuitDialogHost() {
@@ -43,7 +60,8 @@ export function QuitDialogHost() {
 /**
  * "Quit Hengst Client" while a game runs (DESIGN.md 11.11, 10.9): a confirmation, the safe button
  * first in focus. The stop and the force stop are the app's own (`game_stop`, `game_force_stop`),
- * so the exit counts as requested. The app quits only once the game has exited.
+ * so the exit counts as requested. The app quits once the game has exited, also when it exits by
+ * itself while the dialog still asks: the user chose to quit.
  */
 function QuitDialog({ onClosed }: { onClosed: () => void }) {
   const { t } = useTranslation();
@@ -56,28 +74,32 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
   const sending = useRef(false);
   const busy = BUSY.includes(phase);
   const runs = game?.state === "running" || game?.state === "stopping";
+  const action = actionOf(phase);
+  // The button turning into the force stop ignores clicks for 600 ms (DESIGN.md 10.0): the second
+  // click of a double click on "Stop game and quit" must not kill the game.
+  const guarded = useChangeGuard(action, (left, now) => now === "force" && left !== "force");
 
   const quit = async () => {
+    setError(null);
     setPhase("quitting");
     try {
       // `false`: a game runs again (a new start); the question stands again.
       if (!(await api.appQuit())) setPhase("ask");
     } catch (e) {
       setError(errorOf(e));
-      setPhase("ask");
+      setPhase("quitFailed");
     }
   };
 
-  // The game is gone. Confirmed: quit. Not confirmed yet: nothing left to ask.
+  // The game is gone: quit, whatever was confirmed (a failed quit waits for its retry).
   useEffect(() => {
-    if (runs || game === undefined) return;
-    if (phase === "ask") setOpen(false);
-    else if (phase !== "quitting") void quit();
+    if (runs || game === undefined || phase === "quitting" || phase === "quitFailed") return;
+    void quit();
     // `quit` only uses state setters and the API, so it is not a dependency.
   }, [runs, game, phase]);
 
   useEffect(() => {
-    if (phase !== "stopping") return;
+    if (!WAITING.includes(phase)) return;
     const timer = setTimeout(() => setPhase("notResponding"), NOT_RESPONDING_MS);
     return () => clearTimeout(timer);
   }, [phase]);
@@ -119,10 +141,9 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
     if (!busy) setOpen(false);
   };
 
-  const forceOffered = phase === "noWindow" || phase === "notResponding" || phase === "forcing";
   const label = busy
     ? t("play.quit.busy")
-    : forceOffered
+    : action === "force"
       ? t("play.quit.force")
       : t("play.quit.confirm");
 
@@ -149,23 +170,41 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
               <span>{t("play.quit.notResponding")}</span>
             </div>
           )}
-          {error && <ErrorPanel error={error} autoFocus />}
+          {busy && (
+            <p id={REASON_ID} className="text-small text-muted-foreground">
+              {t("play.quit.keepReason")}
+            </p>
+          )}
+          {error && (
+            <ErrorPanel
+              error={error}
+              autoFocus
+              onRetry={phase === "quitFailed" ? () => void quit() : undefined}
+            />
+          )}
         </AlertDialogBody>
         <AlertDialogFooter>
-          <Button ref={keepRef} aria-disabled={busy || undefined} onClick={keep}>
-            {t("play.quit.keep")}
-          </Button>
           <Button
-            variant="destructive"
+            ref={keepRef}
             aria-disabled={busy || undefined}
-            onClick={() => {
-              if (busy) return;
-              void (forceOffered ? force() : stop());
-            }}
+            aria-describedby={busy ? REASON_ID : undefined}
+            onClick={keep}
           >
-            {busy ? <LoaderCircleIcon className="spinner size-4" aria-hidden="true" /> : null}
-            {label}
+            {phase === "quitFailed" ? t("common.close") : t("play.quit.keep")}
           </Button>
+          {phase !== "quitFailed" && (
+            <Button
+              variant="destructive"
+              aria-disabled={busy || undefined}
+              onClick={() => {
+                if (busy || guarded()) return;
+                void (action === "force" ? force() : stop());
+              }}
+            >
+              {busy ? <LoaderCircleIcon className="spinner size-4" aria-hidden="true" /> : null}
+              {label}
+            </Button>
+          )}
         </AlertDialogFooter>
       </AlertDialogContent>
     </AlertDialog>

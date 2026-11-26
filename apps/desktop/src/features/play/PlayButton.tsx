@@ -9,14 +9,12 @@ import {
   XIcon,
   type LucideIcon,
 } from "lucide-react";
-import { useLayoutEffect, useRef, type Ref } from "react";
+import { type Ref } from "react";
 import { useTranslation } from "react-i18next";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { useChangeGuard } from "./changeGuard";
 import type { PlayButtonState } from "./playState";
-
-/** DESIGN.md 10.0: after the button turned into another action, clicks are ignored this long. */
-export const CHANGE_GUARD_MS = 600;
 
 type Look = {
   label: string;
@@ -88,17 +86,10 @@ export function PlayButton({
 }) {
   const { t } = useTranslation();
   const look = lookOf(state, t);
-  const kind = useRef(state.kind);
-  const changedAt = useRef(-Infinity);
-  // Before the browser paints the new label, so no click can reach it unguarded.
-  useLayoutEffect(() => {
-    if (kind.current !== state.kind) {
-      const left = kind.current;
-      kind.current = state.kind;
-      const leftAGame = BUSY.includes(left) && !BUSY.includes(state.kind);
-      if (OPPOSITE.includes(state.kind) || leftAGame) changedAt.current = Date.now();
-    }
-  }, [state.kind]);
+  const guarded = useChangeGuard(
+    state.kind,
+    (left, now) => OPPOSITE.includes(now) || (BUSY.includes(left) && !BUSY.includes(now)),
+  );
 
   const Icon = look.icon;
   return (
@@ -112,7 +103,7 @@ export function PlayButton({
         // Inert states show no press: only an action presses.
         className={cn(!look.reason && "play-press")}
         onClick={(e) => {
-          if (look.reason || Date.now() - changedAt.current < CHANGE_GUARD_MS) return;
+          if (look.reason || guarded()) return;
           onActivate(state, e.currentTarget);
         }}
       >
