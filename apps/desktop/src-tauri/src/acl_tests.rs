@@ -81,6 +81,11 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
             crate::commands::play::game_stop,
             crate::commands::play::game_force_stop,
             crate::commands::play::game_state,
+            crate::commands::log::log_runs,
+            crate::commands::log::log_attach,
+            crate::commands::log::log_ack,
+            crate::commands::log::log_detach,
+            crate::commands::log::log_copy,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -331,5 +336,107 @@ fn play_takes_nothing_from_the_web_view_but_an_instance_id() {
     ] {
         let err = call_with(&app, "main", "play", InvokeBody::Json(body)).unwrap_err();
         assert_eq!(err["code"], "instanceNotFound", "{err}");
+    }
+}
+
+fn all_levels(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": true, "warning": true, "info": true, "debug": true, "other": true, "text": text
+    })
+}
+
+/// The log commands take run ids, seq numbers, an ack token and a small filter: an unknown run, a
+/// seq beyond the buffer and a long search text are typed errors, a path or a pattern is no
+/// argument, and the launcher log file is found by its run id only.
+#[test]
+fn the_main_window_may_call_the_log_commands_with_small_arguments_only() {
+    let (app, _dir) = app();
+    assert_eq!(
+        call(&app, "main", "log_runs").unwrap(),
+        serde_json::json!([])
+    );
+    assert!(call(&app, "main", "log_detach").is_ok());
+    assert!(call_with(
+        &app,
+        "main",
+        "log_ack",
+        InvokeBody::Json(serde_json::json!({ "ack": 12345 }))
+    )
+    .is_ok());
+    let state = app.state::<AppState>();
+    state
+        .log
+        .start_run(crate::dto::play::RunId(1), "9.9", 1, None);
+    for (cmd, body, field) in [
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 7, "sinceSeq": 0, "channel": "__CHANNEL__:1" }),
+            "runId",
+        ),
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 1, "sinceSeq": 9_007_199_254_740_991u64, "channel": "__CHANNEL__:1" }),
+            "sinceSeq",
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 7, "filter": all_levels("") }),
+            "runId",
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 1, "filter": all_levels(&"x".repeat(100_000)) }),
+            "text",
+        ),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "invalidInput", "{cmd}: {err}");
+        assert_eq!(err["params"]["field"], field, "{cmd}: {err}");
+    }
+    let copied = call_with(
+        &app,
+        "main",
+        "log_copy",
+        InvokeBody::Json(serde_json::json!({ "runId": 1, "filter": all_levels("") })),
+    )
+    .unwrap();
+    assert_eq!(
+        copied,
+        serde_json::json!({ "text": "", "lines": 0, "omitted": 0 })
+    );
+    // Not a filter: a pattern field, a path; not a run: a path.
+    for (cmd, body) in [
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 1, "filter": { "regex": ".*", "text": "" } }),
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": "C:\\x.log", "filter": all_levels("") }),
+        ),
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 1, "sinceSeq": -1, "channel": "__CHANNEL__:1" }),
+        ),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert!(!err.to_string().contains("not allowed"), "{cmd}: {err}");
+        assert!(err.get("code").is_none(), "an argument error: {err}");
+    }
+    // The launcher log of a run that is not held, or that has no file: openFailed, no path.
+    for run in [7, 1] {
+        let body = serde_json::json!({ "target": { "kind": "gameLog", "runId": run } });
+        let err = call_with(&app, "main", "open_location", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "openFailed", "{err}");
+    }
+    for cmd in [
+        "log_runs",
+        "log_attach",
+        "log_ack",
+        "log_detach",
+        "log_copy",
+    ] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }
 }

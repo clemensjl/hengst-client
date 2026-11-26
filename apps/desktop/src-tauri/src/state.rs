@@ -1,5 +1,6 @@
 use crate::accounts::{Accounts, Operations};
 use crate::events::EventHub;
+use crate::log::LiveLog;
 use crate::play::Game;
 use crate::settings::{load_settings, SettingsHandle};
 use hengst_core::auth::unix_now;
@@ -34,6 +35,8 @@ pub struct AppState {
     pub active_instance: Arc<Mutex<Option<String>>>,
     /// The one game: its state, the running process and the line hand-off.
     pub game: Arc<Game>,
+    /// The output of the current and the previous run (`log.rs`); the game feeds it.
+    pub log: Arc<LiveLog>,
     pub trasher: Trasher,
 }
 
@@ -56,11 +59,13 @@ impl AppState {
         }
         let events = EventHub::default();
         let active_instance: Arc<Mutex<Option<String>>> = Arc::default();
+        let game = Arc::new(Game::new(events.clone(), active_instance.clone()));
         AppState {
             settings: SettingsHandle::from_loaded(paths.clone(), loaded),
             paths,
             endpoints,
-            game: Arc::new(Game::new(events.clone(), active_instance.clone())),
+            log: game.log().clone(),
+            game,
             events,
             versions: VersionsCache::default(),
             accounts: Arc::new(accounts),

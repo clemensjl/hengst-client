@@ -12,6 +12,10 @@ import type { LoaderInfoDto } from "./bindings/LoaderInfoDto";
 import type { LoaderKindDto } from "./bindings/LoaderKindDto";
 import type { LoaderVersionsDto } from "./bindings/LoaderVersionsDto";
 import type { LoginEvent } from "./bindings/LoginEvent";
+import type { LogBatch } from "./bindings/LogBatch";
+import type { LogCopyDto } from "./bindings/LogCopyDto";
+import type { LogFilter } from "./bindings/LogFilter";
+import type { LogRunDto } from "./bindings/LogRunDto";
 import type { LoginMethod } from "./bindings/LoginMethod";
 import type { OpenTarget } from "./bindings/OpenTarget";
 import type { PlayEvent } from "./bindings/PlayEvent";
@@ -177,6 +181,27 @@ export const api = {
   gameForceStop: (): Promise<boolean> => guard(invoke<boolean>("game_force_stop")),
   /** The game's state now, as the last `gameState` event carried it. */
   gameState: (): Promise<GameStateDto> => guard(invoke<GameStateDto>("game_state")),
+  /** The runs whose log the app holds (the current and the previous one), newest first. */
+  logRuns: (): Promise<LogRunDto[]> => guard(invoke<LogRunDto[]>("log_runs")),
+  /**
+   * Streams the log of `runId` to `onBatch`: what the buffer holds from `sinceSeq` on (0: from the
+   * oldest line), then new lines; `dropped` counts lines that left the buffer before they were sent,
+   * `end` closes the stream. Each batch with lines is acknowledged here as it arrives (also on a
+   * channel a later attach replaced), so the backend sends the next one. A new attach replaces this
+   * one; `logDetach` stops it. `invalidInput` (`runId`) when the run's log is not held any more.
+   */
+  logAttach: (runId: number, sinceSeq: number, onBatch: (b: LogBatch) => void): Promise<void> => {
+    const channel = new Channel<LogBatch>();
+    channel.onmessage = (b) => {
+      if (b.lines.length > 0) void invoke<void>("log_ack", { ack: b.ack }).catch(() => undefined);
+      onBatch(b);
+    };
+    return guard(invoke<void>("log_attach", { runId, sinceSeq, channel }));
+  },
+  logDetach: (): Promise<void> => guard(invoke<void>("log_detach")),
+  /** The held lines that `filter` lets through, redacted, for the clipboard (at most 4 MiB). */
+  logCopy: (runId: number, filter: LogFilter): Promise<LogCopyDto> =>
+    guard(invoke<LogCopyDto>("log_copy", { runId, filter })),
   /** Quits the app; `false` (and nothing happens) while a game still runs. */
   appQuit: (): Promise<boolean> => guard(invoke<boolean>("app_quit")),
 };

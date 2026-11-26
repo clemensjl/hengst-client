@@ -14,6 +14,7 @@ use hengst_desktop_lib::commands::app::app_info_impl;
 use hengst_desktop_lib::commands::instances::{instances_list_impl, loader_kinds_impl};
 use hengst_desktop_lib::commands::play::play_impl;
 use hengst_desktop_lib::dto::accounts::{LoginEvent, LoginMethod};
+use hengst_desktop_lib::dto::log::{LogBatch, LogFilter};
 use hengst_desktop_lib::dto::play::{GameStateDto, PlayEvent};
 use hengst_desktop_lib::dto::settings::SettingsDto;
 use hengst_desktop_lib::error::error_dto;
@@ -130,8 +131,9 @@ impl hengst_core::auth::store::SecretStore for SharedStore {
 }
 
 /// Starts an instance for an account whose token is `FAKE` (mock Mojang, `fake-java` printing its
-/// arguments) and returns every play event, game state and stop answer as serialized for the web
-/// view, plus the output lines (what the live log will carry).
+/// arguments twice) and returns every play event, game state and stop answer as serialized for the
+/// web view, plus the output lines and what the live log sends: the batches of an attach (its
+/// backfill holds the first printout, its live part the second) and a copy of the whole log.
 async fn run_mock_play_with_token() -> Vec<String> {
     let server = MockServer::builder().start().await;
     hengst_testkit::mount_mojang(&server).await;
@@ -195,7 +197,11 @@ async fn run_mock_play_with_token() -> Vec<String> {
         1,
     )
     .unwrap();
-    std::fs::write(inst.dir.join("fake-java.txt"), "args\nsleep 60000\n").unwrap();
+    std::fs::write(
+        inst.dir.join("fake-java.txt"),
+        "args\nwait go\nargs\nsleep 60000\n",
+    )
+    .unwrap();
     let events: Arc<Mutex<Vec<PlayEvent>>> = Arc::default();
     let sink = events.clone();
     play_impl(
@@ -206,16 +212,70 @@ async fn run_mock_play_with_token() -> Vec<String> {
     .await
     .unwrap();
     let start = Instant::now();
-    while !lines
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|l| l == "ARG --accessToken")
-    {
+    let printed = |n: usize| {
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == "ARG --accessToken")
+            .count()
+            >= n
+    };
+    while !printed(1) {
         assert!(start.elapsed() < Duration::from_secs(60), "no game output");
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    let GameStateDto::Running { run_id, .. } = state.game.state() else {
+        panic!("not running: {:?}", state.game.state());
+    };
+    // The live log: backfill of the first printout, then the second one live.
+    let batches: Arc<Mutex<Vec<LogBatch>>> = Arc::default();
+    let (kept, log) = (batches.clone(), Arc::downgrade(&state.log));
+    state
+        .log
+        .attach(
+            run_id,
+            0,
+            Arc::new(move |b: LogBatch| {
+                let ack = b.ack;
+                kept.lock().unwrap().push(b);
+                if let Some(log) = log.upgrade() {
+                    log.ack(ack);
+                }
+            }),
+        )
+        .unwrap();
+    let redacted_from = |from: usize| {
+        let batches = batches.lock().unwrap();
+        batches
+            .iter()
+            .skip(from)
+            .flat_map(|b| b.lines.iter())
+            .filter(|l| l.message == "ARG <redacted>")
+            .count()
+    };
+    while redacted_from(0) == 0 {
+        assert!(start.elapsed() < Duration::from_secs(60), "no backfill");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let backfilled = batches.lock().unwrap().len();
+    std::fs::write(inst.dir.join("go"), "").unwrap();
+    while !printed(2) || redacted_from(backfilled) == 0 {
+        assert!(start.elapsed() < Duration::from_secs(60), "no live lines");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let all = LogFilter {
+        error: true,
+        warning: true,
+        info: true,
+        debug: true,
+        other: true,
+        text: String::new(),
+    };
+    let copy = state.log.copy(run_id, all).await.unwrap();
+    assert!(copy.text.contains("ARG <redacted>"), "{}", copy.text);
     let mut seen = vec![serde_json::to_string(&state.game.state()).unwrap()];
+    seen.push(serde_json::to_string(&copy).unwrap());
     seen.push(serde_json::to_string(&stop(&state.game).await.unwrap()).unwrap());
     assert!(force_stop(&state.game).await.unwrap());
     while !matches!(state.game.state(), GameStateDto::Idle { .. }) {
@@ -237,6 +297,13 @@ async fn run_mock_play_with_token() -> Vec<String> {
     assert!(
         seen.iter().any(|s| s.contains("lastExit")),
         "the exit is covered"
+    );
+    seen.extend(
+        batches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| serde_json::to_string(b).unwrap()),
     );
     let lines = lines.lock().unwrap().clone();
     // The game really got the token: the core replaced it in the output.

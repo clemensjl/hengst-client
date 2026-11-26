@@ -27,7 +27,12 @@ macro_rules! with_commands {
             play::play_cancel,
             play::game_stop,
             play::game_force_stop,
-            play::game_state
+            play::game_state,
+            log::log_runs,
+            log::log_attach,
+            log::log_ack,
+            log::log_detach,
+            log::log_copy
         )
     };
 }

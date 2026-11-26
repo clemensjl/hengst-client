@@ -197,10 +197,13 @@ pub fn cancel_operations_when_destroyed<R: tauri::Runtime>(window: &WebviewWindo
     window.on_window_event(move |event| cancel_operations_on(&handle, event));
 }
 
-/// What the hook does with a window event: only the window's destruction cancels.
+/// What the hook does with a window event: only the window's destruction cancels (and ends the
+/// live log's consumer, whose channel went with the window).
 pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
     if let WindowEvent::Destroyed = event {
-        app.state::<AppState>().operations.cancel_all();
+        let state = app.state::<AppState>();
+        state.operations.cancel_all();
+        state.log.detach();
     }
 }
 
@@ -210,12 +213,14 @@ pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &Windo
 /// same page (or any other command) can never cancel a sign-in.
 ///
 /// The old page's event channel is gone with it: the hub forgets it until the new page subscribes,
-/// so a tray quit request in between waits for that page (`EventHub::request_quit`).
+/// so a tray quit request in between waits for that page (`EventHub::request_quit`). So is its
+/// live log consumer, and the log batches it never acknowledged (`LiveLog::page_reset`).
 pub fn cancel_operations_on_page_load<R: tauri::Runtime>(app: &AppHandle<R>, event: PageLoadEvent) {
     if matches!(event, PageLoadEvent::Started) {
         let state = app.state::<AppState>();
         state.events.unsubscribe();
         state.operations.cancel_all();
+        state.log.page_reset();
     }
 }
 

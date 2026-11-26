@@ -3,7 +3,7 @@ use crate::dto::instances::OpenTarget;
 use crate::error::{error_dto, instance_id_error};
 use crate::open::{
     explore_folder, log_error, log_handler, open_folder, open_log_file, open_target,
-    resolve_location, resolve_log_path, reveal_in_explorer, shell_open_file,
+    resolve_game_log, resolve_location, resolve_log_path, reveal_in_explorer, shell_open_file,
 };
 use crate::state::AppState;
 use tauri::State;
@@ -27,18 +27,27 @@ pub fn open_url<R: tauri::Runtime>(
 ///
 /// A log file (`LogFile`) is opened in the program Windows has for `.log` files, or selected in
 /// Explorer when there is none (`open_log_file`), after `resolve_log_path` checked the path the
-/// web view sent; a refused path is `OpenFailed`.
+/// web view sent; a refused path is `OpenFailed`. The launcher log file of a game run (`GameLog`)
+/// is looked up from the run id and goes the same way (`resolve_game_log`).
 #[tauri::command]
 pub async fn open_location(state: State<'_, AppState>, target: OpenTarget) -> Result<(), ErrorDto> {
-    let paths = state.paths.clone();
+    let (paths, log) = (state.paths.clone(), state.log.clone());
     tauri::async_runtime::spawn_blocking(move || {
-        if let OpenTarget::LogFile { path } = &target {
-            let file = resolve_log_path(&paths, path).map_err(|e| log_error(&e))?;
+        let file = match &target {
+            OpenTarget::LogFile { path } => {
+                Some(resolve_log_path(&paths, path).map_err(|e| log_error(&e))?)
+            }
+            OpenTarget::GameLog { run_id } => Some(resolve_game_log(&paths, &log, *run_id)?),
+            OpenTarget::DataDir | OpenTarget::Instance { .. } => None,
+        };
+        if let Some(file) = file {
             return open_log_file(&file, log_handler(), shell_open_file, reveal_in_explorer);
         }
         let dir = resolve_location(&paths, &target).map_err(|e| match &target {
             OpenTarget::Instance { id } => instance_id_error(&e, id),
-            OpenTarget::DataDir | OpenTarget::LogFile { .. } => error_dto(&e),
+            OpenTarget::DataDir | OpenTarget::LogFile { .. } | OpenTarget::GameLog { .. } => {
+                error_dto(&e)
+            }
         })?;
         open_folder(&dir, explore_folder)
     })

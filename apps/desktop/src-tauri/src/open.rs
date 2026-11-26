@@ -48,6 +48,7 @@ pub fn resolve_location(paths: &Paths, target: &OpenTarget) -> hengst_core::Resu
         OpenTarget::Instance { id } => instances::instance_dir(paths, id),
         // A file, not a folder: `open_location` hands it to `resolve_log_path` and `open_file`.
         OpenTarget::LogFile { path } => Err(hengst_core::Error::UnsafePath(path.clone())),
+        OpenTarget::GameLog { .. } => Err(hengst_core::Error::UnsafePath("game log".into())),
     }
 }
 
@@ -120,6 +121,28 @@ fn is_device_name(part: &str) -> bool {
         "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
     ) || numbered("COM")
         || numbered("LPT")
+}
+
+/// The launcher log file of game run `run_id`, checked as `resolve_log_path` checks a path from
+/// the web view (the path the core reported, relative to the data folder). Not held, or no file:
+/// `OpenFailed`, without a path in the detail.
+pub fn resolve_game_log(
+    paths: &Paths,
+    log: &crate::log::LiveLog,
+    run_id: crate::dto::play::RunId,
+) -> Result<PathBuf, ErrorDto> {
+    let failed = |detail: &str| ErrorDto {
+        code: ErrorCode::OpenFailed,
+        params: BTreeMap::new(),
+        action: None,
+        detail: detail.to_string(),
+    };
+    let file = log
+        .log_file(run_id)
+        .ok_or_else(|| failed("this run has no launcher log file"))?;
+    let path = crate::play::relative(paths.root(), &file)
+        .ok_or_else(|| failed("the launcher log file is outside the data folder"))?;
+    resolve_log_path(paths, &path).map_err(|e| log_error(&e))
 }
 
 /// A log that could not be opened, refused or missing: `OpenFailed`, with the detail of
@@ -968,6 +991,12 @@ mod tests {
                     path: "logs/x.log".into(),
                 },
             ),
+            (
+                r#"{"kind":"gameLog","runId":3}"#,
+                OpenTarget::GameLog {
+                    run_id: crate::dto::play::RunId(3),
+                },
+            ),
         ] {
             assert_eq!(serde_json::from_str::<OpenTarget>(json).unwrap(), target);
         }
@@ -976,8 +1005,59 @@ mod tests {
             r#""C:\\Windows""#,
             r#"{"kind":"instance"}"#,
             r#"{"kind":"DataDir"}"#,
+            r#"{"kind":"gameLog","path":"logs/game/x.log"}"#,
+            r#"{"kind":"gameLog","runId":"logs/game/x.log"}"#,
         ] {
             assert!(serde_json::from_str::<OpenTarget>(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_game_log_is_found_by_its_run_id_and_checked_like_any_log() {
+        use crate::dto::play::RunId;
+        use crate::log::LiveLog;
+        let (d, paths) = home();
+        let dir = paths.root().join("logs").join("game");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("9.9-20261126-101010.log");
+        std::fs::write(&file, "[10:10:10] [main/INFO]: hello\n").unwrap();
+        let outside = d.path().join("elsewhere.log");
+        std::fs::write(&outside, "x").unwrap();
+        let log = LiveLog::new();
+        log.start_run(RunId(1), "9.9", 1, Some(&file));
+        log.start_run(RunId(2), "9.9", 2, None);
+        let found = resolve_game_log(&paths, &log, RunId(1)).unwrap();
+        assert!(!found.to_string_lossy().starts_with("\\\\?\\"), "{found:?}");
+        assert!(
+            found.ends_with("logs/game/9.9-20261126-101010.log"),
+            "{found:?}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&found).unwrap(),
+            std::fs::read_to_string(&file).unwrap()
+        );
+        // Not held, held without a file, a file that is gone, a file outside the data folder.
+        let failures = [
+            resolve_game_log(&paths, &log, RunId(9)).unwrap_err(),
+            resolve_game_log(&paths, &log, RunId(2)).unwrap_err(),
+            {
+                std::fs::remove_file(&file).unwrap();
+                resolve_game_log(&paths, &log, RunId(1)).unwrap_err()
+            },
+            {
+                log.start_run(RunId(3), "9.9", 3, Some(&outside));
+                resolve_game_log(&paths, &log, RunId(3)).unwrap_err()
+            },
+        ];
+        let temp = d.path().file_name().unwrap().to_string_lossy().to_string();
+        for e in failures {
+            assert_eq!(e.code, ErrorCode::OpenFailed, "{e:?}");
+            assert!(e.action.is_none());
+            assert!(
+                !e.detail.contains(&temp) && !e.detail.contains("AppData"),
+                "{}",
+                e.detail
+            );
         }
     }
 }

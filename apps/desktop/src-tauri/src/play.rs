@@ -31,8 +31,10 @@
 //! Game output: the core calls the line sink on its reader thread while it holds the run's output
 //! lock, so the sink only puts the line into an unbounded channel (it never waits and never drops
 //! a line; the launcher log file holds the same lines). One task per run drains the channel into
-//! the line handler (`set_line_handler`, the live log of Task 18) with the run id. Lines can
-//! still arrive after the exit (a child of the game holding the pipe open).
+//! the live log (`log.rs`) with the run id; its push never waits for a reader, so the channel
+//! drains as fast as lines come. Lines can still arrive after the exit (a child of the game
+//! holding the pipe open); they go to their own run's log. When the channel closes, the run's
+//! log is complete.
 
 use crate::accounts::{internal, Accounts, OpKind, OpOut, Operations};
 use crate::dto::accounts::OperationId;
@@ -40,6 +42,7 @@ use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
 use crate::dto::play::{GameStateDto, LastExit, PlayEvent, RunId, StopResult, TransferDto};
 use crate::error::{error_dto, instance_id_error, redact, strip_paths};
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
+use crate::log::{LiveLog, RunCloser};
 use crate::settings::Settings;
 use hengst_core::auth::unix_now;
 use hengst_core::game::{spawn_game, GameProcess, LineSink};
@@ -132,7 +135,9 @@ pub struct Game {
     /// changed together with the phase (under `inner`).
     active: Arc<Mutex<Option<String>>>,
     preparer: Mutex<Preparer>,
-    lines: Mutex<LineHandler>,
+    /// An extra listener for every line (tests); the live log gets them anyway.
+    lines: Mutex<Option<LineHandler>>,
+    log: Arc<LiveLog>,
 }
 
 impl Game {
@@ -145,8 +150,14 @@ impl Game {
             events,
             active,
             preparer: Mutex::new(core_preparer()),
-            lines: Mutex::new(Arc::new(|_, _| {})),
+            lines: Mutex::new(None),
+            log: Arc::new(LiveLog::new()),
         }
+    }
+
+    /// The live log the runs feed.
+    pub fn log(&self) -> &Arc<LiveLog> {
+        &self.log
     }
 
     /// Replaces how launches are prepared (tests).
@@ -154,9 +165,9 @@ impl Game {
         *lock(&self.preparer) = preparer;
     }
 
-    /// Where output lines go from now on (Task 18, the live log).
+    /// Also hands every output line to `handler` from now on, besides the live log (tests).
     pub fn set_line_handler(&self, handler: LineHandler) {
-        *lock(&self.lines) = handler;
+        *lock(&self.lines) = Some(handler);
     }
 
     pub fn state(&self) -> GameStateDto {
@@ -251,7 +262,7 @@ impl From<Transfer> for TransferDto {
 }
 
 /// `path` relative to `root` with `/`, if it lies below it (plain names only).
-fn relative(root: &Path, path: &Path) -> Option<String> {
+pub(crate) fn relative(root: &Path, path: &Path) -> Option<String> {
     let rest = path.strip_prefix(root).ok()?;
     let parts: Option<Vec<&str>> = rest
         .components()
@@ -516,10 +527,14 @@ impl PlayTask {
             self.req.ops.finish(self.op);
             inner.last_run += 1;
             let run_id = RunId(inner.last_run);
+            let since = unix_millis();
+            // Before `Running` is announced, so an attach that follows the state finds the run.
+            game.log
+                .start_run(run_id, &self.req.instance.id, since, process.log_path());
             let run = Run {
                 instance: self.req.instance.id.clone(),
                 run_id,
-                since: unix_millis(),
+                since,
                 process: process.clone(),
                 stops_in_flight: 0,
                 asked: false,
@@ -532,11 +547,19 @@ impl PlayTask {
         };
         let drain = game.clone();
         tokio::spawn(async move {
+            // The channel closes when the game's output ends: the run's log is complete.
+            let _closer = RunCloser {
+                log: drain.log.clone(),
+                run_id,
+            };
             while let Some(line) = rx.recv().await {
-                let handler = lock(&drain.lines).clone();
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    handler(run_id, line)
-                }));
+                if let Some(handler) = lock(&drain.lines).clone() {
+                    let copy = line.clone();
+                    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                        handler(run_id, copy)
+                    }));
+                }
+                drain.log.push(run_id, line);
             }
         });
         tokio::spawn(async move {

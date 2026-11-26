@@ -1238,3 +1238,74 @@ async fn a_half_failed_sign_out_during_the_renewal_is_not_revived() {
         .iter()
         .any(|s| matches!(s, GameStateDto::Running { .. })));
 }
+
+// ---- the live log (Task 18) ----
+
+/// The real drain path: a run's lines reach the live log, the run is there as soon as the state
+/// says `Running`, its end closes the log, and its launcher log file can be found by its id.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_live_log_holds_the_lines_of_a_run_and_its_end() {
+    let fx = fixture(Login::Valid).await;
+    // Sees the log at the moment `Running` is announced.
+    let seen_at_running: Seen<bool> = Arc::default();
+    {
+        let (log, seen, kept) = (
+            fx.state.log.clone(),
+            seen_at_running.clone(),
+            fx.app_events.clone(),
+        );
+        fx.state.events.subscribe(Arc::new(move |e: AppEvent| {
+            if let AppEvent::GameState {
+                state: GameStateDto::Running { run_id, .. },
+            } = &e
+            {
+                let held = log.runs().iter().any(|r| r.run_id == *run_id);
+                seen.lock().unwrap().push(held);
+            }
+            kept.lock().unwrap().push(e);
+        }));
+    }
+    fx.script("out first\nxml WARN|Worker-1|second\nexit 0\n");
+    let (_op, events) = fx.play().await;
+    let PlayEvent::Started { run_id } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(*seen_at_running.lock().unwrap(), [true]);
+    fx.idle().await;
+    until("the closed log", || {
+        fx.state
+            .log
+            .runs()
+            .iter()
+            .any(|r| r.run_id == run_id && r.closed)
+    })
+    .await;
+    let batches: Seen<crate::dto::log::LogBatch> = Arc::default();
+    let kept = batches.clone();
+    fx.state
+        .log
+        .attach(run_id, 0, Arc::new(move |b| kept.lock().unwrap().push(b)))
+        .unwrap();
+    until("the end of the batches", || {
+        batches.lock().unwrap().iter().any(|b| b.end.is_some())
+    })
+    .await;
+    let batches = batches.lock().unwrap();
+    let lines: Vec<_> = batches.iter().flat_map(|b| b.lines.iter()).collect();
+    assert_eq!(
+        lines
+            .iter()
+            .map(|l| (l.seq, l.message.as_str()))
+            .collect::<Vec<_>>(),
+        [(1, "first"), (2, "second")]
+    );
+    assert_eq!(lines[1].thread.as_deref(), Some("Worker-1"));
+    assert_eq!(lines[1].level, Some(crate::dto::log::LogLevelDto::Warn));
+    assert_eq!(
+        batches.last().unwrap().end,
+        Some(crate::dto::log::LogEnd::Complete)
+    );
+    let file = crate::open::resolve_game_log(&fx.state.paths, &fx.state.log, run_id).unwrap();
+    let text = std::fs::read_to_string(file).unwrap();
+    assert!(text.contains("first") && text.contains("second"), "{text}");
+}

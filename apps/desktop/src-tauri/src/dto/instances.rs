@@ -157,4 +157,10 @@ pub enum OpenTarget {
     LogFile {
         path: String,
     },
+    /// The launcher log file of a game run of this app session (`log_runs`). Only the run id
+    /// travels; the file is looked up in Rust and checked like `LogFile`.
+    #[serde(rename_all = "camelCase")]
+    GameLog {
+        run_id: crate::dto::play::RunId,
+    },
 }

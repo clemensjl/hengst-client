@@ -4,6 +4,7 @@ pub mod accounts;
 pub mod app;
 pub mod error;
 pub mod instances;
+pub mod log;
 pub mod play;
 pub mod settings;
 pub mod versions;
@@ -55,4 +56,13 @@ pub const ALL_TYPES: &[Export] = &[
     play::LastExit::export_all,
     play::GameStateDto::export_all,
     play::StopResult::export_all,
+    log::LogLevelDto::export_all,
+    log::LogStreamDto::export_all,
+    log::LogTimeDto::export_all,
+    log::LogLineDto::export_all,
+    log::LogEnd::export_all,
+    log::LogBatch::export_all,
+    log::LogRunDto::export_all,
+    log::LogFilter::export_all,
+    log::LogCopyDto::export_all,
 ];
