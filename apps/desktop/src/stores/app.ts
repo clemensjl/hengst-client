@@ -126,7 +126,12 @@ interface AppState {
    * number tells one opening from the next.
    */
   quitAsked: number | null;
-  closeQuit: () => void;
+  /** The open quit dialog was answered with "Keep playing" and is closing (its exit animation). */
+  quitClosing: boolean;
+  /** "Keep playing": a new tray request from now on opens a new dialog. */
+  dismissQuit: () => void;
+  /** The dialog `id` has finished closing. */
+  closeQuit: (id: number) => void;
   /** Loads the game state; an event that arrives meanwhile wins over the answer. */
   loadGame: () => Promise<void>;
   /** Starts the instance; a second call while a start of this page runs does nothing. */
@@ -267,7 +272,10 @@ export const useApp = create<AppState>()((set, get) => ({
   dismissedExit: null,
   playActionError: null,
   quitAsked: null,
-  closeQuit: () => set({ quitAsked: null }),
+  quitClosing: false,
+  dismissQuit: () => set({ quitClosing: true }),
+  closeQuit: (id) =>
+    set((s) => (s.quitAsked === id ? { quitAsked: null, quitClosing: false } : {})),
 
   setView: (view) => set({ view }),
 
@@ -509,10 +517,11 @@ export const useApp = create<AppState>()((set, get) => ({
         latest("game");
         applyGame(event.data.state);
       } else if (event.event === "quitRequested") {
-        // A second request while the dialog is open keeps that dialog.
-        if (get().quitAsked === null) {
+        // A second request while the dialog is open keeps that dialog; one while it is closing
+        // after "Keep playing" opens a new one.
+        if (get().quitAsked === null || get().quitClosing) {
           quitOpenings += 1;
-          set({ quitAsked: quitOpenings });
+          set({ quitAsked: quitOpenings, quitClosing: false });
         }
       } else if (event.event === "stopNoWindow") {
         // The tray's stop reached no window: the start page says so and offers the force stop.

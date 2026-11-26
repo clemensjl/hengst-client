@@ -54,7 +54,10 @@ const REASON_ID = "quit-keep-reason";
 export function QuitDialogHost() {
   const asked = useApp((s) => s.quitAsked);
   const close = useApp((s) => s.closeQuit);
-  return asked === null ? null : <QuitDialog key={asked} onClosed={close} />;
+  const dismiss = useApp((s) => s.dismissQuit);
+  return asked === null ? null : (
+    <QuitDialog key={asked} onDismiss={dismiss} onClosed={() => close(asked)} />
+  );
 }
 
 /**
@@ -63,7 +66,7 @@ export function QuitDialogHost() {
  * so the exit counts as requested. The app quits once the game has exited, also when it exits by
  * itself while the dialog still asks: the user chose to quit.
  */
-function QuitDialog({ onClosed }: { onClosed: () => void }) {
+function QuitDialog({ onDismiss, onClosed }: { onDismiss: () => void; onClosed: () => void }) {
   const { t } = useTranslation();
   const game = useApp((s) => s.game.data);
   const [open, setOpen] = useState(true);
@@ -91,12 +94,14 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
     }
   };
 
-  // The game is gone: quit, whatever was confirmed (a failed quit waits for its retry).
+  // The game is gone: quit, whatever was confirmed (a failed quit waits for its retry). Not after
+  // "Keep playing": the dialog may still be closing, but the user chose to stay.
   useEffect(() => {
-    if (runs || game === undefined || phase === "quitting" || phase === "quitFailed") return;
+    if (!open || runs || game === undefined || phase === "quitting" || phase === "quitFailed")
+      return;
     void quit();
     // `quit` only uses state setters and the API, so it is not a dependency.
-  }, [runs, game, phase]);
+  }, [open, runs, game, phase]);
 
   useEffect(() => {
     if (!WAITING.includes(phase)) return;
@@ -138,7 +143,9 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
   };
 
   const keep = () => {
-    if (!busy) setOpen(false);
+    if (busy) return;
+    setOpen(false);
+    onDismiss();
   };
 
   const label = busy
@@ -172,7 +179,7 @@ function QuitDialog({ onClosed }: { onClosed: () => void }) {
           )}
           {busy && (
             <p id={REASON_ID} className="text-small text-muted-foreground">
-              {t("play.quit.keepReason")}
+              {phase === "quitting" ? t("play.quit.quittingReason") : t("play.quit.keepReason")}
             </p>
           )}
           {error && (

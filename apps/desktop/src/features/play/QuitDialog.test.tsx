@@ -25,6 +25,7 @@ beforeEach(() => {
   Element.prototype.scrollIntoView = vi.fn();
 });
 afterEach(async () => {
+  delete (Element.prototype as { getAnimations?: unknown }).getAnimations;
   vi.useRealTimers();
   cleanup();
   clearMocks();
@@ -32,6 +33,28 @@ afterEach(async () => {
 });
 
 const flush = () => act(async () => {});
+
+/**
+ * Holds every exit (and open) animation until the returned function is called, as a real exit
+ * animation keeps the closing dialog mounted for about 150 ms. jsdom has no animations at all.
+ */
+function holdAnimations(): () => void {
+  let finish: () => void = () => {};
+  const finished = new Promise<void>((r) => (finish = r));
+  const animation = { finished, effect: { getTiming: () => ({ duration: 150, iterations: 1 }) } };
+  Object.defineProperty(Element.prototype, "getAnimations", {
+    configurable: true,
+    value: () => [animation],
+  });
+  return () => {
+    // Base UI may look for replacement animations after these end: there are none.
+    Object.defineProperty(Element.prototype, "getAnimations", {
+      configurable: true,
+      value: () => [],
+    });
+    finish();
+  };
+}
 
 /** The app with a running game, after the tray asked to quit. */
 async function setup(game: GameStateDto = running) {
@@ -72,6 +95,58 @@ describe("quit while a game runs", () => {
     await waitFor(() => expect(dialog()).toBeNull());
     expect(b.count("game_stop")).toBe(0);
     expect(b.count("app_quit")).toBe(0);
+  });
+
+  it("a game that exits while the dialog closes after keep playing does not quit", async () => {
+    const b = await setup();
+    const finish = holdAnimations();
+    fireEvent.click(keep());
+    await flush();
+    // The close has not completed: the dialog is still mounted for its exit animation.
+    expect(dialog()).not.toBeNull();
+    act(() => b.state(exited(false)));
+    await flush();
+    finish();
+    await waitFor(() => expect(dialog()).toBeNull());
+    await flush();
+    expect(b.count("app_quit")).toBe(0);
+  });
+
+  it("a game that exits long after keep playing does not quit", async () => {
+    const b = await setup();
+    fireEvent.click(keep());
+    await waitFor(() => expect(dialog()).toBeNull());
+    act(() => b.state(exited(false)));
+    await flush();
+    expect(b.count("app_quit")).toBe(0);
+  });
+
+  it("a tray quit right after keep playing opens the dialog again", async () => {
+    const b = await setup();
+    const finish = holdAnimations();
+    fireEvent.click(keep());
+    await flush();
+    // Still closing when the next request comes.
+    act(() => b.app({ event: "quitRequested" }));
+    await flush();
+    finish();
+    await flush();
+    // The new question stays open after the old one has finished closing.
+    await new Promise((r) => setTimeout(r, 100));
+    expect(screen.getByRole("alertdialog")).toBeTruthy();
+    expect(useApp.getState().quitAsked).not.toBeNull();
+  });
+
+  it("while it quits, the reason says so", async () => {
+    const b = await setup();
+    b.stopAnswer = "notRunning";
+    let release: () => void = () => {};
+    b.quitGate = new Promise<void>((r) => (release = r));
+    fireEvent.click(destructive());
+    await flush();
+    const reason = screen.getByText("Hengst Client is quitting.");
+    expect(keep().getAttribute("aria-describedby")).toBe(reason.id);
+    release();
   });
 
   it("escape closes it while nothing runs", async () => {

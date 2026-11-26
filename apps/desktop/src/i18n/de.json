@@ -316,12 +316,12 @@
   "play.quit.confirm": "Spiel beenden und schließen",
   "play.quit.busy": "Wird beendet…",
   "play.quit.keepReason": "Weiterspielen geht wieder, sobald das Spiel beendet ist oder nicht reagiert.",
+  "play.quit.quittingReason": "Hengst Client wird geschlossen.",
   "play.quit.notResponding": "Das Spiel reagiert nicht",
   "play.quit.force": "Sofort beenden und schließen",
   "tray.open": "Hengst Client öffnen",
   "tray.stopGame": "Spiel beenden",
   "tray.quit": "Hengst Client beenden",
-  "tray.tooltip.idle": "Hengst Client",
   "tray.tooltip.running": "Hengst Client: {{instance}} läuft",
   "play.progress.phase.preparing": "Wird vorbereitet"
 }

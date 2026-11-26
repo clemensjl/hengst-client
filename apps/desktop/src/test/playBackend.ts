@@ -51,6 +51,8 @@ export function playBackend(
     forceFails: null as ErrorDto | null,
     quitAnswer: true,
     quitFails: null as ErrorDto | null,
+    /** Held until resolved: `app_quit` answers only then. */
+    quitGate: null as Promise<void> | null,
     openFails: null as ErrorDto | null,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     of: (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args),
@@ -93,6 +95,7 @@ export function playBackend(
         if (b.forceFails) throw b.forceFails;
         return b.forceAnswer;
       case "app_quit":
+        if (b.quitGate) await b.quitGate;
         if (b.quitFails) throw b.quitFails;
         return b.quitAnswer;
       case "instance_select":

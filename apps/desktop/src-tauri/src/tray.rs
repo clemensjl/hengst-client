@@ -2,7 +2,7 @@
 //!
 //! | Game state           | Tray icon | Items                                | Tooltip                         |
 //! |----------------------|-----------|--------------------------------------|---------------------------------|
-//! | Idle, Preparing      | none      | (Open, separator, Quit)              | "Hengst Client"                 |
+//! | Idle, Preparing      | none      | (Open, separator, Quit)              | (no icon)                       |
 //! | Running              | shown     | Open, Stop game, separator, Quit     | "Hengst Client: {name} läuft"   |
 //! | Stopping             | shown     | Open, separator, Quit                | "Hengst Client: {name} läuft"   |
 //!
@@ -183,11 +183,10 @@ pub fn text(lang: Lang, key: &str) -> String {
         .unwrap_or_else(|| key.to_string())
 }
 
-pub const TRAY_KEYS: [&str; 5] = [
+pub const TRAY_KEYS: [&str; 4] = [
     "tray.open",
     "tray.stopGame",
     "tray.quit",
-    "tray.tooltip.idle",
     "tray.tooltip.running",
 ];
 
@@ -231,19 +230,24 @@ fn fit_name(name: &str, room: usize) -> String {
     out
 }
 
-/// "Hengst Client", or while a game runs "Hengst Client: {name} läuft" with the instance's name
-/// (its id when the name could not be read), cleaned and cut so the whole fits the tooltip and the
-/// "läuft" / "is running" part always shows.
-pub fn tooltip(lang: Lang, state: &GameStateDto, name: Option<&str>) -> String {
+/// The instance of the game that runs or stops; `None` otherwise (then there is no tray icon).
+fn running_instance(state: &GameStateDto) -> Option<&str> {
     match state {
         GameStateDto::Running { instance, .. } | GameStateDto::Stopping { instance, .. } => {
-            let template = text(lang, "tray.tooltip.running");
-            let fixed = template.replace("{{instance}}", "").encode_utf16().count();
-            let name = fit_name(name.unwrap_or(instance), TOOLTIP_MAX.saturating_sub(fixed));
-            template.replace("{{instance}}", &name)
+            Some(instance)
         }
-        _ => text(lang, "tray.tooltip.idle"),
+        _ => None,
     }
+}
+
+/// "Hengst Client: {name} läuft" with the name of the running instance `instance` (its id when the
+/// name could not be read), cleaned and cut so the whole fits the tooltip and the "läuft" / "is
+/// running" part always shows. The icon exists only while a game runs, so there is no other text.
+pub fn tooltip(lang: Lang, instance: &str, name: Option<&str>) -> String {
+    let template = text(lang, "tray.tooltip.running");
+    let fixed = template.replace("{{instance}}", "").encode_utf16().count();
+    let name = fit_name(name.unwrap_or(instance), TOOLTIP_MAX.saturating_sub(fixed));
+    template.replace("{{instance}}", &name)
 }
 
 const TRAY_ID: &str = "main";
@@ -306,12 +310,7 @@ pub fn install<R: Runtime>(app: &AppHandle<R>) {
 }
 
 async fn instance_name<R: Runtime>(app: &AppHandle<R>, state: &GameStateDto) -> Option<String> {
-    let id = match state {
-        GameStateDto::Running { instance, .. } | GameStateDto::Stopping { instance, .. } => {
-            instance.clone()
-        }
-        _ => return None,
-    };
+    let id = running_instance(state)?.to_string();
     let paths = app.state::<AppState>().paths.clone();
     tokio::task::spawn_blocking(move || hengst_core::instances::load(&paths, &id).ok())
         .await
@@ -376,8 +375,11 @@ fn show_tray<R: Runtime>(
     state: &GameStateDto,
     name: Option<&str>,
 ) -> tauri::Result<()> {
+    let Some(instance) = running_instance(state) else {
+        return Ok(());
+    };
     let menu = menu(app, lang, state)?;
-    let tip = tooltip(lang, state, name);
+    let tip = tooltip(lang, instance, name);
     if let Some(tray) = app.tray_by_id(TRAY_ID) {
         tray.set_menu(Some(menu))?;
         return tray.set_tooltip(Some(tip));
@@ -531,19 +533,17 @@ mod tests {
 
     #[test]
     fn tooltip_names_the_running_instance_in_both_languages() {
-        assert_eq!(tooltip(Lang::De, &idle(), None), "Hengst Client");
-        assert_eq!(tooltip(Lang::En, &preparing(), None), "Hengst Client");
         assert_eq!(
-            tooltip(Lang::De, &running(), Some("Mira_K Welt")),
+            tooltip(Lang::De, "9.9", Some("Mira_K Welt")),
             "Hengst Client: Mira_K Welt läuft"
         );
         assert_eq!(
-            tooltip(Lang::En, &stopping(), Some("Mira_K world")),
+            tooltip(Lang::En, "9.9", Some("Mira_K world")),
             "Hengst Client: Mira_K world is running"
         );
         // Without a readable name the id stands in.
         assert_eq!(
-            tooltip(Lang::En, &running(), None),
+            tooltip(Lang::En, "9.9", None),
             "Hengst Client: 9.9 is running"
         );
     }
@@ -554,13 +554,13 @@ mod tests {
     fn the_tooltip_name_is_cleaned_and_cut_so_the_state_stays_visible() {
         let tricky = "\u{202E}Mira\u{2066}_K\u{2069}\u{202A}";
         assert_eq!(
-            tooltip(Lang::En, &running(), Some(tricky)),
+            tooltip(Lang::En, "9.9", Some(tricky)),
             "Hengst Client: Mira_K is running"
         );
         for lang in [Lang::De, Lang::En] {
             // 268 characters, some outside the BMP (two UTF-16 units each).
             let long: String = "ab\u{1F600}x".repeat(67);
-            let tip = tooltip(lang, &running(), Some(&long));
+            let tip = tooltip(lang, "9.9", Some(&long));
             assert!(tip.encode_utf16().count() <= 127, "{}", tip.len());
             let end = if lang == Lang::De {
                 "… läuft"
@@ -572,7 +572,7 @@ mod tests {
         }
         // A name that fits is not touched.
         let fits = "x".repeat(64);
-        assert!(!tooltip(Lang::En, &running(), Some(&fits)).contains('…'));
+        assert!(!tooltip(Lang::En, "9.9", Some(&fits)).contains('…'));
     }
 
     #[test]

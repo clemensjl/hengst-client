@@ -316,12 +316,12 @@
   "play.quit.confirm": "Stop game and quit",
   "play.quit.busy": "Stopping…",
   "play.quit.keepReason": "Keep playing works again once the game has closed or stops responding.",
+  "play.quit.quittingReason": "Hengst Client is quitting.",
   "play.quit.notResponding": "The game is not responding",
   "play.quit.force": "Force stop and quit",
   "tray.open": "Open Hengst Client",
   "tray.stopGame": "Stop game",
   "tray.quit": "Quit Hengst Client",
-  "tray.tooltip.idle": "Hengst Client",
   "tray.tooltip.running": "Hengst Client: {{instance}} is running",
   "play.progress.phase.preparing": "Preparing"
 }
