@@ -18,7 +18,7 @@ use std::fmt;
 use std::sync::Arc;
 
 #[cfg(windows)]
-pub use self::windows::{local_utc_offset, spawn_game, GameProcess};
+pub use self::windows::{spawn_game, GameProcess};
 
 /// Receives every log line of a game run, in `seq` order, from the reader threads. It is called
 /// while the run's output lock is held: it must return quickly (hand the line to a channel) and
@@ -115,7 +115,8 @@ impl Redactor {
 
     /// One raw output line (without its line break), redacted and cut. `complete` is false when
     /// the reader stopped keeping the line at `line_capacity` (its real end was dropped).
-    fn redact_line(&self, raw: &[u8], complete: bool) -> Vec<u8> {
+    /// The line redacted, and whether it was cut (then it ends with `CUT_MARKER`).
+    fn redact_line(&self, raw: &[u8], complete: bool) -> (Vec<u8>, bool) {
         // The end of an incomplete line is not its real end: no fragment check there.
         let spans = self.spans(raw, complete);
         let cut = !complete || raw.len() > LINE_LIMIT;
@@ -123,7 +124,7 @@ impl Redactor {
         if cut {
             out.extend_from_slice(CUT_MARKER.as_bytes());
         }
-        out
+        (out, cut)
     }
 
     /// The byte ranges of `line` to replace, sorted and not overlapping.
@@ -260,11 +261,16 @@ fn splice(line: &[u8], spans: &[(usize, usize)], limit: usize) -> Vec<u8> {
     out
 }
 
-/// Splits a pipe into lines and hands each one, already redacted and cut, to `on_line`. A line
+/// Splits a pipe into lines and hands each one, already redacted and cut, to `on_line` (with
+/// whether it was cut). A line
 /// is held in memory up to `Redactor::line_capacity`; the rest of a longer line is read and
 /// dropped. A line split over several reads is put together first, so a secret split between two
 /// reads is still found. A trailing `\r` is removed.
-fn read_lines(mut pipe: impl std::io::Read, redactor: &Redactor, mut on_line: impl FnMut(&str)) {
+fn read_lines(
+    mut pipe: impl std::io::Read,
+    redactor: &Redactor,
+    mut on_line: impl FnMut(&str, bool),
+) {
     let cap = redactor.line_capacity();
     let mut buf = vec![0u8; 8192];
     let mut line: Vec<u8> = Vec::new();
@@ -273,8 +279,8 @@ fn read_lines(mut pipe: impl std::io::Read, redactor: &Redactor, mut on_line: im
         if *complete && line.last() == Some(&b'\r') {
             line.pop();
         }
-        let out = redactor.redact_line(line, *complete);
-        on_line(&String::from_utf8_lossy(&out));
+        let (out, cut) = redactor.redact_line(line, *complete);
+        on_line(&String::from_utf8_lossy(&out), cut);
         line.clear();
         *complete = true;
     };
@@ -349,8 +355,8 @@ impl Emitter {
 }
 
 /// A line as the launcher log file shows it: `[hh:mm:ss] [thread/LEVEL]: message` in local time
-/// (`utc_offset`: local time minus UTC in seconds, `local_utc_offset`) when time, thread and level
-/// are known, otherwise the message as it is.
+/// (`utc_offset`: local time minus UTC in seconds, `GameProcess::utc_offset`) when time, thread
+/// and level are known, otherwise the message as it is.
 pub fn format_line(line: &LogLine, utc_offset: i64) -> String {
     let time = match line.time {
         Some(LogTime::UnixMillis(ms)) => {
@@ -511,6 +517,7 @@ mod windows {
         job: Job,
         exit: watch::Receiver<Option<Exit>>,
         log_path: Option<PathBuf>,
+        utc_offset: i64,
     }
 
     impl fmt::Debug for GameProcess {
@@ -657,6 +664,7 @@ mod windows {
             job,
             exit,
             log_path,
+            utc_offset,
         })
     }
 
@@ -680,7 +688,9 @@ mod windows {
                 .emit(stream, entries)
         };
         let mut parser = Parser::new();
-        read_lines(pipe, redactor, |line| emit(parser.push(line)));
+        read_lines(pipe, redactor, |line, cut| {
+            emit(parser.push_line(line, cut))
+        });
         emit(parser.finish());
     }
 
@@ -693,6 +703,12 @@ mod windows {
         /// The launcher log file of this run, if it could be created.
         pub fn log_path(&self) -> Option<&Path> {
             self.log_path.as_deref()
+        }
+
+        /// Local time minus UTC in seconds at the start of this run: the offset the times in its
+        /// launcher log file are written with.
+        pub fn utc_offset(&self) -> i64 {
+            self.utc_offset
         }
 
         /// Waits until the game's process has exited (and its output is read, see
@@ -862,11 +878,6 @@ mod windows {
 
     /// The local time as `yyyymmdd-hhmmss` and the local offset from UTC in seconds (rounded to
     /// minutes).
-    /// Local time minus UTC in seconds right now, as the launcher log file uses it.
-    pub fn local_utc_offset() -> i64 {
-        local_clock().1
-    }
-
     fn local_clock() -> (String, i64) {
         let mut local = SYSTEMTIME::default();
         let mut utc = SYSTEMTIME::default();
@@ -915,7 +926,9 @@ mod tests {
             }
         }
         let mut out = Vec::new();
-        read_lines(Chunks(chunks.iter(), &[]), r, |l| out.push(l.to_string()));
+        read_lines(Chunks(chunks.iter(), &[]), r, |l, _| {
+            out.push(l.to_string())
+        });
         out
     }
 
@@ -1301,6 +1314,42 @@ mod tests {
         assert_eq!(lines[0].thread.as_deref(), Some("<redacted>"));
     }
 
+    /// `cut` comes from the reader that cut the line, not from its text: a message that only
+    /// quotes the marker is not cut; a long plain line and a log4j event with a long line are.
+    #[test]
+    fn the_cut_flag_comes_from_the_reader_not_from_the_text() {
+        let long = "a".repeat(LINE_LIMIT + 100);
+        let event = |message: &str| {
+            format!(
+                "<log4j:Event logger=\"a\" timestamp=\"5\" level=\"INFO\" thread=\"main\">\n<log4j:Message><![CDATA[\n{message}\n]]></log4j:Message>\n</log4j:Event>\n"
+            )
+        };
+        let output = format!(
+            "chat says{CUT_MARKER}\n{long}\n{}{}",
+            event(&long),
+            event(&format!("x{CUT_MARKER}"))
+        );
+        let lines = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let sink: LineSink = {
+            let lines = lines.clone();
+            Arc::new(move |l: LogLine| lines.lock().unwrap().push(l))
+        };
+        let emitter = std::sync::Mutex::new(Emitter {
+            seq: 0,
+            sink,
+            file: None,
+            utc_offset: 0,
+        });
+        self::windows::pump(output.as_bytes(), Stream::Stdout, &redactor(), &emitter);
+        let lines = lines.lock().unwrap();
+        let flags: Vec<(bool, bool)> = lines.iter().map(|l| (l.level.is_some(), l.cut)).collect();
+        assert_eq!(
+            flags,
+            [(false, false), (false, true), (true, true), (true, false)],
+            "{lines:?}"
+        );
+    }
+
     #[test]
     fn log_file_lines_use_local_time_and_the_plain_format() {
         let line = |time, level, thread: Option<&str>| LogLine {
@@ -1310,6 +1359,7 @@ mod tests {
             thread: thread.map(String::from),
             message: "Setting user: Mira_K".into(),
             stream: Stream::Stdout,
+            cut: false,
         };
         // 1795445575774 ms is 14:52:55 UTC.
         let event = line(

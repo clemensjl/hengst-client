@@ -72,6 +72,9 @@ pub struct LogLine {
     pub thread: Option<String>,
     pub message: String,
     pub stream: Stream,
+    /// A raw output line of it was longer than 8 KiB and was cut (the message holds the core's
+    /// marker there). Set by the reader that cut it, never derived from the text.
+    pub cut: bool,
 }
 
 /// What the parser reads from the output; `game` numbers it and adds the stream to make a
@@ -82,6 +85,8 @@ pub struct Entry {
     pub level: Option<Level>,
     pub thread: Option<String>,
     pub message: String,
+    /// One of the raw lines it was read from was cut (`LogLine::cut`).
+    pub cut: bool,
 }
 
 impl Entry {
@@ -91,6 +96,7 @@ impl Entry {
             level: None,
             thread: None,
             message: message.to_string(),
+            cut: false,
         }
     }
 
@@ -102,6 +108,7 @@ impl Entry {
             thread: self.thread,
             message: self.message,
             stream,
+            cut: self.cut,
         }
     }
 }
@@ -118,8 +125,8 @@ const MAX_EVENT_LINES: usize = 4096;
 /// order with `push`, and call `finish` when the stream ends.
 #[derive(Debug, Default)]
 pub struct Parser {
-    /// Lines of a log4j event whose closing tag has not come yet.
-    pending: Vec<String>,
+    /// Lines of a log4j event whose closing tag has not come yet, with their cut flag.
+    pending: Vec<(String, bool)>,
     pending_bytes: usize,
 }
 
@@ -131,8 +138,13 @@ impl Parser {
     /// The entries `line` completes: none while a log4j event is still open, one for a plain
     /// line or a closed event, several when an unreadable event degrades to plain lines.
     pub fn push(&mut self, line: &str) -> Vec<Entry> {
+        self.push_line(line, false)
+    }
+
+    /// As `push`, for a line the reader cut (`cut`): every entry made from it is marked cut.
+    pub fn push_line(&mut self, line: &str, cut: bool) -> Vec<Entry> {
         let mut out = Vec::new();
-        self.push_into(line, &mut out);
+        self.push_into(line, cut, &mut out);
         out
     }
 
@@ -143,34 +155,36 @@ impl Parser {
         out
     }
 
-    fn push_into(&mut self, line: &str, out: &mut Vec<Entry>) {
+    fn push_into(&mut self, line: &str, cut: bool, out: &mut Vec<Entry>) {
         let starts_event = line.trim_start().starts_with(EVENT_START);
         if starts_event {
             // An event that never closed (its last line was cut, say) ends where the next begins.
             self.flush_raw(out);
         } else if self.pending.is_empty() {
-            out.push(parse_plain(line));
+            out.push(parse_plain(line, cut));
             return;
         }
         if let Some(i) = line.find(EVENT_END) {
             let (event, rest) = line.split_at(i + EVENT_END.len());
-            self.pending.push(event.to_string());
+            self.pending.push((event.to_string(), cut));
             self.close(out);
             if !rest.trim().is_empty() {
-                self.push_into(rest, out);
+                self.push_into(rest, cut, out);
             }
             return;
         }
         self.pending_bytes += line.len() + 1;
-        self.pending.push(line.to_string());
+        self.pending.push((line.to_string(), cut));
         if self.pending_bytes > MAX_EVENT_BYTES || self.pending.len() > MAX_EVENT_LINES {
             self.flush_raw(out);
         }
     }
 
     fn close(&mut self, out: &mut Vec<Entry>) {
-        match parse_event(&self.pending.join("\n")) {
-            Some(entry) => {
+        let text: Vec<&str> = self.pending.iter().map(|(l, _)| l.as_str()).collect();
+        match parse_event(&text.join("\n")) {
+            Some(mut entry) => {
+                entry.cut = self.pending.iter().any(|(_, cut)| *cut);
                 out.push(entry);
                 self.pending.clear();
                 self.pending_bytes = 0;
@@ -180,7 +194,7 @@ impl Parser {
     }
 
     fn flush_raw(&mut self, out: &mut Vec<Entry>) {
-        out.extend(self.pending.drain(..).map(|l| parse_plain(&l)));
+        out.extend(self.pending.drain(..).map(|(l, cut)| parse_plain(&l, cut)));
         self.pending_bytes = 0;
     }
 }
@@ -197,14 +211,18 @@ fn plain_pattern() -> &'static Regex {
 }
 
 /// A plain line, with time, thread and level when it has the shape of old versions' output.
-fn parse_plain(line: &str) -> Entry {
+fn parse_plain(line: &str, cut: bool) -> Entry {
+    let text = || Entry {
+        cut,
+        ..Entry::text(line)
+    };
     let Some(c) = plain_pattern().captures(line) else {
-        return Entry::text(line);
+        return text();
     };
     let num = |i: usize| c[i].parse::<u8>().unwrap_or(u8::MAX);
     let (hour, minute, second) = (num(1), num(2), num(3));
     if hour > 23 || minute > 59 || second > 60 {
-        return Entry::text(line);
+        return text();
     }
     let message = match c.get(6) {
         Some(logger) => format!("[{}] {}", logger.as_str(), &c[7]),
@@ -219,6 +237,7 @@ fn parse_plain(line: &str) -> Entry {
         level: Level::parse(&c[5]),
         thread: Some(c[4].to_string()),
         message,
+        cut,
     }
 }
 
@@ -253,6 +272,7 @@ fn parse_event(text: &str) -> Option<Entry> {
         level: attr("level").as_deref().and_then(Level::parse),
         thread: attr("thread"),
         message,
+        cut: false,
     })
 }
 
@@ -382,6 +402,7 @@ mod tests {
                 level: Some(Level::Info),
                 thread: Some("main".into()),
                 message: "Loading Minecraft 1.21.11 with Fabric Loader 0.20.1".into(),
+                cut: false,
             }
         );
         // A message over many lines keeps its line breaks and tabs.
@@ -453,6 +474,7 @@ mod tests {
                 level: Some(Level::Info),
                 thread: Some("Client thread".into()),
                 message: "Setting user: Mira_K".into(),
+                cut: false,
             }
         );
         assert_eq!(lines[1].level, Some(Level::Warn));
