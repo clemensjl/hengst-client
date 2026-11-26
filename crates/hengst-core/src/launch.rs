@@ -300,7 +300,8 @@ pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()>
 /// `spawn_game` it takes the instance's run lock first (`InstanceRunning` while a game of the
 /// instance runs) and gives it to the game: this process holds it from before the start until the
 /// hand-over right after, so there is no moment without it, and afterwards it stays with the game
-/// even if the CLI is killed. A hand-over that fails ends the game again.
+/// even if the CLI is killed. A hand-over that fails ends the game again, unless
+/// the game has already exited: then its exit code is returned as before.
 pub async fn run(p: &Prepared) -> Result<i32> {
     ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
     #[cfg(windows)]
@@ -320,8 +321,12 @@ pub async fn run(p: &Prepared) -> Result<i32> {
         // SAFETY: `raw` is the child's process handle, owned by `child`, which outlives this use.
         let process = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) };
         if let Err(e) = lock.hand_to(&process) {
-            let _ = child.kill().await;
-            return Err(e.into());
+            // A game that has already ended cannot take the lock and needs none: its exit code
+            // is the answer, not the failed hand-over.
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.kill().await;
+                return Err(e.into());
+            }
         }
     }
     let status = child.wait().await?;

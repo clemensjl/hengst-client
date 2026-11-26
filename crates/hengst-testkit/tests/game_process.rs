@@ -413,12 +413,28 @@ wait release
         matches!(&err, Error::InstanceRunning { id: i } if i == id),
         "{err}"
     );
+    // The CLI goes away (as if killed): the lock was handed to its game and stays with it.
+    cli.abort();
+    assert!(cli.await.unwrap_err().is_cancelled());
+    assert!(
+        is_running(&paths, id).unwrap(),
+        "the lock stayed with the CLI"
+    );
     release.now();
-    let code = tokio::time::timeout(WAIT, cli)
-        .await
-        .unwrap()
-        .unwrap()
-        .unwrap();
-    assert_eq!(code, 0);
     until_free(&paths, id).await;
+}
+
+/// A game that ends at once (before or during the hand-over of the lock) reports its exit code,
+/// never the failed hand-over. Repeated, since the exit may come before or after the hand-over.
+#[tokio::test]
+async fn a_cli_game_that_exits_at_once_reports_its_exit_code() {
+    let (_dir, p) = prepared(
+        "exit 3
+",
+    )
+    .await;
+    for _ in 0..20 {
+        let code = tokio::time::timeout(WAIT, run(&p)).await.unwrap().unwrap();
+        assert_eq!(code, 3);
+    }
 }
