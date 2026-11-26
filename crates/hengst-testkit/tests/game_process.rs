@@ -10,7 +10,7 @@ use hengst_core::auth::unix_now;
 use hengst_core::game::{spawn_game, GameProcess, LineSink};
 use hengst_core::gamelog::{Level, LogLine, Stream};
 use hengst_core::instances;
-use hengst_core::launch::{prepare, LaunchOptions, Prepared};
+use hengst_core::launch::{prepare, run, LaunchOptions, Prepared};
 use hengst_core::paths::Paths;
 use hengst_core::runlock::is_running;
 use hengst_core::secret::Secret;
@@ -272,6 +272,34 @@ async fn graceful_stop_then_force_stop() {
     game.force_stop().unwrap();
 }
 
+/// Ends a fake-java that waits for `release` (script `wait release`) however the test ends.
+struct Release(std::path::PathBuf);
+
+impl Release {
+    fn new(game_dir: &std::path::Path) -> Release {
+        Release(game_dir.join("release"))
+    }
+    fn now(&self) {
+        std::fs::write(&self.0, b"").unwrap();
+    }
+}
+
+impl Drop for Release {
+    fn drop(&mut self) {
+        let _ = std::fs::write(&self.0, b"");
+    }
+}
+
+async fn until_free(paths: &Paths, id: &str) {
+    tokio::time::timeout(WAIT, async {
+        while is_running(paths, id).unwrap() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the lock outlived the game");
+}
+
 /// A game outlives the launcher that started it (closed, crashed, killed). Its run lock goes with
 /// the game, not with the launcher: once the launcher's state for it is gone (here: the
 /// `GameProcess` dropped, which neither stops the game nor holds the lock), the instance still
@@ -281,10 +309,11 @@ async fn graceful_stop_then_force_stop() {
 async fn the_run_lock_stays_with_the_game_and_ends_with_it() {
     let (dir, p) = prepared(
         "out started
-sleep 8000
+wait release
 ",
     )
     .await;
+    let release = Release::new(&p.game_dir);
     let paths = Paths::new(dir.path().join("data"));
     let id = "fake-9.9";
     // An unreadable instance may be deleted: only the run lock stands in the way.
@@ -299,12 +328,6 @@ sleep 8000
         is_running(&paths, id).unwrap(),
         "the lock went with the launcher"
     );
-    std::fs::write(
-        p.game_dir.join("fake-java.txt"),
-        "exit 0
-",
-    )
-    .unwrap();
     let err = spawn_game(&p, Arc::new(|_| {})).await.unwrap_err();
     assert!(
         matches!(&err, Error::InstanceRunning { id: i } if i == id),
@@ -322,14 +345,15 @@ sleep 8000
     );
     assert!(!trashed.load(Ordering::SeqCst));
 
-    // The game ends by itself (its script sleeps 8 s): the lock is free again.
-    tokio::time::timeout(WAIT, async {
-        while is_running(&paths, id).unwrap() {
-            tokio::time::sleep(Duration::from_millis(50)).await;
-        }
-    })
-    .await
-    .expect("the lock outlived the game");
+    // The game ends: the lock is free again.
+    release.now();
+    until_free(&paths, id).await;
+    std::fs::write(
+        p.game_dir.join("fake-java.txt"),
+        "exit 0
+",
+    )
+    .unwrap();
     let game = Running(spawn_game(&p, Arc::new(|_| {})).await.unwrap());
     assert_eq!(
         tokio::time::timeout(WAIT, game.wait())
@@ -338,4 +362,63 @@ sleep 8000
             .unwrap(),
         0
     );
+}
+
+/// The CLI's `launch::run` takes the same run lock: refused while a game of the instance runs,
+/// and while its own game runs a start through `spawn_game` is refused. The lock is handed to its
+/// game, so it holds even if the CLI is killed.
+#[tokio::test]
+async fn the_cli_launch_takes_the_run_lock_too() {
+    let (dir, p) = prepared(
+        "out started
+wait release
+",
+    )
+    .await;
+    let paths = Paths::new(dir.path().join("data"));
+    let id = "fake-9.9";
+    let release = Release::new(&p.game_dir);
+    let (sink, _lines, mut rx) = collector();
+    let game = Running(spawn_game(&p, sink).await.unwrap());
+    wait_for_line(&mut rx, "started").await;
+    let err = run(&p).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::InstanceRunning { id: i } if i == id),
+        "{err}"
+    );
+    release.now();
+    assert_eq!(
+        tokio::time::timeout(WAIT, game.wait())
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
+    until_free(&paths, id).await;
+
+    std::fs::remove_file(&release.0).unwrap();
+    let cli = {
+        let p = p.clone();
+        tokio::spawn(async move { run(&p).await })
+    };
+    tokio::time::timeout(WAIT, async {
+        while !is_running(&paths, id).unwrap() {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("the CLI's game does not hold the lock");
+    let err = spawn_game(&p, Arc::new(|_| {})).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::InstanceRunning { id: i } if i == id),
+        "{err}"
+    );
+    release.now();
+    let code = tokio::time::timeout(WAIT, cli)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(code, 0);
+    until_free(&paths, id).await;
 }

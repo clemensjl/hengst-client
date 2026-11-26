@@ -10,6 +10,8 @@
 //! - `out <text>` / `err <text>`: one line on stdout / stderr.
 //! - `xml <LEVEL>|<thread>|<message>`: one log4j XML event on stdout, as the game prints it.
 //! - `sleep <ms>`.
+//! - `wait <file>`: waits until `<file>` exists in the working directory, so a test ends the game
+//!   when it wants to (and a guard can end it when the test panics).
 //! - `window` / `window ignore-close`: creates a hidden top-level window (never shown) and prints
 //!   `WINDOW READY`. A close request (`WM_SYSCOMMAND`/`SC_CLOSE`) prints `CLOSE REQUESTED` and
 //!   closes it, after which the script goes on; with `ignore-close` it prints `CLOSE IGNORED` and
@@ -56,6 +58,11 @@ fn main() {
                 ));
             }
             "sleep" => std::thread::sleep(Duration::from_millis(rest.parse().unwrap_or(0))),
+            "wait" => {
+                while !std::path::Path::new(rest).exists() {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            }
             "window" => window(rest == "ignore-close"),
             "exit" => std::process::exit(rest.parse().unwrap_or(0)),
             "" => {}

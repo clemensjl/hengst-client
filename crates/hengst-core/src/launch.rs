@@ -296,14 +296,35 @@ pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()>
     Ok(())
 }
 
-/// Starts the game and waits for it to exit. Output goes to the current console.
+/// Starts the game and waits for it to exit. Output goes to the current console. Like
+/// `spawn_game` it takes the instance's run lock first (`InstanceRunning` while a game of the
+/// instance runs) and gives it to the game: this process holds it from before the start until the
+/// hand-over right after, so there is no moment without it, and afterwards it stays with the game
+/// even if the CLI is killed. A hand-over that fails ends the game again.
 pub async fn run(p: &Prepared) -> Result<i32> {
     ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
-    let status = tokio::process::Command::new(&p.java)
+    #[cfg(windows)]
+    let lock = {
+        let (path, id) = (p.run_lock.clone(), p.instance.clone());
+        tokio::task::spawn_blocking(move || crate::runlock::RunLock::acquire(&path))
+            .await
+            .map_err(|e| std::io::Error::other(format!("run lock task failed: {e}")))??
+            .ok_or(Error::InstanceRunning { id })?
+    };
+    let mut child = tokio::process::Command::new(&p.java)
         .args(&p.args)
         .current_dir(&p.game_dir)
-        .status()
-        .await?;
+        .spawn()?;
+    #[cfg(windows)]
+    if let Some(raw) = child.raw_handle() {
+        // SAFETY: `raw` is the child's process handle, owned by `child`, which outlives this use.
+        let process = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) };
+        if let Err(e) = lock.hand_to(&process) {
+            let _ = child.kill().await;
+            return Err(e.into());
+        }
+    }
+    let status = child.wait().await?;
     Ok(status.code().unwrap_or(-1))
 }
 
