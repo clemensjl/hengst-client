@@ -50,6 +50,7 @@ struct Fx {
     app_events: Seen<AppEvent>,
     lines: Seen<(RunId, String)>,
     secrets: Arc<MemorySecretStore>,
+    auth: hengst_testkit::AuthHandle,
 }
 
 impl Drop for Fx {
@@ -80,7 +81,7 @@ async fn fixture(login: Login) -> Fx {
         Login::DueSlow => AuthScenario::Slow(Duration::from_millis(1500)),
         _ => AuthScenario::Ok,
     };
-    mount_auth(&server, scenario, &[PLAYER_A, PLAYER_B]).await;
+    let auth_mock = mount_auth(&server, scenario, &[PLAYER_A, PLAYER_B]).await;
     let dir = tempfile::tempdir().unwrap();
     let paths = Paths::new(dir.path().join("home"));
     std::fs::create_dir_all(paths.root()).unwrap();
@@ -157,10 +158,22 @@ async fn fixture(login: Login) -> Fx {
         app_events,
         lines,
         secrets,
+        auth: auth_mock,
     }
 }
 
 impl Fx {
+    /// The mock has received the refresh request of a renewal (its answer may still be pending).
+    async fn renewal_in_flight(&self) {
+        until("the refresh request", || {
+            self.auth
+                .requests()
+                .iter()
+                .any(|r| r.grant_type.as_deref() == Some("refresh_token"))
+        })
+        .await;
+    }
+
     /// What `fake-java` does when the instance starts.
     fn script(&self, script: &str) {
         std::fs::write(self.state.paths.instance(ID).join("fake-java.txt"), script).unwrap();
@@ -362,6 +375,9 @@ async fn plays_through_running_and_stops_on_request() {
     );
     fx.line("CLOSE REQUESTED").await;
     assert_eq!(fx.active(), None);
+    // `Stopping` is shown once `game_stop` learns that a window got the request. Under load the
+    // game can close and exit before that answer arrives; then the state goes from `Running`
+    // straight to `Idle` (the exit still counts as requested, checked above).
     let states = fx.states();
     assert!(
         matches!(
@@ -370,6 +386,10 @@ async fn plays_through_running_and_stops_on_request() {
                 GameStateDto::Preparing { .. },
                 GameStateDto::Running { .. },
                 GameStateDto::Stopping { .. },
+                GameStateDto::Idle { last_exit: Some(_) }
+            ] | [
+                GameStateDto::Preparing { .. },
+                GameStateDto::Running { .. },
                 GameStateDto::Idle { last_exit: Some(_) }
             ]
         ),
@@ -932,7 +952,7 @@ async fn signing_out_during_the_login_renewal_keeps_the_account_removed() {
     fx.script("out started\nexit 0\n");
     let (_, events) = fx.play().await;
     // The renewal's first request waits 1.5 s for its answer; the sign-out lands meanwhile.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    fx.renewal_in_flight().await;
     let accounts = fx.state.accounts.clone();
     tokio::task::spawn_blocking(move || accounts.remove(PLAYER_A.uuid))
         .await
@@ -1079,4 +1099,85 @@ async fn a_failed_installer_step_offers_its_log_relative_to_the_data_folder() {
     // Other errors keep their own mapping.
     let other = Error::UnknownVersion("9.9".into());
     assert_eq!(play_error(&other, fx.state.paths.root()), error_dto(&other));
+}
+
+/// Signing out while the preparation runs (a valid token, so no renewal): the token in memory is
+/// not used, the process never starts.
+#[tokio::test(flavor = "multi_thread")]
+async fn signing_out_during_the_preparation_launches_nothing() {
+    let fx = fixture(Login::Valid).await;
+    fx.script("out started\nexit 0\n");
+    let release = Arc::new(AtomicBool::new(false));
+    let entered = Arc::new(AtomicBool::new(false));
+    let (gate, inside) = (release.clone(), entered.clone());
+    let core = core_preparer();
+    fx.state.game.set_preparer(Arc::new(move |job| {
+        let (gate, inside, core) = (gate.clone(), inside.clone(), core.clone());
+        Box::pin(async move {
+            inside.store(true, Ordering::SeqCst);
+            while !gate.load(Ordering::SeqCst) {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            core(job).await
+        })
+    }));
+    let (_, events) = fx.play().await;
+    // The account was chosen and its token read: the preparation runs. (`Preparing` alone is
+    // too early: a sign-out before the token is read fails the account step itself.)
+    until("the preparation", || entered.load(Ordering::SeqCst)).await;
+    let accounts = fx.state.accounts.clone();
+    tokio::task::spawn_blocking(move || accounts.remove(PLAYER_A.uuid))
+        .await
+        .unwrap()
+        .unwrap();
+    release.store(true, Ordering::SeqCst);
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::AccountNotFound);
+    assert_eq!(fx.idle().await, None);
+    assert!(!fx
+        .states()
+        .iter()
+        .any(|s| matches!(s, GameStateDto::Running { .. })));
+    assert!(fx.lines.lock().unwrap().is_empty());
+}
+
+/// A sign-out that fails halfway while the renewal is in flight leaves the entry "sign in again";
+/// the late renewal must not revive it (no save, flag kept, nothing launched).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_half_failed_sign_out_during_the_renewal_is_not_revived() {
+    use hengst_core::auth::store::{secret_key, SecretKind};
+    let fx = fixture(Login::DueSlow).await;
+    fx.script("out started\nexit 0\n");
+    let (_, events) = fx.play().await;
+    fx.renewal_in_flight().await;
+    // What `AccountStore::remove` leaves when its second step fails.
+    fx.state
+        .accounts
+        .mark_sign_in_required(PLAYER_A.uuid)
+        .unwrap();
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::LoginExpired);
+    assert_eq!(fx.idle().await, None);
+    let list = fx.state.accounts.list(&fx.state.settings.get()).unwrap();
+    let entry = list
+        .accounts
+        .iter()
+        .find(|a| a.id == PLAYER_A.uuid)
+        .unwrap();
+    assert!(entry.sign_in_required, "{list:?}");
+    // The renewed tokens were not stored.
+    let token = fx
+        .secrets
+        .get(&secret_key(PLAYER_A.uuid, SecretKind::Minecraft))
+        .unwrap()
+        .unwrap();
+    assert_eq!(token.expose(), TOKEN);
+    assert!(!fx
+        .states()
+        .iter()
+        .any(|s| matches!(s, GameStateDto::Running { .. })));
 }

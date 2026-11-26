@@ -324,6 +324,7 @@ mod tests {
     async fn a_write_dropped_midway_leaves_no_temp_file() {
         use std::future::Future;
         use std::task::{Context, Poll};
+        let mut caught = 0;
         for _ in 0..20 {
             let dir = tempfile::tempdir().unwrap();
             let file = dir.path().join("client.jar");
@@ -343,7 +344,11 @@ mod tests {
                     r.unwrap();
                     break;
                 }
-                if temps() > 0 || start.elapsed() > std::time::Duration::from_secs(5) {
+                if temps() > 0 {
+                    caught += 1;
+                    break;
+                }
+                if start.elapsed() > std::time::Duration::from_secs(5) {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_micros(200));
@@ -354,6 +359,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             assert_eq!(temps(), 0, "a temp file was left behind");
         }
+        // Not vacuous: some rounds dropped the write while its temp file existed.
+        assert!(caught > 0, "no round caught the write midway");
     }
 
     #[test]

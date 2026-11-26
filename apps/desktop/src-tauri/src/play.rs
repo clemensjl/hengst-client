@@ -446,7 +446,7 @@ impl PlayTask {
                 scope: DataScope::Accounts,
             });
         }
-        let account = account.map_err(|e| error_dto(&e))?;
+        let (account, chosen) = account.map_err(|e| error_dto(&e))?;
         let opts = instances::launch_options(
             &r.instance,
             account,
@@ -471,6 +471,12 @@ impl PlayTask {
         })
         .await
         .map_err(|e| play_error(&e, r.paths.root()))?;
+        // Signed out (or flagged) during the preparation: the token in memory is not used.
+        if let Some(chosen) = &chosen {
+            r.accounts
+                .still_present(chosen)
+                .map_err(|e| error_dto(&e))?;
+        }
         // From here on the start cannot be cancelled: an abort during the spawn would leave a
         // running game nobody watches.
         if self.cancel.is_cancelled() || !r.ops.try_commit(self.op) {

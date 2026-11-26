@@ -277,16 +277,20 @@ fn extract_entry<R: Read + Seek>(
     let result = match copied {
         Ok(n) if n > limit => Err(too_large(name)),
         Ok(n) => match sha1 {
-            Some(want) if !sha1_file(&tmp)?.eq_ignore_ascii_case(want) => Err(bad(format!(
-                "installer entry {name} does not match the SHA-1 {want} its profile declares"
-            ))),
-            _ => Ok(n),
+            Some(want) => match sha1_file(&tmp) {
+                Ok(actual) if actual.eq_ignore_ascii_case(want) => Ok(n),
+                Ok(_) => Err(bad(format!(
+                    "installer entry {name} does not match the SHA-1 {want} its profile declares"
+                ))),
+                Err(e) => Err(e),
+            },
+            None => Ok(n),
         },
         Err(e) => Err(e.into()),
     };
-    match result {
+    // Every failure, also of the check or the rename, removes the temp file.
+    match result.and_then(|n| std::fs::rename(&tmp, dest).map(|()| n).map_err(Error::from)) {
         Ok(n) => {
-            std::fs::rename(&tmp, dest)?;
             *budget += n;
             Ok(n)
         }
@@ -1257,6 +1261,38 @@ mod tests {
             }
         }
         std::fs::write(path, b).unwrap();
+    }
+
+    /// A failed rename (here: a folder stands where the file goes) leaves no temp file behind.
+    #[test]
+    fn a_failed_rename_leaves_no_temp_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("one.jar");
+        let mut zip = zip::ZipWriter::new(File::create(&path).unwrap());
+        zip.start_file("maven/a/1/a-1.jar", SimpleFileOptions::default())
+            .unwrap();
+        zip.write_all(b"jar").unwrap();
+        zip.finish().unwrap();
+        let mut zip = open(&path, 8).unwrap();
+        let dest = tmp.path().join("libs").join("a-1.jar");
+        std::fs::create_dir_all(dest.join("inside")).unwrap();
+        let mut budget = 0;
+        let res = extract_entry(
+            &mut zip,
+            "maven/a/1/a-1.jar",
+            &dest,
+            &mut budget,
+            SMALL,
+            None,
+        );
+        assert!(res.is_err(), "{res:?}");
+        assert_eq!(budget, 0);
+        let temps: Vec<_> = std::fs::read_dir(dest.parent().unwrap())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .collect();
+        assert!(temps.is_empty(), "{temps:?}");
     }
 
     #[test]

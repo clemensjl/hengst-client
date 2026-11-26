@@ -563,18 +563,22 @@ impl Accounts {
     /// anyway), otherwise the selected Microsoft account through the core's `launch_account`, which
     /// renews its login when it is due. When Microsoft refuses the renewal (`LoginExpired`), the
     /// account is marked "sign in again" before the error is returned; the flag says so, and the
-    /// caller then refreshes the account list.
-    pub async fn play_account(&self, settings: &Settings) -> (Result<Account>, bool) {
+    /// caller then refreshes the account list. With the account comes the entry as it was when it
+    /// was chosen (`None` for the development account), for `still_present` before the spawn.
+    pub async fn play_account(
+        &self,
+        settings: &Settings,
+    ) -> (Result<(Account, Option<StoredAccount>)>, bool) {
         if cfg!(feature = "dev-offline") && settings.dev_account {
-            return (Ok(Account::offline("Dev")), false);
+            return (Ok((Account::offline("Dev"), None)), false);
         }
         let stored = match self.store.find(None) {
             Ok(stored) => stored,
             Err(e) => return (Err(e), false),
         };
         // A renewed session is saved like a sign-in: under `io_lock`, and only if the account
-        // is still there (it may have been signed out while the renewal was in flight). The
-        // lock is taken inside the synchronous callback, never across an await.
+        // is unchanged (it may have been signed out while the renewal was in flight, fully or
+        // halfway). The lock is taken inside the synchronous callback, never across an await.
         let result = launch_account_with(
             &self.store,
             self.auth.as_ref(),
@@ -582,11 +586,12 @@ impl Accounts {
             unix_now(),
             |session| {
                 let _io = self.io();
-                self.exact(&stored.uuid)?;
+                self.unchanged(&stored)?;
                 self.store.save_session(session).map(|_| ())
             },
         )
-        .await;
+        .await
+        .map(|account| (account, Some(stored.clone())));
         if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
             if let Err(e) = self.mark_sign_in_required(&stored.uuid) {
                 self.diag(&format!(
@@ -597,6 +602,24 @@ impl Accounts {
             return (result, true);
         }
         (result, false)
+    }
+
+    /// The account chosen for a start (`chosen`, as it was then) is still there and was not
+    /// flagged meanwhile: a sign-out removed it (`AccountNotFound`) or failed halfway and left it
+    /// "sign in again" (`LoginExpired`). The caller holds `io_lock`.
+    fn unchanged(&self, chosen: &StoredAccount) -> Result<()> {
+        let now = self.exact(&chosen.uuid)?;
+        if now.sign_in_required && !chosen.sign_in_required {
+            return Err(Error::Auth(AuthError::LoginExpired { name: now.name }));
+        }
+        Ok(())
+    }
+
+    /// `unchanged` under `io_lock`: checked right before the game process starts, so a sign-out
+    /// during a long preparation never launches with the removed account's token in memory.
+    pub fn still_present(&self, chosen: &StoredAccount) -> Result<()> {
+        let _io = self.io();
+        self.unchanged(chosen)
     }
 
     fn diag(&self, line: &str) {

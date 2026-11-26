@@ -187,7 +187,7 @@ Der Kern (`game.rs`) liest stdout und stderr des Spiels zeilenweise und schwärz
 - Die XUID steht im Klartext in Live-Log und Logdateien (sie ist eine Kennung, kein Zugangsschlüssel, wie UUID und Spielername). Wer Logs an Fehlerberichte hängt, gibt sie damit preis.
 - Das Spiel erbt die Umgebungsvariablen des Launchers ungeschwärzt.
 - Das Spiel läuft in einem eigenen Job-Objekt ohne kill-on-close und überlebt das Schließen des Launchers. Läuft der Launcher selbst in einem äußeren Job mit kill-on-close (etwa in manchen Terminals), endet das Spiel trotzdem mit dem Launcher.
-- Bekannte Grenze bis Task 17: Stürzt der Launcher ab, wird er beendet oder meldet sich der Nutzer ab, läuft ein Spiel aus der früheren Sitzung weiter, aber der neu gestartete Launcher kennt es nicht und zeigt "Bereit". Ein zweiter Start derselben Instanz (zwei Spiele im selben Instanzordner) und das Löschen einer Instanz mit geöffneten Dateien sind dann möglich. Task 17 bringt eine Run-Lock-Datei, die das Spiel hält und die Starten und Löschen prüfen.
+- Bekannte Grenze bis Task 17: Stürzt der Launcher ab oder wird er beendet, läuft ein Spiel aus der früheren Sitzung weiter, aber der neu gestartete Launcher kennt es nicht und zeigt die Instanz als nicht laufend. Ein zweiter Start derselben Instanz (zwei Spiele im selben Instanzordner) und das Löschen einer Instanz mit geöffneten Dateien sind dann möglich. Task 17 bringt eine Run-Lock-Datei, die das Spiel hält und die Starten und Löschen prüfen.
 
 ## 9. Recht und Plattformregeln
 
