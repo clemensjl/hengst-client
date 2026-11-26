@@ -256,6 +256,7 @@ pub fn reveal_in_explorer(file: &Path) -> Result<(), String> {
         CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
     };
     use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    // SAFETY: plain call on this thread with a null reserved pointer; balanced below on success.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     let name: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
     // SAFETY: a NUL-terminated path; the returned list is freed below and not used after.
@@ -265,10 +266,12 @@ pub fn reveal_in_explorer(file: &Path) -> Result<(), String> {
     } else {
         // SAFETY: `pidl` is a valid absolute item list; no child items are passed.
         let hr = unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) };
+        // SAFETY: `pidl` came from `ILCreateFromPathW`, is freed once and not used after.
         unsafe { ILFree(pidl) };
         hr
     };
     if com >= 0 {
+        // SAFETY: balances the successful `CoInitializeEx` of this thread above.
         unsafe { CoUninitialize() };
     }
     if hr == 0 {
@@ -294,6 +297,7 @@ pub fn shell_open_file(file: &Path) -> Result<(), String> {
     use windows_sys::Win32::UI::Shell::ShellExecuteW;
     use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
     // COM as in `explore_folder`.
+    // SAFETY: plain call on this thread with a null reserved pointer; balanced below on success.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
     let name: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -309,6 +313,7 @@ pub fn shell_open_file(file: &Path) -> Result<(), String> {
         )
     } as isize;
     if com >= 0 {
+        // SAFETY: balances the successful `CoInitializeEx` of this thread above.
         unsafe { CoUninitialize() };
     }
     if result > 32 {
@@ -359,6 +364,7 @@ pub fn explore_folder(dir: &Path) -> Result<(), String> {
     // The shell wants COM on the calling thread (this runs on a pooled blocking thread that has
     // none). A thread that is already initialized differently (a negative result) is left as it is
     // and not uninitialized; otherwise the call is balanced below.
+    // SAFETY: plain call on this thread with a null reserved pointer; balanced below on success.
     let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     let verb: Vec<u16> = "explore".encode_utf16().chain(Some(0)).collect();
     let file: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
@@ -374,6 +380,7 @@ pub fn explore_folder(dir: &Path) -> Result<(), String> {
         )
     } as isize;
     if com >= 0 {
+        // SAFETY: balances the successful `CoInitializeEx` of this thread above.
         unsafe { CoUninitialize() };
     }
     // A value above 32 is success; below that it is an error code.

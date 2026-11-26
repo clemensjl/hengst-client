@@ -668,6 +668,9 @@ describe("review fixes", () => {
       .find((b) => b.getAttribute("data-variant") === "primary")!;
     expect(play).toBeTruthy();
     expect(button).toBeTruthy();
+    // The chip's own trigger: the "Choose account" button that is not the Play button.
+    const chip = screen.getAllByRole("button", { name: "Choose account" }).find((b) => b !== play)!;
+    expect(chip).toBeTruthy();
     // A whole pointer press on the Play button, as a mouse makes it.
     fireEvent.pointerDown(play, { pointerType: "mouse", button: 0 });
     fireEvent.mouseDown(play, { button: 0 });
@@ -683,10 +686,7 @@ describe("review fixes", () => {
     // Escape closes it; focus goes to the chip, the menu's own trigger (DESIGN.md 11.4).
     fireEvent.keyDown(menu, { key: "Escape" });
     await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-    await waitFor(() =>
-      expect(document.activeElement?.getAttribute("data-variant")).not.toBe("primary"),
-    );
-    expect(document.activeElement?.textContent).toContain("Choose account");
+    await waitFor(() => expect(document.activeElement).toBe(chip));
   });
 
   it("the install log is offered once, whether the backend or the page names it", async () => {

@@ -1,5 +1,5 @@
 /** The embedding, override and isolate controls (U+202A to U+202E, U+2066 to U+2069). */
-const CONTROLS = /[‪-‮⁦-⁩]/g;
+const CONTROLS = /[\u202A-\u202E\u2066-\u2069]/g;
 
 /**
  * A name (instance, account) for interpolation into a sentence: its bidi controls are dropped
@@ -7,5 +7,5 @@ const CONTROLS = /[‪-‮⁦-⁩]/g;
  * around it. Without dropping them first, a U+2069 in the name would end the isolate early.
  */
 export function isolate(name: string): string {
-  return `⁨${name.replace(CONTROLS, "")}⁩`;
+  return `\u2068${name.replace(CONTROLS, "")}\u2069`;
 }
