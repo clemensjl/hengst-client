@@ -5,8 +5,18 @@ import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { singleByRole } from "./roles.ts";
 
+/**
+ * Where cargo put the debug binaries: `CARGO_TARGET_DIR` when it is set (as for cargo), else the
+ * workspace's `target/`.
+ */
+export function targetDebugDir(env: Record<string, string | undefined> = process.env): string {
+  const dir = env.CARGO_TARGET_DIR?.trim();
+  if (dir) return resolve(dir, "debug");
+  return resolve(import.meta.dirname, "../../../../target/debug");
+}
+
 /** The workspace's debug binaries: `pnpm e2e` does not build them. */
-const TARGET = resolve(import.meta.dirname, "../../../../target/debug");
+const TARGET = targetDebugDir();
 export const APP_EXE = join(TARGET, "hengst-desktop.exe");
 export const MOCK_EXE = join(TARGET, "hengst-mock.exe");
 

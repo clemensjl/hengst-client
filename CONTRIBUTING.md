@@ -54,6 +54,8 @@ Build, then run (`pnpm e2e` does not build; it expects `target/debug/hengst-desk
     cargo build -p hengst-testkit --bin hengst-mock
     pnpm -C apps/desktop e2e
 
+If cargo writes its output somewhere else (a `target-dir` in a cargo config, for example), set `CARGO_TARGET_DIR` to that folder when running `pnpm e2e`: the suite then looks in `<CARGO_TARGET_DIR>/debug`.
+
 `cargo test` and `cargo build` of the workspace write a plain debug `hengst-desktop.exe` to the same path; build the e2e app again after them. The suite stops with "the app page did not load" when it finds such a build.
 
 The suite needs the app window in the foreground for the whole run: another window that takes the focus (a game that starts, for example) closes open menus and popups, and the tests that use them fail; a failed test logs `document.hasFocus()` to tell this apart. Run it on a desktop that is not in use, or in a VM. The app windows open on the desktop of the process that runs `pnpm -C apps/desktop e2e`, so a run started from a process on a separate Windows desktop (one created with `CreateDesktop`, as tools for invisible desktops do; not a Task View desktop) keeps its windows off the screen you use. Whether the focus-dependent tests pass there has not been verified yet.
