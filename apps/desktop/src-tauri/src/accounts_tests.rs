@@ -1529,8 +1529,9 @@ async fn login_events_never_contain_tokens() {
 #[test]
 fn an_expired_login_of_an_account_signed_out_meanwhile_is_not_found_and_not_marked() {
     let (_d, paths, accounts, _store) = seeded(&[PLAYER_A, PLAYER_B]);
+    let chosen = accounts.exact(PLAYER_A.uuid).unwrap();
     accounts.remove(PLAYER_A.uuid).unwrap();
-    let gone = accounts.after_login_expired(PLAYER_A.uuid);
+    let gone = accounts.after_login_expired(&chosen);
     assert!(
         matches!(gone, Some(Error::Auth(AuthError::AccountNotFound { .. }))),
         "{gone:?}"
@@ -1545,6 +1546,7 @@ fn an_expired_login_of_an_account_signed_out_meanwhile_is_not_found_and_not_mark
 #[test]
 fn an_expired_login_of_a_present_account_marks_it_sign_in_again() {
     let (_d, _paths, accounts, _store) = seeded(&[PLAYER_A]);
-    assert!(accounts.after_login_expired(PLAYER_A.uuid).is_none());
+    let chosen = accounts.exact(PLAYER_A.uuid).unwrap();
+    assert!(accounts.after_login_expired(&chosen).is_none());
     assert!(accounts.exact(PLAYER_A.uuid).unwrap().sign_in_required);
 }

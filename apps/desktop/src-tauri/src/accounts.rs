@@ -576,9 +576,12 @@ impl Accounts {
             Ok(stored) => stored,
             Err(e) => return (Err(e), false),
         };
-        // A renewed session is saved like a sign-in: under `io_lock`, and only if the account
-        // is unchanged (it may have been signed out while the renewal was in flight, fully or
-        // halfway). The lock is taken inside the synchronous callback, never across an await.
+        // A renewed session is saved like a sign-in: under `io_lock`, and only if the entry is
+        // unchanged (it may have been signed out while the renewal was in flight, fully or
+        // halfway, or signed out and in again). The lock is taken inside the synchronous
+        // callback, never across an await. The entry as saved is what the start compares with
+        // later (`still_present`).
+        let renewed: Mutex<Option<StoredAccount>> = Mutex::new(None);
         let result = launch_account_with(
             &self.store,
             self.auth.as_ref(),
@@ -587,15 +590,23 @@ impl Accounts {
             |session| {
                 let _io = self.io();
                 self.unchanged(&stored)?;
-                self.store.save_session(session).map(|_| ())
+                let saved = self.store.save_session(session)?;
+                *renewed.lock().unwrap_or_else(|p| p.into_inner()) = Some(saved);
+                Ok(())
             },
         )
         .await
-        .map(|account| (account, Some(stored.clone())));
+        .map(|account| {
+            let chosen = renewed
+                .into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(|| stored.clone());
+            (account, Some(chosen))
+        });
         if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
-            // Signed out meanwhile: that is the answer, not "sign in again".
-            if let Some(gone) = self.after_login_expired(&stored.uuid) {
-                return (Err(gone), true);
+            // Signed out (and maybe in again) meanwhile: that is the answer, nothing is marked.
+            if let Some(other) = self.after_login_expired(&stored) {
+                return (Err(other), true);
             }
             return (result, true);
         }
@@ -604,15 +615,22 @@ impl Accounts {
 
     /// The account step of a start reported `LoginExpired`. That is also what a sign-out
     /// overlapping that step looks like (its secrets are gone), so the entry is checked again
-    /// under `io_lock`: gone -> its `AccountNotFound` is returned and nothing is marked (a mark
-    /// would tell the user to sign in an account they just removed); there -> it is marked
-    /// "sign in again" (a failure to mark is only logged) and `None` is returned.
-    fn after_login_expired(&self, uuid: &str) -> Option<Error> {
+    /// under `io_lock` against `stored`, the entry the start chose: gone -> its `AccountNotFound`
+    /// is returned and nothing is marked (a mark would tell the user to sign in an account they
+    /// just removed); there but a different entry (signed out and in again, or flagged by a
+    /// half-failed sign-out) -> `LoginExpired` is returned and nothing is marked (the new entry's
+    /// login is fine); the same entry -> it is marked "sign in again" (a failure to mark is only
+    /// logged) and `None` is returned.
+    fn after_login_expired(&self, stored: &StoredAccount) -> Option<Error> {
         let _io = self.io();
-        if let Err(e) = self.exact(uuid) {
-            return Some(e);
+        let now = match self.exact(&stored.uuid) {
+            Ok(now) => now,
+            Err(e) => return Some(e),
+        };
+        if now != *stored {
+            return Some(Error::Auth(AuthError::LoginExpired { name: now.name }));
         }
-        if let Err(e) = self.store.mark_sign_in_required(uuid) {
+        if let Err(e) = self.store.mark_sign_in_required(&stored.uuid) {
             self.diag(&format!(
                 "play: could not mark the account ({})",
                 strip_paths(&e.to_string())
@@ -621,12 +639,13 @@ impl Accounts {
         None
     }
 
-    /// The account chosen for a start (`chosen`, as it was then) is still there and was not
-    /// flagged meanwhile: a sign-out removed it (`AccountNotFound`) or failed halfway and left it
-    /// "sign in again" (`LoginExpired`). The caller holds `io_lock`.
+    /// The account chosen for a start (`chosen`, as it was then) is still the same entry: a
+    /// sign-out removed it (`AccountNotFound`), or it differs (`LoginExpired`): a sign-out failed
+    /// halfway and left it "sign in again", or it was signed out and signed in again, which
+    /// writes a new entry with a new login. The caller holds `io_lock`.
     fn unchanged(&self, chosen: &StoredAccount) -> Result<()> {
         let now = self.exact(&chosen.uuid)?;
-        if now.sign_in_required && !chosen.sign_in_required {
+        if now != *chosen {
             return Err(Error::Auth(AuthError::LoginExpired { name: now.name }));
         }
         Ok(())

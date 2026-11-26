@@ -1041,6 +1041,69 @@ async fn signing_out_during_the_login_renewal_keeps_the_account_removed() {
     assert!(fx.lines.lock().unwrap().is_empty());
 }
 
+/// Signing out and signing the same account in again while the renewal of its old login is in
+/// flight: the late answer of the old renewal must not overwrite the fresh sign-in, must not mark
+/// the fresh entry "sign in again", and nothing is launched with the old login.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_fresh_sign_in_during_the_login_renewal_is_kept_and_not_marked() {
+    let fx = fixture(Login::DueSlow).await;
+    fx.script("out started\nexit 0\n");
+    let (_, events) = fx.play().await;
+    fx.renewal_in_flight().await;
+    let (accounts, secrets) = (fx.state.accounts.clone(), fx.secrets.clone());
+    let paths = fx.state.paths.clone();
+    let fresh = tokio::task::spawn_blocking(move || {
+        accounts.remove(PLAYER_A.uuid).unwrap();
+        let store = AccountStore::new(paths.accounts_file(), SharedStore(secrets));
+        store
+            .save_session(&LoginSession {
+                profile: Profile {
+                    id: PLAYER_A.uuid.into(),
+                    name: "Mira_K".into(),
+                },
+                xuid: "2535400000000001".into(),
+                minecraft_token: Secret::new("test-FRESH-TOKEN-of-the-new-sign-in"),
+                minecraft_expires_at: u64::MAX - 1,
+                refresh_token: Secret::new("test-fresh-refresh"),
+            })
+            .unwrap()
+    })
+    .await
+    .unwrap();
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::LoginExpired, "{error:?}");
+    assert_eq!(fx.idle().await, None);
+    let now = AccountStore::new(
+        fx.state.paths.accounts_file(),
+        SharedStore(fx.secrets.clone()),
+    )
+    .find(Some(PLAYER_A.uuid))
+    .unwrap();
+    assert_eq!(now, fresh, "the fresh sign-in was overwritten or marked");
+    assert!(!now.sign_in_required);
+    assert!(!fx
+        .states()
+        .iter()
+        .any(|s| matches!(s, GameStateDto::Running { .. })));
+}
+
+/// A due login that is renewed starts the game: the entry as saved by the renewal is the one the
+/// check right before the spawn compares with.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_renewed_login_starts_the_game() {
+    let fx = fixture(Login::DueSlow).await;
+    fx.script("out started\nexit 0\n");
+    let (_, events) = fx.play().await;
+    assert!(
+        matches!(ended(&events).await, PlayEvent::Started { .. }),
+        "{:?}",
+        events.lock().unwrap()
+    );
+    fx.idle().await;
+}
+
 /// Two `game_stop` calls overlap and neither reaches a window: whatever order they end in, the
 /// game counts as not asked (the old code restored a stale "requested" from the second call).
 #[tokio::test(flavor = "multi_thread")]
