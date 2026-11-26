@@ -18,7 +18,7 @@ use std::fmt;
 use std::sync::Arc;
 
 #[cfg(windows)]
-pub use self::windows::{spawn_game, GameProcess};
+pub use self::windows::{local_utc_offset, spawn_game, GameProcess};
 
 /// Receives every log line of a game run, in `seq` order, from the reader threads. It is called
 /// while the run's output lock is held: it must return quickly (hand the line to a channel) and
@@ -349,8 +349,9 @@ impl Emitter {
 }
 
 /// A line as the launcher log file shows it: `[hh:mm:ss] [thread/LEVEL]: message` in local time
-/// when time, thread and level are known, otherwise the message as it is.
-fn format_line(line: &LogLine, utc_offset: i64) -> String {
+/// (`utc_offset`: local time minus UTC in seconds, `local_utc_offset`) when time, thread and level
+/// are known, otherwise the message as it is.
+pub fn format_line(line: &LogLine, utc_offset: i64) -> String {
     let time = match line.time {
         Some(LogTime::UnixMillis(ms)) => {
             let t = (i64::try_from(ms / 1000).unwrap_or(0) + utc_offset).rem_euclid(86_400);
@@ -861,6 +862,11 @@ mod windows {
 
     /// The local time as `yyyymmdd-hhmmss` and the local offset from UTC in seconds (rounded to
     /// minutes).
+    /// Local time minus UTC in seconds right now, as the launcher log file uses it.
+    pub fn local_utc_offset() -> i64 {
+        local_clock().1
+    }
+
     fn local_clock() -> (String, i64) {
         let mut local = SYSTEMTIME::default();
         let mut utc = SYSTEMTIME::default();
