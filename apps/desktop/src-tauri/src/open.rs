@@ -133,12 +133,26 @@ pub fn log_error(e: &hengst_core::Error) -> ErrorDto {
     }
 }
 
-/// Opens `file` through `opener` (`shell_open_file` in the app), if it is a file right now. As
-/// for folders, the check can be outrun; what is opened is still a path `resolve_log_path` let
-/// through, with the `.log` extension, so Windows hands it to its program for logs.
-pub fn open_file<E: Display>(
+/// Whether Windows has a program for `.log` files (`log_handler`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LogHandler {
+    Present,
+    /// No association, or only the app picker.
+    Absent,
+    /// The query failed.
+    Unknown,
+}
+
+/// Shows a log, if it is a file right now: in the program Windows has for `.log` files (`open`,
+/// `shell_open_file` in the app), else selected in its folder in Explorer (`reveal`,
+/// `reveal_in_explorer`). Never "open" without a program: Windows would show its app picker. As
+/// for folders, the file check can be outrun; what is shown is still a path `resolve_log_path`
+/// let through, with the `.log` extension.
+pub fn open_log_file<E: Display>(
     file: &Path,
-    opener: impl FnOnce(&Path) -> Result<(), E>,
+    handler: LogHandler,
+    open: impl FnOnce(&Path) -> Result<(), E>,
+    reveal: impl FnOnce(&Path) -> Result<(), E>,
 ) -> Result<(), ErrorDto> {
     let failed = |detail: String| ErrorDto {
         code: ErrorCode::OpenFailed,
@@ -149,7 +163,101 @@ pub fn open_file<E: Display>(
     if !std::fs::metadata(file).is_ok_and(|m| m.is_file()) {
         return Err(failed("the path is not a file".to_string()));
     }
-    opener(file).map_err(|e| failed(e.to_string()))
+    let shown = match handler {
+        LogHandler::Present => open(file),
+        LogHandler::Absent | LogHandler::Unknown => reveal(file),
+    };
+    shown.map_err(|e| failed(e.to_string()))
+}
+
+/// The program `.log` files open with, judged from its executable: the app picker
+/// (`OpenWith.exe`, `PickerHost.exe`) or nothing is no program.
+fn handler_from_executable(exe: Option<&str>) -> LogHandler {
+    let name = exe
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .map(|n| n.to_string_lossy().to_ascii_lowercase());
+    match name.as_deref() {
+        None | Some("openwith.exe") | Some("pickerhost.exe") => LogHandler::Absent,
+        Some(_) => LogHandler::Present,
+    }
+}
+
+/// Asks Windows which program opens `.log` files (`AssocQueryStringW`, `ASSOCSTR_EXECUTABLE`,
+/// verb "open"). `ASSOCF_INIT_IGNOREUNKNOWN`: an extension without an association must not be
+/// answered with the "Unknown" class, whose program is the app picker.
+#[cfg(windows)]
+pub fn log_handler() -> LogHandler {
+    use windows_sys::Win32::Foundation::ERROR_NO_ASSOCIATION;
+    use windows_sys::Win32::UI::Shell::{
+        AssocQueryStringW, ASSOCF_INIT_IGNOREUNKNOWN, ASSOCSTR_EXECUTABLE,
+    };
+    let ext: Vec<u16> = ".log".encode_utf16().chain(Some(0)).collect();
+    let verb: Vec<u16> = "open".encode_utf16().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 1024];
+    let mut len = buf.len() as u32;
+    // SAFETY: NUL-terminated inputs, an output buffer of `len` characters that outlives the call.
+    let hr = unsafe {
+        AssocQueryStringW(
+            ASSOCF_INIT_IGNOREUNKNOWN,
+            ASSOCSTR_EXECUTABLE,
+            ext.as_ptr(),
+            verb.as_ptr(),
+            buf.as_mut_ptr(),
+            &mut len,
+        )
+    };
+    // HRESULT_FROM_WIN32(ERROR_NO_ASSOCIATION).
+    let no_association = (0x8007_0000u32 | ERROR_NO_ASSOCIATION) as i32;
+    if hr == no_association {
+        return LogHandler::Absent;
+    }
+    if hr != 0 {
+        return LogHandler::Unknown;
+    }
+    let end = buf.iter().position(|c| *c == 0).unwrap_or(buf.len());
+    handler_from_executable(Some(&String::from_utf16_lossy(&buf[..end])))
+}
+
+#[cfg(not(windows))]
+pub fn log_handler() -> LogHandler {
+    LogHandler::Unknown
+}
+
+/// Selects `file` in its folder in Explorer (`SHOpenFolderAndSelectItems`): nothing is run, the
+/// user sees the log and can open it with a program of their choice.
+#[cfg(windows)]
+pub fn reveal_in_explorer(file: &Path) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::System::Com::{
+        CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED,
+    };
+    use windows_sys::Win32::UI::Shell::{ILCreateFromPathW, ILFree, SHOpenFolderAndSelectItems};
+    let com = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+    let name: Vec<u16> = file.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: a NUL-terminated path; the returned list is freed below and not used after.
+    let pidl = unsafe { ILCreateFromPathW(name.as_ptr()) };
+    let hr = if pidl.is_null() {
+        -1
+    } else {
+        // SAFETY: `pidl` is a valid absolute item list; no child items are passed.
+        let hr = unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) };
+        unsafe { ILFree(pidl) };
+        hr
+    };
+    if com >= 0 {
+        unsafe { CoUninitialize() };
+    }
+    if hr == 0 {
+        Ok(())
+    } else {
+        Err(format!("Explorer could not show the log (code {hr:#x})"))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn reveal_in_explorer(_file: &Path) -> Result<(), String> {
+    Err("showing files is implemented for Windows only".to_string())
 }
 
 /// Opens a file in the program Windows associates with its extension: `ShellExecuteW` with the
@@ -690,27 +798,97 @@ mod tests {
         }
     }
 
+    /// Runs `open_log_file` with recording openers: which one got which path.
+    fn open_with(
+        file: &Path,
+        handler: LogHandler,
+    ) -> (Result<(), ErrorDto>, Vec<(&'static str, PathBuf)>) {
+        let seen = std::cell::RefCell::new(vec![]);
+        let result = open_log_file(
+            file,
+            handler,
+            |p| {
+                seen.borrow_mut().push(("open", p.to_path_buf()));
+                Ok::<(), String>(())
+            },
+            |p| {
+                seen.borrow_mut().push(("reveal", p.to_path_buf()));
+                Ok::<(), String>(())
+            },
+        );
+        (result, seen.into_inner())
+    }
+
     #[test]
-    fn a_log_is_handed_to_the_opener_only_if_it_is_a_file() {
+    fn a_log_opens_in_its_program_when_windows_has_one_for_log_files() {
         let (_d, paths) = logs_home();
         let file = resolve_log_path(&paths, "logs/loader-install-forge-9.9.log").unwrap();
-        let mut seen = vec![];
-        open_file(&file, |p| {
-            seen.push(p.to_path_buf());
-            Ok::<(), String>(())
-        })
-        .unwrap();
-        assert_eq!(seen, [file]);
-        for bad in [paths.logs(), paths.logs().join("missing.log")] {
-            let mut called = false;
-            let dto = open_file(&bad, |_| {
-                called = true;
-                Ok::<(), String>(())
-            })
-            .unwrap_err();
-            assert_eq!(dto.code, ErrorCode::OpenFailed);
-            assert!(!called, "{}", bad.display());
+        let (result, seen) = open_with(&file, LogHandler::Present);
+        result.unwrap();
+        assert_eq!(seen, [("open", file)]);
+    }
+
+    #[test]
+    fn without_a_program_for_log_files_the_log_is_selected_in_explorer() {
+        let (_d, paths) = logs_home();
+        let file = resolve_log_path(&paths, "logs/loader-install-forge-9.9.log").unwrap();
+        // No association, and a query that failed: never "open" (that would be the app picker).
+        for handler in [LogHandler::Absent, LogHandler::Unknown] {
+            let (result, seen) = open_with(&file, handler);
+            result.unwrap();
+            assert_eq!(seen, [("reveal", file.clone())], "{handler:?}");
         }
+    }
+
+    #[test]
+    fn a_log_that_is_not_a_file_reaches_no_opener() {
+        let (_d, paths) = logs_home();
+        for bad in [paths.logs(), paths.logs().join("missing.log")] {
+            for handler in [LogHandler::Present, LogHandler::Absent] {
+                let (result, seen) = open_with(&bad, handler);
+                assert_eq!(result.unwrap_err().code, ErrorCode::OpenFailed);
+                assert!(seen.is_empty(), "{}", bad.display());
+            }
+        }
+    }
+
+    #[test]
+    fn the_app_picker_does_not_count_as_a_program_for_log_files() {
+        for exe in [
+            "C:\\Windows\\System32\\OpenWith.exe",
+            "C:\\Windows\\System32\\PickerHost.exe",
+            "c:\\windows\\system32\\openwith.EXE",
+        ] {
+            assert_eq!(
+                handler_from_executable(Some(exe)),
+                LogHandler::Absent,
+                "{exe}"
+            );
+        }
+        assert_eq!(
+            handler_from_executable(Some("C:\\Program Files\\Notepad++\\notepad++.exe")),
+            LogHandler::Present
+        );
+        assert_eq!(handler_from_executable(Some("")), LogHandler::Absent);
+        assert_eq!(handler_from_executable(None), LogHandler::Absent);
+    }
+
+    /// Run by hand only, on the agent desktop (it opens a real window): a data folder
+    /// `%TEMP%\hengst-manual-log` with `logs\x.log` is made and its log shown as the app does,
+    /// with this machine's association (or none). Remove the folder afterwards.
+    #[cfg(windows)]
+    #[test]
+    #[ignore]
+    fn manual_open_a_seeded_log_as_the_app_does() {
+        let paths = Paths::new(std::env::temp_dir().join("hengst-manual-log"));
+        std::fs::create_dir_all(paths.logs()).unwrap();
+        std::fs::write(paths.logs().join("x.log"), "a log line\r\n").unwrap();
+        let file = resolve_log_path(&paths, "logs/x.log").unwrap();
+        let handler = log_handler();
+        eprintln!("handler: {handler:?}, file: {}", file.display());
+        open_log_file(&file, handler, shell_open_file, reveal_in_explorer).unwrap();
+        // Explorer and the handlers start asynchronously; give them time before the process ends.
+        std::thread::sleep(std::time::Duration::from_secs(8));
     }
 
     #[test]
