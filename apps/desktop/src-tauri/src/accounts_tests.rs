@@ -1520,3 +1520,31 @@ async fn login_events_never_contain_tokens() {
     // What the user must see is shown: the user code is in the events.
     assert!(outputs.iter().any(|o| o.contains("TEST-0")));
 }
+
+// ---- an expired login (4b play) ----
+
+/// The login step of a start reported `LoginExpired` (for example because a sign-out removed the
+/// secrets meanwhile): an account that is gone by now is "not found", is not marked and does not
+/// come back.
+#[test]
+fn an_expired_login_of_an_account_signed_out_meanwhile_is_not_found_and_not_marked() {
+    let (_d, paths, accounts, _store) = seeded(&[PLAYER_A, PLAYER_B]);
+    accounts.remove(PLAYER_A.uuid).unwrap();
+    let gone = accounts.after_login_expired(PLAYER_A.uuid);
+    assert!(
+        matches!(gone, Some(Error::Auth(AuthError::AccountNotFound { .. }))),
+        "{gone:?}"
+    );
+    let file = std::fs::read_to_string(paths.accounts_file()).unwrap();
+    assert!(!file.contains(PLAYER_A.uuid), "{file}");
+    // The other account is untouched.
+    let b = accounts.exact(PLAYER_B.uuid).unwrap();
+    assert!(!b.sign_in_required);
+}
+
+#[test]
+fn an_expired_login_of_a_present_account_marks_it_sign_in_again() {
+    let (_d, _paths, accounts, _store) = seeded(&[PLAYER_A]);
+    assert!(accounts.after_login_expired(PLAYER_A.uuid).is_none());
+    assert!(accounts.exact(PLAYER_A.uuid).unwrap().sign_in_required);
+}

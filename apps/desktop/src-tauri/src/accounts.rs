@@ -593,15 +593,32 @@ impl Accounts {
         .await
         .map(|account| (account, Some(stored.clone())));
         if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
-            if let Err(e) = self.mark_sign_in_required(&stored.uuid) {
-                self.diag(&format!(
-                    "play: could not mark the account ({})",
-                    strip_paths(&e.to_string())
-                ));
+            // Signed out meanwhile: that is the answer, not "sign in again".
+            if let Some(gone) = self.after_login_expired(&stored.uuid) {
+                return (Err(gone), true);
             }
             return (result, true);
         }
         (result, false)
+    }
+
+    /// The account step of a start reported `LoginExpired`. That is also what a sign-out
+    /// overlapping that step looks like (its secrets are gone), so the entry is checked again
+    /// under `io_lock`: gone -> its `AccountNotFound` is returned and nothing is marked (a mark
+    /// would tell the user to sign in an account they just removed); there -> it is marked
+    /// "sign in again" (a failure to mark is only logged) and `None` is returned.
+    fn after_login_expired(&self, uuid: &str) -> Option<Error> {
+        let _io = self.io();
+        if let Err(e) = self.exact(uuid) {
+            return Some(e);
+        }
+        if let Err(e) = self.store.mark_sign_in_required(uuid) {
+            self.diag(&format!(
+                "play: could not mark the account ({})",
+                strip_paths(&e.to_string())
+            ));
+        }
+        None
     }
 
     /// The account chosen for a start (`chosen`, as it was then) is still there and was not
