@@ -202,12 +202,45 @@ pub fn label(lang: Lang, item: TrayItem) -> Option<String> {
     Some(text(lang, key))
 }
 
+/// Windows shows at most 127 UTF-16 units of a tray tooltip (`NOTIFYICONDATAW::szTip`).
+const TOOLTIP_MAX: usize = 127;
+
+/// The embedding, override and isolate controls (U+202A to U+202E, U+2066 to U+2069), which
+/// `lib/bidi.ts` drops in the web view too: in a name they could reorder the tooltip.
+fn is_bidi_control(c: char) -> bool {
+    matches!(c, '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}')
+}
+
+/// `name` without bidi controls, cut on a character boundary with "…" to at most `room` UTF-16
+/// units.
+fn fit_name(name: &str, room: usize) -> String {
+    let clean: String = name.chars().filter(|&c| !is_bidi_control(c)).collect();
+    if clean.encode_utf16().count() <= room {
+        return clean;
+    }
+    let mut out = String::new();
+    let mut used = 1; // the ellipsis
+    for c in clean.chars() {
+        if used + c.len_utf16() > room {
+            break;
+        }
+        used += c.len_utf16();
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
 /// "Hengst Client", or while a game runs "Hengst Client: {name} läuft" with the instance's name
-/// (its id when the name could not be read).
+/// (its id when the name could not be read), cleaned and cut so the whole fits the tooltip and the
+/// "läuft" / "is running" part always shows.
 pub fn tooltip(lang: Lang, state: &GameStateDto, name: Option<&str>) -> String {
     match state {
         GameStateDto::Running { instance, .. } | GameStateDto::Stopping { instance, .. } => {
-            text(lang, "tray.tooltip.running").replace("{{instance}}", name.unwrap_or(instance))
+            let template = text(lang, "tray.tooltip.running");
+            let fixed = template.replace("{{instance}}", "").encode_utf16().count();
+            let name = fit_name(name.unwrap_or(instance), TOOLTIP_MAX.saturating_sub(fixed));
+            template.replace("{{instance}}", &name)
         }
         _ => text(lang, "tray.tooltip.idle"),
     }
@@ -382,7 +415,8 @@ fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
         MENU_QUIT => match on_quit(&app.state::<AppState>().game.state()) {
             QuitAction::Confirm => {
                 show_window(app, true);
-                app.state::<AppState>().events.emit(AppEvent::QuitRequested);
+                // Waits for the page if it is reloading right now.
+                app.state::<AppState>().events.request_quit();
             }
             QuitAction::Exit => exit_app(app),
         },
@@ -512,6 +546,33 @@ mod tests {
             tooltip(Lang::En, &running(), None),
             "Hengst Client: 9.9 is running"
         );
+    }
+
+    /// Bidi controls in a name cannot reorder the tooltip, and a long name is cut so the "läuft" /
+    /// "is running" part always fits into the 127 characters Windows shows.
+    #[test]
+    fn the_tooltip_name_is_cleaned_and_cut_so_the_state_stays_visible() {
+        let tricky = "\u{202E}Mira\u{2066}_K\u{2069}\u{202A}";
+        assert_eq!(
+            tooltip(Lang::En, &running(), Some(tricky)),
+            "Hengst Client: Mira_K is running"
+        );
+        for lang in [Lang::De, Lang::En] {
+            // 268 characters, some outside the BMP (two UTF-16 units each).
+            let long: String = "ab\u{1F600}x".repeat(67);
+            let tip = tooltip(lang, &running(), Some(&long));
+            assert!(tip.encode_utf16().count() <= 127, "{}", tip.len());
+            let end = if lang == Lang::De {
+                "… läuft"
+            } else {
+                "… is running"
+            };
+            assert!(tip.ends_with(end), "{tip}");
+            assert!(tip.starts_with("Hengst Client: ab"), "{tip}");
+        }
+        // A name that fits is not touched.
+        let fits = "x".repeat(64);
+        assert!(!tooltip(Lang::En, &running(), Some(&fits)).contains('…'));
     }
 
     #[test]

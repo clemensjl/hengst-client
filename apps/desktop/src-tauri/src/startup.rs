@@ -208,9 +208,14 @@ pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &Windo
 /// starts loading a document, every running operation that can still be cancelled is cancelled.
 /// The hook belongs to the window and not to `subscribe_events`, so a later re-subscribe of the
 /// same page (or any other command) can never cancel a sign-in.
+///
+/// The old page's event channel is gone with it: the hub forgets it until the new page subscribes,
+/// so a tray quit request in between waits for that page (`EventHub::request_quit`).
 pub fn cancel_operations_on_page_load<R: tauri::Runtime>(app: &AppHandle<R>, event: PageLoadEvent) {
     if matches!(event, PageLoadEvent::Started) {
-        app.state::<AppState>().operations.cancel_all();
+        let state = app.state::<AppState>();
+        state.events.unsubscribe();
+        state.operations.cancel_all();
     }
 }
 

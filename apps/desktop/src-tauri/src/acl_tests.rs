@@ -61,7 +61,7 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
-            crate::commands::app::app_quit,
+            // `app_quit` is left out on purpose: the mock runtime cannot exit (see the quit test).
             crate::commands::open::open_url,
             crate::commands::accounts::accounts_list,
             crate::commands::accounts::account_select,
@@ -264,11 +264,15 @@ fn open_location_refuses_a_log_path_outside_the_logs_folders() {
     }
 }
 
-/// Only the main window may quit the app. The main window's own call is not made here: with no
-/// game running it would end the test process.
+/// Only the main window may quit the app. The command is not in this app's handler (the mock
+/// runtime panics on exit), so the main window's call passes the capability check and then finds
+/// no handler, while the other window's call is stopped by the check itself.
 #[test]
 fn only_the_main_window_may_quit_the_app() {
     let (app, _dir) = app();
+    let main = call(&app, "main", "app_quit").unwrap_err();
+    assert!(!main.to_string().contains("not allowed"), "{main}");
+    assert!(main.to_string().contains("app_quit"), "{main}");
     let err = call(&app, "other", "app_quit").unwrap_err();
     assert!(err.to_string().contains("not allowed"), "{err}");
     assert!(crate::commands::app::app_quit_allowed(
