@@ -36,6 +36,7 @@ pub mod recycle;
 pub mod settings;
 pub mod startup;
 pub mod state;
+pub mod tray;
 pub mod window_state;
 
 /// Names of all commands; the capability test and the TypeScript client test compare against it.

@@ -5,6 +5,7 @@ macro_rules! with_commands {
         $callback!(
             app::app_info,
             app::subscribe_events,
+            app::app_quit,
             versions::game_versions,
             open::open_url,
             open::open_location,

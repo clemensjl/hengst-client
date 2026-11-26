@@ -15,7 +15,7 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-const WINDOW_LABEL: &str = "main";
+pub(crate) const WINDOW_LABEL: &str = "main";
 
 /// Debug-only start arguments. Release builds ignore all of them (the data folder is then
 /// `HENGST_HOME` or the default).
@@ -326,6 +326,25 @@ fn create_window(
         ),
     }
     cancel_operations_when_destroyed(&window);
+    // While a game runs, closing hides the window into the tray (DESIGN.md 11.11).
+    {
+        let (hidden, handle) = (window.clone(), app.clone());
+        window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                let state = handle.state::<AppState>().game.state();
+                // Never hide into a tray icon that could not be shown: the window would be lost.
+                let hide = crate::tray::on_close_requested(&state)
+                    == crate::tray::CloseAction::HideToTray
+                    && crate::tray::tray_shown(&handle);
+                if hide {
+                    api.prevent_close();
+                    if let Err(e) = hidden.hide() {
+                        eprintln!("could not hide the main window: {e}");
+                    }
+                }
+            }
+        });
+    }
     // With the setting on System the native background follows the OS theme at runtime too.
     {
         let (themed, handle) = (window.clone(), app.clone());
@@ -450,6 +469,7 @@ pub fn run() {
         .invoke_handler(with_commands!(handler))
         .setup(move |app| {
             create_window(app.handle(), &args, &paths, dev_url, theme)?;
+            crate::tray::install(app.handle());
             Ok(())
         })
         .run(context)

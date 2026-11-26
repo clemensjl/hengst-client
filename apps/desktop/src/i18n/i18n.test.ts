@@ -8,6 +8,7 @@ const params = (s: string) => [...s.matchAll(/\{\{\s*([\w.]+)[^}]*\}\}/g)].map((
 const PREFIXES = [
   ...["nav.", "settings.", "about.", "errors.", "accounts.", "signIn.", "instances.", "common."],
   "play.",
+  "tray.",
 ];
 const both = [...flat(de), ...flat(en)];
 

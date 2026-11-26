@@ -309,5 +309,17 @@
   "play.progress.label": "Fortschritt",
   "play.logOpenFailed": "Das Installationsprotokoll ließ sich nicht öffnen.",
   "errors.action.openLog": "Installationsprotokoll öffnen",
-  "play.ended": "Das Spiel wurde beendet."
+  "play.ended": "Das Spiel wurde beendet.",
+  "play.quit.title": "Spiel beenden und Hengst Client schließen?",
+  "play.quit.body": "Das Spiel wird beendet. Fortschritt seit dem letzten Speichern im Spiel kann verloren gehen.",
+  "play.quit.keep": "Weiterspielen",
+  "play.quit.confirm": "Spiel beenden und schließen",
+  "play.quit.busy": "Wird beendet…",
+  "play.quit.notResponding": "Das Spiel reagiert nicht",
+  "play.quit.force": "Sofort beenden und schließen",
+  "tray.open": "Hengst Client öffnen",
+  "tray.stopGame": "Spiel beenden",
+  "tray.quit": "Hengst Client beenden",
+  "tray.tooltip.idle": "Hengst Client",
+  "tray.tooltip.running": "Hengst Client: {{instance}} läuft"
 }

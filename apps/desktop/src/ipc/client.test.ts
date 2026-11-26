@@ -198,12 +198,14 @@ describe("ipc client", () => {
     expect(await api.gameStop()).toBe("noWindow");
     expect(await api.gameForceStop()).toBe(true);
     expect(await api.gameState()).toEqual({ state: "idle", data: { lastExit: null } });
+    expect(await api.appQuit()).toBe(true);
     expect(seen).toEqual([
       ["play", ["instanceId", "channel"]],
       ["play_cancel", { op: 4 }],
       ["game_stop", {}],
       ["game_force_stop", {}],
       ["game_state", {}],
+      ["app_quit", {}],
     ]);
   });
 

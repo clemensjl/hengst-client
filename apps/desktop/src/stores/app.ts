@@ -121,6 +121,12 @@ interface AppState {
   dismissedExit: number | null;
   /** Cancel, stop or force stop failed. */
   playActionError: ErrorDto | null;
+  /**
+   * The tray asked to quit while a game runs: the quit dialog is open (DESIGN.md 11.11). The
+   * number tells one opening from the next.
+   */
+  quitAsked: number | null;
+  closeQuit: () => void;
   /** Loads the game state; an event that arrives meanwhile wins over the answer. */
   loadGame: () => Promise<void>;
   /** Starts the instance; a second call while a start of this page runs does nothing. */
@@ -184,6 +190,8 @@ let launchTokens = 0;
 let stopBusy = false;
 // A cancel request is on its way: a second click is ignored until it answers (DESIGN.md 10.0).
 let cancelBusy = false;
+// Counts the openings of the quit dialog.
+let quitOpenings = 0;
 
 /**
  * Takes a game state the backend reported (event or `game_state()` answer). A start of this page
@@ -258,6 +266,8 @@ export const useApp = create<AppState>()((set, get) => ({
   stoppingSeen: null,
   dismissedExit: null,
   playActionError: null,
+  quitAsked: null,
+  closeQuit: () => set({ quitAsked: null }),
 
   setView: (view) => set({ view }),
 
@@ -498,6 +508,17 @@ export const useApp = create<AppState>()((set, get) => ({
         // Newer than any `game_state()` answer still on its way: that answer must not win.
         latest("game");
         applyGame(event.data.state);
+      } else if (event.event === "quitRequested") {
+        // A second request while the dialog is open keeps that dialog.
+        if (get().quitAsked === null) {
+          quitOpenings += 1;
+          set({ quitAsked: quitOpenings });
+        }
+      } else if (event.event === "stopNoWindow") {
+        // The tray's stop reached no window: the start page says so and offers the force stop.
+        const game = get().game.data;
+        if (game?.state === "running" && game.data.runId === event.data.runId)
+          set({ stopNoWindow: event.data.runId });
       } else if (event.event === "notice") {
         const offline = event.data.kind === "versionsRefreshOffline";
         set({ versionsStale: offline ? "offline" : "other" });

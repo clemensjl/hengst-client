@@ -5,6 +5,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AccountDialogs } from "@/features/accounts/AccountDialogs";
 import { InstancesHeaderAction, InstancesView } from "@/features/instances/InstancesView";
 import { PlayView } from "@/features/play/PlayView";
+import { QuitDialogHost } from "@/features/play/QuitDialog";
 import { SettingsView } from "@/features/settings/SettingsView";
 import i18n, { pickLanguage, setLanguage } from "@/i18n";
 import type { SettingsNotice } from "@/ipc/bindings/SettingsNotice";
@@ -52,6 +53,7 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
         )}
       </Shell>
       <AccountDialogs />
+      <QuitDialogHost />
       <Toaster theme={resolved} />
     </TooltipProvider>
   );

@@ -4,7 +4,7 @@ use crate::events::AppEvent;
 use crate::state::AppState;
 use std::sync::Arc;
 use tauri::ipc::Channel;
-use tauri::State;
+use tauri::{AppHandle, Runtime, State};
 
 pub fn app_info_impl(state: &AppState) -> AppInfo {
     AppInfo {
@@ -13,6 +13,26 @@ pub fn app_info_impl(state: &AppState) -> AppInfo {
         dev_build: crate::dev_build(),
         dev_offline: cfg!(feature = "dev-offline"),
     }
+}
+
+/// Whether `app_quit` may quit now: no game process exists (a start still being prepared is
+/// cancelled by the quit).
+pub fn app_quit_allowed(state: &AppState) -> bool {
+    !crate::tray::game_runs(&state.game.state())
+}
+
+/// Quits the app, the end of the quit dialog (DESIGN.md 11.11) once the game has exited. `false`
+/// while a game still runs: nothing happens, the dialog has to stop it first.
+#[tauri::command]
+pub fn app_quit<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+) -> Result<bool, ErrorDto> {
+    if !app_quit_allowed(&state) {
+        return Ok(false);
+    }
+    crate::tray::exit_app(&app);
+    Ok(true)
 }
 
 #[tauri::command]

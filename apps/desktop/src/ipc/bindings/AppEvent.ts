@@ -2,8 +2,9 @@
 import type { DataScope } from "./DataScope";
 import type { GameStateDto } from "./GameStateDto";
 import type { NoticeKind } from "./NoticeKind";
+import type { RunId } from "./RunId";
 
 /**
  * What the backend tells the web view on its own initiative.
  */
-export type AppEvent = { "event": "dataChanged", "data": { scope: DataScope, } } | { "event": "notice", "data": { kind: NoticeKind, } } | { "event": "gameState", "data": { state: GameStateDto, } };
+export type AppEvent = { "event": "dataChanged", "data": { scope: DataScope, } } | { "event": "notice", "data": { kind: NoticeKind, } } | { "event": "gameState", "data": { state: GameStateDto, } } | { "event": "quitRequested" } | { "event": "stopNoWindow", "data": { runId: RunId, } };

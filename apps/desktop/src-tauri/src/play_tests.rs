@@ -759,6 +759,8 @@ window ignore-close
     ended(&events).await;
     fx.running().await;
     fx.line("up").await;
+    // The quit dialog cannot quit past a running game.
+    assert!(!crate::commands::app::app_quit_allowed(&fx.state));
 
     let mut later = AppState::new(fx.state.paths.clone(), endpoints(&fx.server.uri()));
     // Never the real Recycle Bin.
@@ -787,6 +789,7 @@ window ignore-close
 
     assert!(force_stop(&fx.state.game).await.unwrap());
     fx.idle().await;
+    assert!(crate::commands::app::app_quit_allowed(&fx.state));
     until("the run lock to be free", || {
         !hengst_core::runlock::is_running(&later.paths, ID).unwrap()
     })

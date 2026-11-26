@@ -177,4 +177,6 @@ export const api = {
   gameForceStop: (): Promise<boolean> => guard(invoke<boolean>("game_force_stop")),
   /** The game's state now, as the last `gameState` event carried it. */
   gameState: (): Promise<GameStateDto> => guard(invoke<GameStateDto>("game_state")),
+  /** Quits the app; `false` (and nothing happens) while a game still runs. */
+  appQuit: (): Promise<boolean> => guard(invoke<boolean>("app_quit")),
 };

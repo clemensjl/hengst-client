@@ -35,27 +35,93 @@ pub enum AppEvent {
     GameState {
         state: GameStateDto,
     },
+    /// "Quit Hengst Client" in the tray while a game runs: the window is shown, and the web view
+    /// asks whether to stop the game and quit (DESIGN.md 11.11). Nothing else happens until then.
+    QuitRequested,
+    /// "Stop game" in the tray reached no window of run `run_id`: nothing was asked to close (as
+    /// `StopResult::NoWindow` of `game_stop`). The window is shown so the start page can say so.
+    #[serde(rename_all = "camelCase")]
+    StopNoWindow {
+        run_id: crate::dto::play::RunId,
+    },
 }
 
 pub type EventSink<T> = Arc<dyn Fn(T) + Send + Sync>;
 
-/// Delivers events to the one subscriber (the web view's channel). Clones share the subscriber.
+/// Delivers events to the one subscriber (the web view's channel) and to the backend's observers
+/// (the tray). Clones share both.
 #[derive(Clone, Default)]
 pub struct EventHub {
     sink: Arc<Mutex<Option<EventSink<AppEvent>>>>,
+    observers: Arc<Mutex<Vec<EventSink<AppEvent>>>>,
 }
 
 impl EventHub {
-    /// Replaces an earlier subscriber.
+    /// Replaces an earlier subscriber. Observers stay.
     pub fn subscribe(&self, sink: EventSink<AppEvent>) {
         *self.sink.lock().unwrap_or_else(|p| p.into_inner()) = Some(sink);
     }
 
-    /// Without a subscriber the event is dropped.
+    /// Adds a backend listener that gets every event after the subscriber, for as long as the hub
+    /// lives. It is called on the emitting thread, possibly while the emitter holds a lock (the
+    /// game emits under its state lock): it must only hand the event on (a channel), never wait,
+    /// and never call back into whatever emitted it.
+    pub fn observe(&self, observer: EventSink<AppEvent>) {
+        self.observers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .push(observer);
+    }
+
+    /// Without a subscriber the web view's copy is dropped; observers get it anyway.
     pub fn emit(&self, e: AppEvent) {
         let sink = self.sink.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        let observers = self
+            .observers
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .clone();
+        for observer in &observers {
+            observer(e.clone());
+        }
         if let Some(sink) = sink {
             sink(e);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn recorder() -> (EventSink<AppEvent>, Arc<Mutex<Vec<AppEvent>>>) {
+        let seen: Arc<Mutex<Vec<AppEvent>>> = Arc::default();
+        let kept = seen.clone();
+        (Arc::new(move |e| kept.lock().unwrap().push(e)), seen)
+    }
+
+    #[test]
+    fn a_new_subscriber_replaces_the_old_one_but_never_an_observer() {
+        let hub = EventHub::default();
+        let (first, first_seen) = recorder();
+        let (second, second_seen) = recorder();
+        let (observer, observed) = recorder();
+        hub.observe(observer);
+        hub.subscribe(first);
+        hub.subscribe(second);
+        let e = AppEvent::QuitRequested;
+        hub.emit(e.clone());
+        assert!(first_seen.lock().unwrap().is_empty());
+        assert_eq!(*second_seen.lock().unwrap(), std::slice::from_ref(&e));
+        assert_eq!(*observed.lock().unwrap(), [e]);
+    }
+
+    #[test]
+    fn observers_get_events_without_a_subscriber() {
+        let hub = EventHub::default();
+        let (observer, observed) = recorder();
+        hub.observe(observer);
+        hub.emit(AppEvent::QuitRequested);
+        assert_eq!(observed.lock().unwrap().len(), 1);
     }
 }

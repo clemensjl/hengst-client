@@ -61,6 +61,7 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
+            crate::commands::app::app_quit,
             crate::commands::open::open_url,
             crate::commands::accounts::accounts_list,
             crate::commands::accounts::account_select,
@@ -261,6 +262,18 @@ fn open_location_refuses_a_log_path_outside_the_logs_folders() {
         let detail = err["detail"].as_str().unwrap();
         assert!(!detail.contains("Windows\\System32"), "{detail}");
     }
+}
+
+/// Only the main window may quit the app. The main window's own call is not made here: with no
+/// game running it would end the test process.
+#[test]
+fn only_the_main_window_may_quit_the_app() {
+    let (app, _dir) = app();
+    let err = call(&app, "other", "app_quit").unwrap_err();
+    assert!(err.to_string().contains("not allowed"), "{err}");
+    assert!(crate::commands::app::app_quit_allowed(
+        &app.state::<AppState>()
+    ));
 }
 
 #[test]

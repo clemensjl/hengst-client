@@ -47,6 +47,9 @@ export function playBackend(
     /** Held until resolved: `game_stop` answers only then. */
     stopGate: null as Promise<void> | null,
     forceAnswer: true,
+    stopFails: null as ErrorDto | null,
+    forceFails: null as ErrorDto | null,
+    quitAnswer: true,
     openFails: null as ErrorDto | null,
     count: (cmd: string) => calls.filter((c) => c.cmd === cmd).length,
     of: (cmd: string) => calls.filter((c) => c.cmd === cmd).map((c) => c.args),
@@ -83,9 +86,13 @@ export function playBackend(
         return b.cancelAnswer;
       case "game_stop":
         if (b.stopGate) await b.stopGate;
+        if (b.stopFails) throw b.stopFails;
         return b.stopAnswer;
       case "game_force_stop":
+        if (b.forceFails) throw b.forceFails;
         return b.forceAnswer;
+      case "app_quit":
+        return b.quitAnswer;
       case "instance_select":
         b.instances = b.instances.map((i) => ({ ...i, selected: i.id === args.id }));
         return;
