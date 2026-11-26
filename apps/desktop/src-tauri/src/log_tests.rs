@@ -425,7 +425,8 @@ fn the_batch_budget_leaves_room_for_the_largest_envelope() {
         run_id: RunId(u64::MAX),
         dropped: u64::MAX,
         lines: Vec::new(),
-        end: Some(LogEnd::Expired),
+        // A batch with lines can only end with `Complete`, the longer of the two.
+        end: Some(LogEnd::Complete),
     };
     let envelope = serde_json::to_string(&empty).unwrap().len();
     assert!(envelope + BATCH_JSON < INLINE_JSON, "{envelope}");
@@ -446,7 +447,7 @@ fn the_inline_limit_belongs_to_the_tauri_version_in_use() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_consumer_that_does_not_acknowledge_gets_four_batches_then_a_drop_count() {
+async fn a_consumer_that_does_not_acknowledge_gets_a_window_of_batches_then_a_drop_count() {
     let log = log_with_run();
     push_n(&log, R1, 1, 2000);
     let (sink, seen) = recorder(&log, false);

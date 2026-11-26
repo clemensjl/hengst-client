@@ -60,12 +60,13 @@ pub const RUN_LINES: usize = 10_000;
 pub const RUN_BYTES: usize = 16 * 1024 * 1024;
 /// What a held line costs besides its text: the `LogLine` behind its `Arc` and the ring slot.
 pub const LINE_OVERHEAD: usize = 128;
-/// At most this many lines per batch.
+/// At most this many lines per batch; a batch below 8 KiB holds far fewer (about 46), so in
+/// practice this is the count of unsent lines that wakes the sender and makes a batch due.
 pub const BATCH_LINES: usize = 200;
 /// A batch that is not full goes out at most this long after the previous one.
 pub const BATCH_INTERVAL: Duration = Duration::from_millis(100);
 /// Batches with lines that may be on their way to the web view (not yet acknowledged).
-pub const WINDOW: usize = 4;
+pub const WINDOW: usize = 16;
 /// Tauri 2.12.7 evaluates a channel message directly in the page when its JSON is shorter than
 /// this (`MAX_JSON_DIRECT_EXECUTE_THRESHOLD`); a longer one waits in Tauri's queue until the page
 /// fetches it.
@@ -526,10 +527,10 @@ impl LiveLog {
                 full = true;
                 break;
             }
-            let (held, offset, part, resumed) = match c.partial.take() {
-                Some(p) => (p.held, p.offset, p.part, true),
+            let (held, offset, part) = match c.partial.take() {
+                Some(p) => (p.held, p.offset, p.part),
                 None if c.cursor < run.next_seq && c.cursor >= first => {
-                    (run.at(c.cursor).clone(), 0, 0, false)
+                    (run.at(c.cursor).clone(), 0, 0)
                 }
                 None => break,
             };
@@ -552,10 +553,8 @@ impl LiveLog {
             // It does not fit whole. One that fits an empty batch, or a part that would be tiny,
             // waits for the next batch.
             let alone = fitting_prefix(rest, BATCH_JSON.saturating_sub(base)).0 == rest.len();
+            // A partial is only resumed into an empty batch, so `held` starts at its beginning here.
             if !lines.is_empty() && (alone || len < MIN_PIECE) {
-                if resumed {
-                    c.partial = Some(Partial { held, offset, part });
-                }
                 full = true;
                 break;
             }

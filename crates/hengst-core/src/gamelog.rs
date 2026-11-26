@@ -166,7 +166,8 @@ impl Parser {
         }
         if let Some(i) = line.find(EVENT_END) {
             let (event, rest) = line.split_at(i + EVENT_END.len());
-            self.pending.push((event.to_string(), cut));
+            // The reader cuts a raw line at its end, so a cut lies in `rest`: the event is whole.
+            self.pending.push((event.to_string(), false));
             self.close(out);
             if !rest.trim().is_empty() {
                 self.push_into(rest, cut, out);
@@ -588,5 +589,21 @@ mod tests {
             "<log4j:Event><log4j:Message>&#xD800;&#65;&;&amp</log4j:Message></log4j:Event>",
         );
         assert_eq!(e[0].message, "&#xD800;A&;&amp");
+    }
+
+    #[test]
+    fn a_cut_line_that_ends_an_event_leaves_the_event_whole() {
+        // The reader cuts a raw line at its end, so the cut is in the text after `</log4j:Event>`.
+        let mut p = Parser::new();
+        let mut out = p.push_line(
+            "<log4j:Event logger=\"a\" timestamp=\"5\" level=\"INFO\" thread=\"main\">",
+            false,
+        );
+        out.extend(p.push_line("<log4j:Message><![CDATA[whole]]></log4j:Message>", false));
+        let rest = format!("</log4j:Event>{}", "x".repeat(9000));
+        out.extend(p.push_line(&rest, true));
+        out.extend(p.finish());
+        let flags: Vec<(&str, bool)> = out.iter().map(|e| (&e.message[..1], e.cut)).collect();
+        assert_eq!(flags, [("w", false), ("x", true)]);
     }
 }

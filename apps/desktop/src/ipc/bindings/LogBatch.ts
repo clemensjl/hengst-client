@@ -5,11 +5,13 @@ import type { RunId } from "./RunId";
 
 /**
  * Lines of one run on the channel of `log_attach`: first what the buffer holds from `sinceSeq`
- * on, then new lines as they come, at most every 100 ms or 200 lines at a time.
+ * on, then new lines as they come. A batch that was cut by its size (its JSON stays below 8 KiB,
+ * so it holds at most about 46 lines) is followed by the next one at once, within the credits;
+ * one that is not full waits up to 100 ms. 200 lines are only the count that wakes the sender.
  */
 export type LogBatch = { 
 /**
- * Hand it back with `log_ack` once the batch arrived: at most four batches with lines are on
+ * Hand it back with `log_ack` once the batch arrived: at most 16 batches with lines are on
  * their way at a time, the next one waits for an ack (a page that stops reading gets nothing
  * more; what leaves the buffer meanwhile is counted in `dropped`). A batch's JSON stays below
  * 8 KiB, so Tauri hands it to the page at once and queues nothing; a longer line comes in
