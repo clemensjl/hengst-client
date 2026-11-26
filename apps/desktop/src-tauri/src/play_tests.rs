@@ -743,6 +743,60 @@ async fn delete_is_refused_while_preparing_running_or_stopping() {
     assert_ne!(after.code, ErrorCode::InstanceRunning);
 }
 
+/// Finding 9 of the Task 15 review: the launcher crashed or was restarted while its game runs on.
+/// A new session of the app on the same data folder knows nothing of that game (it is `Idle`),
+/// but the game holds the instance's run lock: starting and deleting that instance are refused
+/// until the game exits, and then work again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_game_of_an_earlier_session_blocks_start_and_delete_until_it_exits() {
+    let fx = fixture(Login::Valid).await;
+    fx.script(
+        "out up
+window ignore-close
+",
+    );
+    let (_, events) = fx.play().await;
+    ended(&events).await;
+    fx.running().await;
+    fx.line("up").await;
+
+    let mut later = AppState::new(fx.state.paths.clone(), endpoints(&fx.server.uri()));
+    // Never the real Recycle Bin.
+    let trashed = Arc::new(AtomicBool::new(false));
+    let seen = trashed.clone();
+    later.trasher = Arc::new(move |_| {
+        seen.store(true, Ordering::SeqCst);
+        Err(Error::Io(std::io::Error::other("no Recycle Bin in tests")))
+    });
+    assert!(matches!(
+        later.game.state(),
+        GameStateDto::Idle { last_exit: None }
+    ));
+    let refused = play_impl(&later, ID.into(), Arc::new(|_| {}))
+        .await
+        .unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InstanceRunning, "{refused:?}");
+    assert_eq!(refused.params.get("id").map(String::as_str), Some(ID));
+    assert!(matches!(
+        later.game.state(),
+        GameStateDto::Idle { last_exit: None }
+    ));
+    let refused = instance_delete_impl(&later, ID.into()).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::InstanceRunning, "{refused:?}");
+    assert!(!trashed.load(Ordering::SeqCst));
+
+    assert!(force_stop(&fx.state.game).await.unwrap());
+    fx.idle().await;
+    until("the run lock to be free", || {
+        !hengst_core::runlock::is_running(&later.paths, ID).unwrap()
+    })
+    .await;
+    // Past the check: the trasher is asked (and refuses).
+    let after = instance_delete_impl(&later, ID.into()).await.unwrap_err();
+    assert_ne!(after.code, ErrorCode::InstanceRunning);
+    assert!(trashed.load(Ordering::SeqCst));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_start_that_cannot_spawn_returns_to_idle_and_records_nothing() {
     let fx = fixture(Login::Valid).await;

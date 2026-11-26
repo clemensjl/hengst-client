@@ -18,6 +18,7 @@ pub mod paths;
 pub mod process;
 pub mod progress;
 pub mod rules;
+pub mod runlock;
 pub mod secret;
 pub mod version;
 

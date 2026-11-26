@@ -26,8 +26,9 @@ pub struct AppState {
     /// The one lock of `instances_list` (with its adoption of CLI folders), `instance_create` and
     /// `instance_delete`: a list never adopts a folder that a create has made but not yet filled.
     pub instance_lock: tokio::sync::Mutex<()>,
-    /// The instance the app is preparing or running. An instance the CLI started is invisible to
-    /// the app and not covered. Only `game` changes it, together with its state; a start sets it
+    /// The instance the app is preparing or running. A game of an earlier session of the app is not
+    /// in here; its run lock (`hengst_core::runlock`) covers it in `play` and `instance_delete`. A
+    /// game the CLI started is invisible to the app and not covered. Only `game` changes it, together with its state; a start sets it
     /// while holding `instance_lock`: `instance_delete` reads it under that lock, so a start that
     /// set it outside the lock could be overtaken by a delete between its check and its start.
     pub active_instance: Arc<Mutex<Option<String>>>,

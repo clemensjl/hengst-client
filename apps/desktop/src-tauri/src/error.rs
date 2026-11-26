@@ -88,6 +88,10 @@ pub fn error_dto(e: &Error) -> ErrorDto {
             put("id", id.clone());
             (ErrorCode::RecycleBinUnknown, None)
         }
+        Error::InstanceRunning { id } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceRunning, None)
+        }
         Error::InstanceExists { id } => {
             put("id", id.clone());
             (ErrorCode::InstanceExists, None)
@@ -809,6 +813,12 @@ mod mapping_tests {
             row(
                 Error::InstanceMoveUnknown { id: "9.9".into() },
                 ErrorCode::RecycleBinUnknown,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
+                Error::InstanceRunning { id: "9.9".into() },
+                ErrorCode::InstanceRunning,
                 None,
                 &[("id", "9.9")],
             ),

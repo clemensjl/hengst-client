@@ -174,9 +174,21 @@ impl Job {
     /// replaces any creation flags set on `cmd`. If the child cannot be put into the job or
     /// resumed, it is killed and the error returned.
     pub fn spawn(&self, cmd: &mut Command) -> io::Result<Child> {
+        self.spawn_with(cmd, |_| Ok(()))
+    }
+
+    /// `spawn` that calls `before_resume` with the child after it is in the job and before it runs
+    /// its first instruction (the game's run lock is handed to it there). If that fails, the child
+    /// is killed and the error returned, as for a failed assign.
+    pub fn spawn_with(
+        &self,
+        cmd: &mut Command,
+        before_resume: impl FnOnce(&Child) -> io::Result<()>,
+    ) -> io::Result<Child> {
         let mut child = cmd.creation_flags(SPAWN_FLAGS).spawn()?;
         if let Err(e) = self
             .assign_raw(&child)
+            .and_then(|()| before_resume(&child))
             .and_then(|()| resume_process(child.id()))
         {
             // Suspended or already in the job: it has not run outside the job, and is ended here.

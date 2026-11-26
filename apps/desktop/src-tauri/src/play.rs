@@ -331,16 +331,25 @@ pub struct PlayRequest {
     pub endpoints: Endpoints,
     pub settings: Settings,
     pub instance: Instance,
+    /// The instance's run lock is held: a game of it runs that this session did not start (an
+    /// earlier session that crashed or was closed, `hengst_core::runlock`).
+    pub running_elsewhere: bool,
 }
 
 /// Starts the game of `req.instance` as an operation and returns its id at once; the channel
 /// behind `sink` gets `Preparing` first. The caller holds `AppState::instance_lock` and has just
-/// loaded the instance. `Busy` while another game is being prepared or runs.
+/// loaded the instance. `Busy` while another game is being prepared or runs, `InstanceRunning`
+/// while a game of the instance runs that this session does not know.
 pub fn start(req: PlayRequest, sink: EventSink<PlayEvent>) -> Result<OperationId, ErrorDto> {
     let game = req.game.clone();
     let mut inner = lock(&game.inner);
     if !matches!(inner.phase, Phase::Idle { .. }) {
         return Err(busy());
+    }
+    if req.running_elsewhere {
+        return Err(error_dto(&hengst_core::Error::InstanceRunning {
+            id: req.instance.id.clone(),
+        }));
     }
     let cancel = CancelFlag::new();
     let (out, _forwarder) = OpOut::<PlayEvent>::new(sink);
@@ -691,7 +700,9 @@ fn finish_force(
     result.map(|()| true)
 }
 
-/// Loads the instance under the instance lock and starts it (see `start`).
+/// Loads the instance and looks at its run lock under the instance lock, then starts it (see
+/// `start`). The run lock is checked here only to refuse early and clearly: the core takes it
+/// when the process starts and refuses there too.
 pub async fn play(
     state: &crate::state::AppState,
     instance_id: String,
@@ -699,10 +710,14 @@ pub async fn play(
 ) -> Result<OperationId, ErrorDto> {
     let _instances = state.instance_lock.lock().await;
     let (paths, id) = (state.paths.clone(), instance_id.clone());
-    let instance = tokio::task::spawn_blocking(move || instances::load(&paths, &id))
-        .await
-        .map_err(|_| internal("a background task failed"))?
-        .map_err(|e| instance_id_error(&e, &instance_id))?;
+    let (instance, running_elsewhere) = tokio::task::spawn_blocking(move || {
+        let instance = instances::load(&paths, &id)?;
+        let held = hengst_core::runlock::is_running(&paths, &id)?;
+        Ok::<_, hengst_core::Error>((instance, held))
+    })
+    .await
+    .map_err(|_| internal("a background task failed"))?
+    .map_err(|e| instance_id_error(&e, &instance_id))?;
     start(
         PlayRequest {
             game: state.game.clone(),
@@ -713,6 +728,7 @@ pub async fn play(
             endpoints: state.endpoints.clone(),
             settings: state.settings.get(),
             instance,
+            running_elsewhere,
         },
         sink,
     )

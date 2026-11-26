@@ -64,6 +64,8 @@ pub struct Prepared {
     /// `<root>/logs/game` of the data folder the game was prepared in. Private, so nothing outside
     /// the core decides where game logs are written (or deleted).
     pub(crate) game_log_dir: PathBuf,
+    /// The instance's run lock (`runlock`), which the game holds while it runs.
+    pub(crate) run_lock: PathBuf,
 }
 
 impl Prepared {
@@ -262,6 +264,7 @@ pub async fn prepare_with_progress(
         account: opts.account.clone(),
         instance: instance.to_string(),
         game_log_dir: paths.logs().join("game"),
+        run_lock: crate::runlock::run_lock_path(paths, instance)?,
     })
 }
 
@@ -340,6 +343,7 @@ mod tests {
             account,
             instance: "1.21".into(),
             game_log_dir: PathBuf::from("logs/game"),
+            run_lock: PathBuf::from("tmp/run-1.21.lock"),
         }
     }
 

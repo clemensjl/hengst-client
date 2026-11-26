@@ -475,6 +475,7 @@ mod windows {
     use crate::launch::{ensure_launch_allowed, DEV_OFFLINE};
     use crate::paths::validate_id;
     use crate::process::Job;
+    use crate::runlock::RunLock;
     use crate::{Error, Result};
     use std::io;
     use std::os::windows::io::{FromRawHandle, OwnedHandle};
@@ -520,9 +521,11 @@ mod windows {
         }
     }
 
-    /// Starts the prepared game: only if `ensure_launch_allowed` lets this account play, in a new
-    /// job object without kill-on-close (the game outlives the launcher), without a console window,
-    /// stdin closed, stdout and stderr read by two threads. Each output line is redacted and cut
+    /// Starts the prepared game: only if `ensure_launch_allowed` lets this account play and no game
+    /// of the instance runs (its run lock, `runlock`, is free; otherwise `InstanceRunning`), in a
+    /// new job object without kill-on-close (the game outlives the launcher), without a console
+    /// window, stdin closed, stdout and stderr read by two threads. The game holds the run lock
+    /// until it exits. Each output line is redacted and cut
     /// in its reader thread, parsed, numbered and then written to the launcher log file
     /// `<data>/logs/game/<instance>-<yyyymmdd-hhmmss>.log` (local time; the 10 newest per
     /// instance are kept) and handed to `sink`. The log file is best effort: when it cannot be
@@ -538,6 +541,11 @@ mod windows {
 
     fn start(p: &Prepared, sink: LineSink) -> Result<GameProcess> {
         validate_id(&p.instance)?;
+        let Some(lock) = RunLock::acquire(&p.run_lock)? else {
+            return Err(Error::InstanceRunning {
+                id: p.instance.clone(),
+            });
+        };
         let redactor = Arc::new(Redactor::for_prepared(p));
         let (stamp, utc_offset) = local_clock();
         let log = std::fs::create_dir_all(&p.game_log_dir)
@@ -551,7 +559,8 @@ mod windows {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = match job.spawn(&mut cmd) {
+        // The lock goes to the game before its first instruction; the launcher keeps no handle.
+        let mut child = match job.spawn_with(&mut cmd, |child| lock.hand_to(child)) {
             Ok(child) => child,
             Err(e) => {
                 if let Some((path, file)) = log {
@@ -1342,6 +1351,7 @@ mod tests {
             account,
             instance: "1.21.11".into(),
             game_log_dir: dir.join("logs").join("game"),
+            run_lock: dir.join("tmp").join("run-1.21.11.lock"),
         }
     }
 

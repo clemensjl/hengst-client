@@ -92,6 +92,8 @@ pub enum Error {
     InstanceUnreadable { id: String, reason: String },
     #[error("instance folder {id} is a link, which the launcher does not follow")]
     InstanceLinked { id: String },
+    #[error("the game of instance {id} is running; close it first")]
+    InstanceRunning { id: String },
     #[error("instance {id} was only partly moved to the Recycle Bin")]
     InstancePartlyMoved { id: String },
     #[error("moving instance {id} to the Recycle Bin failed, and what it left behind could not be checked")]

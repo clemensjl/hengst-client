@@ -750,9 +750,15 @@ fn judge_aftermath(
 /// what it left behind cannot be checked, the error is `InstanceMoveUnknown`. If `trash` reports
 /// success and the folder is still there, it is an I/O error. There is no other way
 /// to remove the folder. The shared `versions`, `libraries` and
-/// `assets` are never touched. Whether the instance is running is for the caller to know.
+/// `assets` are never touched. An instance whose game runs (its run lock is held, also by a game
+/// an earlier launcher session started) is refused with `InstanceRunning`; a game this process is
+/// still preparing holds no run lock yet and is for the caller to know.
 pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
     let _lock = lock_existing(paths, id)?;
+    #[cfg(windows)]
+    if crate::runlock::is_running(paths, id)? {
+        return Err(Error::InstanceRunning { id: id.to_string() });
+    }
     let dir = instance_dir(paths, id)?;
     if let State::TooNew(format) = read_state(&dir) {
         return Err(Error::InstanceFormatTooNew {

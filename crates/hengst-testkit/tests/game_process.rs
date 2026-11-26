@@ -9,10 +9,14 @@ use hengst_core::auth::store::{AccountStore, MemorySecretStore};
 use hengst_core::auth::unix_now;
 use hengst_core::game::{spawn_game, GameProcess, LineSink};
 use hengst_core::gamelog::{Level, LogLine, Stream};
+use hengst_core::instances;
 use hengst_core::launch::{prepare, LaunchOptions, Prepared};
 use hengst_core::paths::Paths;
+use hengst_core::runlock::is_running;
 use hengst_core::secret::Secret;
+use hengst_core::Error;
 use hengst_testkit::{endpoints, mount_mojang, PLAYER_A};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -266,4 +270,72 @@ async fn graceful_stop_then_force_stop() {
     );
     assert_eq!(game.request_stop().unwrap(), 0);
     game.force_stop().unwrap();
+}
+
+/// A game outlives the launcher that started it (closed, crashed, killed). Its run lock goes with
+/// the game, not with the launcher: once the launcher's state for it is gone (here: the
+/// `GameProcess` dropped, which neither stops the game nor holds the lock), the instance still
+/// counts as running. A second start and a delete are refused until the game exits; then the lock
+/// is free without anyone cleaning up.
+#[tokio::test]
+async fn the_run_lock_stays_with_the_game_and_ends_with_it() {
+    let (dir, p) = prepared(
+        "out started
+sleep 8000
+",
+    )
+    .await;
+    let paths = Paths::new(dir.path().join("data"));
+    let id = "fake-9.9";
+    // An unreadable instance may be deleted: only the run lock stands in the way.
+    std::fs::write(p.game_dir.join("instance.json"), "{ not json").unwrap();
+    assert!(!is_running(&paths, id).unwrap());
+    let (sink, _lines, mut rx) = collector();
+    let game = spawn_game(&p, sink).await.unwrap();
+    wait_for_line(&mut rx, "started").await;
+    drop(game);
+
+    assert!(
+        is_running(&paths, id).unwrap(),
+        "the lock went with the launcher"
+    );
+    std::fs::write(
+        p.game_dir.join("fake-java.txt"),
+        "exit 0
+",
+    )
+    .unwrap();
+    let err = spawn_game(&p, Arc::new(|_| {})).await.unwrap_err();
+    assert!(
+        matches!(&err, Error::InstanceRunning { id: i } if i == id),
+        "{err}"
+    );
+    let trashed = AtomicBool::new(false);
+    let err = instances::delete(&paths, id, &|_| {
+        trashed.store(true, Ordering::SeqCst);
+        Ok(())
+    })
+    .unwrap_err();
+    assert!(
+        matches!(&err, Error::InstanceRunning { id: i } if i == id),
+        "{err}"
+    );
+    assert!(!trashed.load(Ordering::SeqCst));
+
+    // The game ends by itself (its script sleeps 8 s): the lock is free again.
+    tokio::time::timeout(WAIT, async {
+        while is_running(&paths, id).unwrap() {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the lock outlived the game");
+    let game = Running(spawn_game(&p, Arc::new(|_| {})).await.unwrap());
+    assert_eq!(
+        tokio::time::timeout(WAIT, game.wait())
+            .await
+            .unwrap()
+            .unwrap(),
+        0
+    );
 }
