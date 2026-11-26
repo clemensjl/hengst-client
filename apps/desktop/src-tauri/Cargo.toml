@@ -45,6 +45,8 @@ hengst-testkit = { path = "../../../crates/hengst-testkit" }
 static_assertions = "1.1"
 tauri = { version = "=2.12.7", features = ["test", "tray-icon"] }
 tempfile.workspace = true
+# Paused time for the live log's interval tests.
+tokio = { workspace = true, features = ["test-util"] }
 wiremock.workspace = true
 zip.workspace = true
 

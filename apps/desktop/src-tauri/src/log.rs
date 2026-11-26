@@ -13,8 +13,9 @@
 //! The drain path (`push`) takes the lock, puts the line into its run's ring and drops the oldest
 //! lines over the limits, and wakes the run's consumer when a batch is due. It allocates one
 //! `Arc` per line, copies nothing and never waits for a consumer, so the core's unbounded channel
-//! drains as fast as lines come. The lock is otherwise held only for bounded work: a batch takes
-//! at most 200 `Arc` clones, a copy one clone per held line (the text is copied outside the lock).
+//! drains as fast as lines come. The lock is otherwise held only for bounded work: a batch reads
+//! and copies at most about 8 KiB of text (at most 200 lines), a copy takes one `Arc` clone per
+//! held line (its text is built outside the lock).
 //!
 //! Consumers: one at a time (the log view of the one window). `attach` replaces the previous
 //! consumer; its flush task ends and its channel is dropped. The consumer has a cursor into the
@@ -22,23 +23,36 @@
 //! hand-over and no line can be sent twice or skipped. Lines the ring dropped before they were
 //! sent are reported as `dropped` in the next batch.
 //!
+//! Nothing waits in Tauri: Tauri 2.12.7 evaluates a channel message in the page at once when its
+//! JSON is shorter than 8 KiB (`INLINE_JSON`) and only queues longer ones until the page fetches
+//! them, which a page that reloads never does. Every batch stays below that (`BATCH_JSON` for its
+//! lines, the rest for the envelope); a line too long for one batch goes in parts, which share
+//! its seq. So nothing is left behind by a reload, however often the page reloads.
+//!
 //! Flow control: a batch with lines needs one of `WINDOW` credits and gives it back when the web
 //! view acknowledges it (`ack`) with the batch's unguessable token, which it only learns by
-//! receiving the batch. A page that stops reading (hung, or not fetching what Tauri queues for
-//! it) gets nothing more: the cursor stays and the ring keeps only its limits, so nothing piles
-//! up for it, in this module or in Tauri's channel queue. A page load returns all credits.
+//! receiving the batch, or when its send fails (the channel is gone; the consumer ends then). A
+//! page that stops reading gets nothing more: the cursor stays and the ring keeps only its
+//! limits, so nothing piles up for it. A page load returns all credits (its batches were already
+//! handed to the page, none wait in Tauri). A batch that was cut by its size is followed by the
+//! next one at once, within the credits; one that is not full waits for `BATCH_INTERVAL`.
 
 use crate::dto::error::{ErrorCode, ErrorDto};
-use crate::dto::log::{LogBatch, LogCopyDto, LogEnd, LogFilter, LogLineDto, LogRunDto};
+use crate::dto::log::{
+    LogBatch, LogCopyDto, LogEnd, LogFilter, LogLineDto, LogRunDto, LogRunStateDto,
+};
 use crate::dto::play::RunId;
-use crate::events::EventSink;
 use hengst_core::gamelog::{Level, LogLine};
 use std::collections::{BTreeMap, VecDeque};
 use std::hash::{BuildHasher, RandomState};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, Instant};
-use tokio::sync::Notify;
+use std::time::Duration;
+use tokio::sync::{Notify, Semaphore};
+use tokio::time::Instant;
+
+/// Where a consumer's batches go (the web view's channel). `Err`: the channel is gone.
+pub type LogSink = Arc<dyn Fn(LogBatch) -> Result<(), ()> + Send + Sync>;
 
 /// Lines kept per run.
 pub const RUN_LINES: usize = 10_000;
@@ -48,15 +62,21 @@ pub const RUN_BYTES: usize = 16 * 1024 * 1024;
 pub const LINE_OVERHEAD: usize = 128;
 /// At most this many lines per batch.
 pub const BATCH_LINES: usize = 200;
-/// At most this many bytes of lines per batch (counted as for `RUN_BYTES`); a single larger line
-/// goes alone.
-pub const BATCH_BYTES: usize = 256 * 1024;
 /// A batch that is not full goes out at most this long after the previous one.
 pub const BATCH_INTERVAL: Duration = Duration::from_millis(100);
 /// Batches with lines that may be on their way to the web view (not yet acknowledged).
 pub const WINDOW: usize = 4;
+/// Tauri 2.12.7 evaluates a channel message directly in the page when its JSON is shorter than
+/// this (`MAX_JSON_DIRECT_EXECUTE_THRESHOLD`); a longer one waits in Tauri's queue until the page
+/// fetches it.
+pub const INLINE_JSON: usize = 8192;
+/// The JSON of a batch's lines (with their separators) stays within this, so the whole batch
+/// stays below `INLINE_JSON`.
+pub const BATCH_JSON: usize = 7680;
 /// The longest search text of `log_copy`, in characters.
 pub const FILTER_TEXT_CHARS: usize = 256;
+/// A part shorter than this is not started at the end of a batch that already has lines.
+const MIN_PIECE: usize = 256;
 /// The longest text `log_copy` returns, in bytes.
 pub const COPY_BYTES: usize = 4 * 1024 * 1024;
 
@@ -78,6 +98,28 @@ fn unknown_run() -> ErrorDto {
     invalid_input("runId", "the log of this run is not held")
 }
 
+/// The JSON length of `c` inside a string, as serde_json writes it.
+fn json_len(c: char) -> usize {
+    match c {
+        '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+        c if (c as u32) < 0x20 => 6,
+        c => c.len_utf8(),
+    }
+}
+
+/// The longest prefix of `s` whose JSON fits into `room`: its length in bytes and in JSON.
+fn fitting_prefix(s: &str, room: usize) -> (usize, usize) {
+    let mut json = 0;
+    for (i, c) in s.char_indices() {
+        let n = json_len(c);
+        if json + n > room {
+            return (i, json);
+        }
+        json += n;
+    }
+    (s.len(), json)
+}
+
 struct Held {
     line: LogLine,
     cost: usize,
@@ -89,6 +131,9 @@ struct RunLog {
     since: u64,
     /// The launcher log file of the run; never sent to the web view.
     log_file: Option<PathBuf>,
+    /// Local time minus UTC at the start, as in the launcher log file.
+    utc_offset: i64,
+    exit: Option<(i32, bool)>,
     lines: VecDeque<Arc<Held>>,
     bytes: usize,
     /// The seq the next line gets.
@@ -109,6 +154,13 @@ impl RunLog {
             first_seq: self.first_seq(),
             next_seq: self.next_seq,
             closed: self.closed,
+            state: match self.exit {
+                None => LogRunStateDto::Running,
+                Some((code, stop_requested)) => LogRunStateDto::Ended {
+                    code,
+                    stop_requested,
+                },
+            },
         }
     }
 
@@ -118,16 +170,26 @@ impl RunLog {
     }
 }
 
+/// A line that is being sent in parts: the rest from `offset` on goes as part `part`.
+struct Partial {
+    held: Arc<Held>,
+    offset: usize,
+    part: u32,
+}
+
 struct Consumer {
     id: u64,
     run_id: RunId,
-    /// The next seq to send.
+    /// The next seq to send (the seq of `partial` while one is open).
     cursor: u64,
+    partial: Option<Partial>,
+    /// The last batch was cut by its size or line count: the next one is due at once.
+    full: bool,
     /// Lines before this seq were held when the consumer attached: they go out without waiting
     /// for the interval.
     backfill_end: u64,
     last_sent: Option<Instant>,
-    sink: EventSink<LogBatch>,
+    sink: LogSink,
     wake: Arc<Notify>,
     task: Option<tokio::task::AbortHandle>,
 }
@@ -158,6 +220,8 @@ pub struct LiveLog {
     inner: Mutex<Inner>,
     /// Keys the batch tokens, so a page cannot acknowledge a batch it has not received.
     tokens: RandomState,
+    /// One `log_copy` at a time.
+    pub(crate) copy_gate: Semaphore,
 }
 
 impl Default for LiveLog {
@@ -168,9 +232,9 @@ impl Default for LiveLog {
 
 /// What the flush task of a consumer does next.
 enum Step {
-    Send(LogBatch, EventSink<LogBatch>),
+    Send(LogBatch, LogSink),
     /// The last batch of this consumer.
-    Last(LogBatch, EventSink<LogBatch>),
+    Last(LogBatch, LogSink),
     /// Until woken, or at most this long.
     Wait(Option<Duration>),
     Stop,
@@ -181,6 +245,7 @@ impl LiveLog {
         LiveLog {
             inner: Mutex::new(Inner::default()),
             tokens: RandomState::new(),
+            copy_gate: Semaphore::new(1),
         }
     }
 
@@ -194,7 +259,14 @@ impl LiveLog {
     /// A run started: its buffer is created (empty), the oldest of three is dropped. Called before
     /// the run's first line and before the state says `Running`, so an attach that follows the
     /// state always finds it.
-    pub fn start_run(&self, run_id: RunId, instance: &str, since: u64, log_file: Option<&Path>) {
+    pub fn start_run(
+        &self,
+        run_id: RunId,
+        instance: &str,
+        since: u64,
+        log_file: Option<&Path>,
+        utc_offset: i64,
+    ) {
         let dropped = {
             let mut inner = lock(&self.inner);
             inner.runs.push_back(RunLog {
@@ -202,6 +274,8 @@ impl LiveLog {
                 instance: instance.to_string(),
                 since,
                 log_file: log_file.map(Path::to_path_buf),
+                utc_offset,
+                exit: None,
                 lines: VecDeque::new(),
                 bytes: 0,
                 next_seq: 1,
@@ -265,6 +339,13 @@ impl LiveLog {
         }
     }
 
+    /// The process of `run_id` exited (from the game's state).
+    pub fn run_ended(&self, run_id: RunId, code: i32, stop_requested: bool) {
+        if let Some(run) = lock(&self.inner).run_mut(run_id) {
+            run.exit = Some((code, stop_requested));
+        }
+    }
+
     /// The held runs, newest first.
     pub fn runs(&self) -> Vec<LogRunDto> {
         lock(&self.inner)
@@ -287,7 +368,7 @@ impl LiveLog {
         self: &Arc<Self>,
         run_id: RunId,
         since_seq: u64,
-        sink: EventSink<LogBatch>,
+        sink: LogSink,
     ) -> Result<(), ErrorDto> {
         let wake = Arc::new(Notify::new());
         let (old, id) = {
@@ -308,6 +389,8 @@ impl LiveLog {
                 id,
                 run_id,
                 cursor: since_seq.max(1),
+                partial: None,
+                full: false,
                 backfill_end,
                 last_sent: None,
                 sink,
@@ -354,6 +437,20 @@ impl LiveLog {
         Self::release(old);
     }
 
+    /// The send of the batch `token` to consumer `id` failed: its channel is gone. The credit
+    /// comes back and the consumer ends.
+    fn send_failed(&self, id: u64, token: u64) {
+        let old = {
+            let mut inner = lock(&self.inner);
+            inner.in_flight.retain(|t| *t != token);
+            match &inner.consumer {
+                Some(c) if c.id == id => inner.consumer.take(),
+                _ => None,
+            }
+        };
+        drop(old);
+    }
+
     /// A batch with this token has arrived; unknown tokens are ignored.
     pub fn ack(&self, token: u64) {
         let mut inner = lock(&self.inner);
@@ -384,7 +481,7 @@ impl LiveLog {
         };
         let first = run.first_seq();
         let mut dropped = 0;
-        if c.cursor < first {
+        if c.partial.is_none() && c.cursor < first {
             dropped = first - c.cursor;
             c.cursor = first;
         }
@@ -410,6 +507,8 @@ impl LiveLog {
             };
         }
         let due = dropped > 0
+            || c.full
+            || c.partial.is_some()
             || available >= BATCH_LINES as u64
             || run.closed
             || c.cursor < c.backfill_end
@@ -418,31 +517,79 @@ impl LiveLog {
             let at = c.last_sent.map_or(now, |t| t + BATCH_INTERVAL);
             return Step::Wait(Some(at.saturating_duration_since(now)));
         }
-        let mut held = Vec::new();
-        let mut bytes = 0;
-        let mut seq = c.cursor;
-        while seq < run.next_seq && held.len() < BATCH_LINES {
-            let line = run.at(seq);
-            if !held.is_empty() && bytes + line.cost > BATCH_BYTES {
+        // Whole lines while they fit into `BATCH_JSON`; a line that does not fit into an empty
+        // batch either is split. At most about 8 KiB of text is handled here, under the lock.
+        let mut lines: Vec<LogLineDto> = Vec::new();
+        let (mut used, mut full) = (0usize, false);
+        loop {
+            if lines.len() >= BATCH_LINES {
+                full = true;
                 break;
             }
-            bytes += line.cost;
-            held.push(line.clone());
-            seq += 1;
+            let (held, offset, part, resumed) = match c.partial.take() {
+                Some(p) => (p.held, p.offset, p.part, true),
+                None if c.cursor < run.next_seq && c.cursor >= first => {
+                    (run.at(c.cursor).clone(), 0, 0, false)
+                }
+                None => break,
+            };
+            let sep = usize::from(!lines.is_empty());
+            let head = LogLineDto::piece(&held.line, offset..offset, part, false);
+            let base = serde_json::to_string(&head).map_or(BATCH_JSON, |j| j.len());
+            let rest = &held.line.message[offset..];
+            let (len, json) = fitting_prefix(rest, BATCH_JSON.saturating_sub(used + sep + base));
+            if len == rest.len() {
+                lines.push(LogLineDto::piece(
+                    &held.line,
+                    offset..offset + len,
+                    part,
+                    false,
+                ));
+                used += sep + base + json;
+                c.cursor = held.line.seq + 1;
+                continue;
+            }
+            // It does not fit whole. One that fits an empty batch, or a part that would be tiny,
+            // waits for the next batch.
+            let alone = fitting_prefix(rest, BATCH_JSON.saturating_sub(base)).0 == rest.len();
+            if !lines.is_empty() && (alone || len < MIN_PIECE) {
+                if resumed {
+                    c.partial = Some(Partial { held, offset, part });
+                }
+                full = true;
+                break;
+            }
+            lines.push(LogLineDto::piece(
+                &held.line,
+                offset..offset + len,
+                part,
+                true,
+            ));
+            c.cursor = held.line.seq;
+            c.partial = Some(Partial {
+                held,
+                offset: offset + len,
+                part: part + 1,
+            });
+            full = true;
+            break;
         }
-        c.cursor = seq;
+        if lines.is_empty() {
+            return Step::Wait(None);
+        }
+        c.full = full;
         c.last_sent = Some(now);
-        let end = (run.closed && seq == run.next_seq).then_some(LogEnd::Complete);
+        let end = (run.closed && c.cursor == run.next_seq && c.partial.is_none())
+            .then_some(LogEnd::Complete);
         let (run_id, sink) = (c.run_id, c.sink.clone());
         let ack = self.token(&mut inner.next_batch);
         inner.in_flight.push(ack);
         drop(guard);
-        // The text is copied outside the lock.
         let batch = LogBatch {
             ack,
             run_id,
             dropped,
-            lines: held.iter().map(|h| LogLineDto::from(&h.line)).collect(),
+            lines,
             end,
         };
         match end {
@@ -452,19 +599,27 @@ impl LiveLog {
     }
 
     /// The held lines of a run, oldest first (cheap: one `Arc` clone per line).
-    fn snapshot(&self, run_id: RunId) -> Option<Vec<Arc<Held>>> {
+    fn snapshot(&self, run_id: RunId) -> Option<(Vec<Arc<Held>>, i64)> {
         let inner = lock(&self.inner);
-        Some(inner.run(run_id)?.lines.iter().cloned().collect())
+        let run = inner.run(run_id)?;
+        Some((run.lines.iter().cloned().collect(), run.utc_offset))
     }
 
     /// The held lines of `run_id` that `filter` lets through, as text for the clipboard (see
-    /// `LogCopyDto`). The work runs on a blocking thread.
+    /// `LogCopyDto`), with the times of the launcher log file (the UTC offset of the run's start).
+    /// The work runs on a blocking thread. One copy at a time: a second one while the first runs
+    /// is refused with `Busy` (the web view copies on a click; it can click again).
     pub async fn copy(&self, run_id: RunId, filter: LogFilter) -> Result<LogCopyDto, ErrorDto> {
         if filter.text.chars().count() > FILTER_TEXT_CHARS {
             return Err(invalid_input("text", "the search text is too long"));
         }
-        let held = self.snapshot(run_id).ok_or_else(unknown_run)?;
-        let offset = hengst_core::game::local_utc_offset();
+        let _running = self.copy_gate.try_acquire().map_err(|_| ErrorDto {
+            code: ErrorCode::Busy,
+            params: BTreeMap::new(),
+            action: None,
+            detail: "the log is being copied already".to_string(),
+        })?;
+        let (held, offset) = self.snapshot(run_id).ok_or_else(unknown_run)?;
         tokio::task::spawn_blocking(move || copy_text(&held, &filter, offset, COPY_BYTES))
             .await
             .map_err(|_| crate::accounts::internal("the task copying the log failed"))
@@ -475,9 +630,18 @@ impl LiveLog {
 async fn flush(log: Arc<LiveLog>, id: u64, wake: Arc<Notify>) {
     loop {
         match log.step(id, Instant::now()) {
-            Step::Send(batch, sink) => send(&sink, batch),
+            Step::Send(batch, sink) => {
+                let token = batch.ack;
+                if !send(&sink, batch) {
+                    log.send_failed(id, token);
+                    return;
+                }
+            }
             Step::Last(batch, sink) => {
-                send(&sink, batch);
+                let token = batch.ack;
+                if !send(&sink, batch) {
+                    log.send_failed(id, token);
+                }
                 return;
             }
             Step::Wait(None) => wake.notified().await,
@@ -492,8 +656,11 @@ async fn flush(log: Arc<LiveLog>, id: u64, wake: Arc<Notify>) {
     }
 }
 
-fn send(sink: &EventSink<LogBatch>, batch: LogBatch) {
-    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(batch)));
+/// `false` when the channel refused the batch (a panicking sink counts as delivered).
+fn send(sink: &LogSink, batch: LogBatch) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sink(batch)))
+        .unwrap_or(Ok(()))
+        .is_ok()
 }
 
 fn matches(line: &LogLine, f: &LogFilter, needle: &str) -> bool {

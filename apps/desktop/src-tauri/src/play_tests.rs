@@ -1335,6 +1335,14 @@ async fn the_live_log_holds_the_lines_of_a_run_and_its_end() {
     };
     assert_eq!(*seen_at_running.lock().unwrap(), [true]);
     fx.idle().await;
+    let ended = fx.state.log.runs()[0].state.clone();
+    assert_eq!(
+        ended,
+        crate::dto::log::LogRunStateDto::Ended {
+            code: 0,
+            stop_requested: false
+        }
+    );
     until("the closed log", || {
         fx.state
             .log
@@ -1347,7 +1355,14 @@ async fn the_live_log_holds_the_lines_of_a_run_and_its_end() {
     let kept = batches.clone();
     fx.state
         .log
-        .attach(run_id, 0, Arc::new(move |b| kept.lock().unwrap().push(b)))
+        .attach(
+            run_id,
+            0,
+            Arc::new(move |b| {
+                kept.lock().unwrap().push(b);
+                Ok(())
+            }),
+        )
         .unwrap();
     until("the end of the batches", || {
         batches.lock().unwrap().iter().any(|b| b.end.is_some())

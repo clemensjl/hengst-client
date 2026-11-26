@@ -220,6 +220,8 @@ describe("ipc client", () => {
       message: "hello",
       stream: "stdout",
       cut: false,
+      part: 0,
+      more: false,
     } as const;
     mockIPC((cmd, args) => {
       if (cmd === "log_attach") {

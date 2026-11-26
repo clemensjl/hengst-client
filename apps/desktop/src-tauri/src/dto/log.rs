@@ -2,8 +2,12 @@
 //! token or the command line.
 
 use crate::dto::play::RunId;
-use hengst_core::game::CUT_MARKER;
 use hengst_core::gamelog::{Level, LogLine, LogTime, Stream};
+use std::ops::Range;
+
+/// A thread name longer than this is shortened in the live log (the view shows 16 characters;
+/// the copy and the launcher log file keep it whole).
+pub const THREAD_CHARS: usize = 256;
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
@@ -54,15 +58,30 @@ pub struct LogLineDto {
     pub message: String,
     pub stream: LogStreamDto,
     /// A raw output line of it was longer than 8 KiB and was cut; the message holds the core's
-    /// marker (`[line cut: longer than 8 KiB]`) where the cut is.
+    /// marker (`[line cut: longer than 8 KiB]`) where the cut is. The core's flag: a message that
+    /// merely quotes the marker is not cut.
     pub cut: bool,
+    /// A line too long for one batch comes in parts with the same `seq`: `part` counts from 0,
+    /// `more` is set on every part but the last. Only part 0 carries `time`, `level`, `thread`;
+    /// the UI appends the `message` of later parts to it. Parts are never dropped singly.
+    pub part: u32,
+    pub more: bool,
 }
 
 impl From<&LogLine> for LogLineDto {
     fn from(l: &LogLine) -> LogLineDto {
+        LogLineDto::piece(l, 0..l.message.len(), 0, false)
+    }
+}
+
+impl LogLineDto {
+    /// Part `part` of `l`: the bytes `range` of its message (on character boundaries). Part 0
+    /// carries time, level and thread; later parts carry only their piece of the message.
+    pub fn piece(l: &LogLine, range: Range<usize>, part: u32, more: bool) -> LogLineDto {
+        let head = part == 0;
         LogLineDto {
             seq: l.seq,
-            time: l.time.map(|t| match t {
+            time: l.time.filter(|_| head).map(|t| match t {
                 LogTime::UnixMillis(ms) => LogTimeDto::UnixMillis { ms },
                 LogTime::Clock {
                     hour,
@@ -74,7 +93,7 @@ impl From<&LogLine> for LogLineDto {
                     second,
                 },
             }),
-            level: l.level.map(|v| match v {
+            level: l.level.filter(|_| head).map(|v| match v {
                 Level::Fatal => LogLevelDto::Fatal,
                 Level::Error => LogLevelDto::Error,
                 Level::Warn => LogLevelDto::Warn,
@@ -82,13 +101,19 @@ impl From<&LogLine> for LogLineDto {
                 Level::Debug => LogLevelDto::Debug,
                 Level::Trace => LogLevelDto::Trace,
             }),
-            thread: l.thread.clone(),
-            message: l.message.clone(),
+            thread: l
+                .thread
+                .as_ref()
+                .filter(|_| head)
+                .map(|t| t.chars().take(THREAD_CHARS).collect()),
+            message: l.message[range].to_string(),
             stream: match l.stream {
                 Stream::Stdout => LogStreamDto::Stdout,
                 Stream::Stderr => LogStreamDto::Stderr,
             },
-            cut: l.message.contains(CUT_MARKER),
+            cut: l.cut,
+            part,
+            more,
         }
     }
 }
@@ -111,7 +136,9 @@ pub enum LogEnd {
 pub struct LogBatch {
     /// Hand it back with `log_ack` once the batch arrived: at most four batches with lines are on
     /// their way at a time, the next one waits for an ack (a page that stops reading gets nothing
-    /// more; what leaves the buffer meanwhile is counted in `dropped`).
+    /// more; what leaves the buffer meanwhile is counted in `dropped`). A batch's JSON stays below
+    /// 8 KiB, so Tauri hands it to the page at once and queues nothing; a longer line comes in
+    /// parts (`LogLineDto::part`).
     #[ts(type = "number")]
     pub ack: u64,
     pub run_id: RunId,
@@ -121,6 +148,17 @@ pub struct LogBatch {
     pub dropped: u64,
     pub lines: Vec<LogLineDto>,
     pub end: Option<LogEnd>,
+}
+
+/// The game of a held run, as the backend saw it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(tag = "state", rename_all = "camelCase")]
+pub enum LogRunStateDto {
+    /// The process has not exited yet (also while it is being stopped).
+    Running,
+    /// The process exited with `code` (-1 when unknown); `stopRequested` as in `LastExit`.
+    #[serde(rename_all = "camelCase")]
+    Ended { code: i32, stop_requested: bool },
 }
 
 /// A run whose log the app holds: the current one and the one before it.
@@ -140,6 +178,7 @@ pub struct LogRunDto {
     pub next_seq: u64,
     /// The game closed its output; no more lines come.
     pub closed: bool,
+    pub state: LogRunStateDto,
 }
 
 /// Which lines `log_copy` copies. The levels are the five groups of the log view's filter.

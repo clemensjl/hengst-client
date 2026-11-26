@@ -186,7 +186,7 @@ export const api = {
   /**
    * Streams the log of `runId` to `onBatch`: what the buffer holds from `sinceSeq` on (0: from the
    * oldest line), then new lines; `dropped` counts lines that left the buffer before they were sent,
-   * `end` closes the stream. Each batch with lines is acknowledged here as it arrives (also on a
+   * `end` closes the stream; a long line arrives in parts with one `seq` (append `part` > 0). Each batch with lines is acknowledged here as it arrives (also on a
    * channel a later attach replaced), so the backend sends the next one. A new attach replaces this
    * one; `logDetach` stops it. `invalidInput` (`runId`) when the run's log is not held any more.
    */

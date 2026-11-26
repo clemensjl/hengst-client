@@ -366,7 +366,7 @@ fn the_main_window_may_call_the_log_commands_with_small_arguments_only() {
     let state = app.state::<AppState>();
     state
         .log
-        .start_run(crate::dto::play::RunId(1), "9.9", 1, None);
+        .start_run(crate::dto::play::RunId(1), "9.9", 1, None, 0);
     for (cmd, body, field) in [
         (
             "log_attach",

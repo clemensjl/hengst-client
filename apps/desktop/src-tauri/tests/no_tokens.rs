@@ -242,6 +242,7 @@ async fn run_mock_play_with_token() -> Vec<String> {
                 if let Some(log) = log.upgrade() {
                     log.ack(ack);
                 }
+                Ok(())
             }),
         )
         .unwrap();

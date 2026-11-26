@@ -1,7 +1,7 @@
 use crate::dto::error::ErrorDto;
 use crate::dto::log::{LogBatch, LogCopyDto, LogFilter, LogRunDto};
 use crate::dto::play::RunId;
-use crate::events::EventSink;
+use crate::log::LogSink;
 use crate::state::AppState;
 use std::sync::Arc;
 use tauri::ipc::Channel;
@@ -23,9 +23,7 @@ pub async fn log_attach(
     since_seq: u64,
     channel: Channel<LogBatch>,
 ) -> Result<(), ErrorDto> {
-    let sink: EventSink<LogBatch> = Arc::new(move |b| {
-        let _ = channel.send(b);
-    });
+    let sink: LogSink = Arc::new(move |b| channel.send(b).map_err(|_| ()));
     state.log.attach(run_id, since_seq, sink)
 }
 

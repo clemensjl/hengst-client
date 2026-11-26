@@ -213,6 +213,7 @@ impl Game {
             code,
             stop_requested: run.stop_requested(),
         };
+        self.log.run_ended(run_id, code, last_exit.stop_requested);
         self.set(
             &mut inner,
             Phase::Idle {
@@ -529,8 +530,13 @@ impl PlayTask {
             let run_id = RunId(inner.last_run);
             let since = unix_millis();
             // Before `Running` is announced, so an attach that follows the state finds the run.
-            game.log
-                .start_run(run_id, &self.req.instance.id, since, process.log_path());
+            game.log.start_run(
+                run_id,
+                &self.req.instance.id,
+                since,
+                process.log_path(),
+                process.utc_offset(),
+            );
             let run = Run {
                 instance: self.req.instance.id.clone(),
                 run_id,

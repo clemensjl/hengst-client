@@ -1031,8 +1031,8 @@ mod tests {
         let outside = d.path().join("elsewhere.log");
         std::fs::write(&outside, "x").unwrap();
         let log = LiveLog::new();
-        log.start_run(RunId(1), "9.9", 1, Some(&file));
-        log.start_run(RunId(2), "9.9", 2, None);
+        log.start_run(RunId(1), "9.9", 1, Some(&file), 0);
+        log.start_run(RunId(2), "9.9", 2, None, 0);
         let found = resolve_game_log(&paths, &log, RunId(1)).unwrap();
         assert!(!found.to_string_lossy().starts_with("\\\\?\\"), "{found:?}");
         assert!(
@@ -1052,7 +1052,7 @@ mod tests {
                 resolve_game_log(&paths, &log, RunId(1)).unwrap_err()
             },
             {
-                log.start_run(RunId(3), "9.9", 3, Some(&outside));
+                log.start_run(RunId(3), "9.9", 3, Some(&outside), 0);
                 resolve_game_log(&paths, &log, RunId(3)).unwrap_err()
             },
         ];

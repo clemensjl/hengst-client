@@ -11,7 +11,9 @@ export type LogBatch = {
 /**
  * Hand it back with `log_ack` once the batch arrived: at most four batches with lines are on
  * their way at a time, the next one waits for an ack (a page that stops reading gets nothing
- * more; what leaves the buffer meanwhile is counted in `dropped`).
+ * more; what leaves the buffer meanwhile is counted in `dropped`). A batch's JSON stays below
+ * 8 KiB, so Tauri hands it to the page at once and queues nothing; a longer line comes in
+ * parts (`LogLineDto::part`).
  */
 ack: number, runId: RunId, 
 /**

@@ -62,6 +62,7 @@ pub const ALL_TYPES: &[Export] = &[
     log::LogLineDto::export_all,
     log::LogEnd::export_all,
     log::LogBatch::export_all,
+    log::LogRunStateDto::export_all,
     log::LogRunDto::export_all,
     log::LogFilter::export_all,
     log::LogCopyDto::export_all,
