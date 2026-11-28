@@ -142,7 +142,7 @@ pub fn save_settings(paths: &Paths, s: &Settings) -> Result<()> {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }
-    if let Err(e) = std::fs::rename(&tmp, &target) {
+    if let Err(e) = hengst_core::paths::replace_file(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }

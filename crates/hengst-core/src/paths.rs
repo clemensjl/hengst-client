@@ -145,12 +145,25 @@ pub(crate) async fn write_atomic(file: &Path, bytes: &[u8]) -> std::io::Result<(
 /// cancelled launch), so an abort never leaves this process's temp file behind, which
 /// `remove_stale_temps` would keep (it skips the own pid).
 pub(crate) async fn write_atomic_owned(file: PathBuf, bytes: Vec<u8>) -> std::io::Result<()> {
+    write_atomic_hooked(file, bytes, || {}).await
+}
+
+/// `write_atomic_owned` that calls `at_temp` on the blocking thread once the temp file is written,
+/// right before the rename (tests hold the write there).
+async fn write_atomic_hooked(
+    file: PathBuf,
+    bytes: Vec<u8>,
+    at_temp: impl FnOnce() + Send + 'static,
+) -> std::io::Result<()> {
     tokio::task::spawn_blocking(move || {
         if let Some(parent) = file.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let tmp = unique_temp(&file);
-        let result = std::fs::write(&tmp, &bytes).and_then(|()| std::fs::rename(&tmp, &file));
+        let result = std::fs::write(&tmp, &bytes).and_then(|()| {
+            at_temp();
+            replace_file(&tmp, &file)
+        });
         if result.is_err() {
             let _ = std::fs::remove_file(&tmp);
         }
@@ -158,6 +171,45 @@ pub(crate) async fn write_atomic_owned(file: PathBuf, bytes: Vec<u8>) -> std::io
     })
     .await
     .map_err(|e| std::io::Error::other(format!("the write task failed: {e}")))?
+}
+
+/// The pauses between the attempts of `replace_file`, under a second in all.
+const REPLACE_PAUSES: [std::time::Duration; 5] = [
+    std::time::Duration::from_millis(25),
+    std::time::Duration::from_millis(50),
+    std::time::Duration::from_millis(100),
+    std::time::Duration::from_millis(200),
+    std::time::Duration::from_millis(400),
+];
+
+/// Renames `from` over `to` (the last step of every atomic write). On Windows another program that
+/// has one of the two files open for a moment (a virus scanner or the search indexer, right after
+/// the file was written) makes the rename fail with "access denied", a sharing or a lock
+/// violation: those are tried again after each of `REPLACE_PAUSES`, then the error is returned.
+/// Blocks the calling thread for at most those pauses.
+pub fn replace_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    replace_with(&mut || std::fs::rename(from, to), &mut std::thread::sleep)
+}
+
+fn replace_with(
+    attempt: &mut dyn FnMut() -> std::io::Result<()>,
+    pause: &mut dyn FnMut(std::time::Duration),
+) -> std::io::Result<()> {
+    let mut pauses = REPLACE_PAUSES.iter();
+    loop {
+        match attempt() {
+            Err(e) if held_by_another_program(&e) => match pauses.next() {
+                Some(d) => pause(*d),
+                None => return Err(e),
+            },
+            other => return other,
+        }
+    }
+}
+
+/// `ERROR_ACCESS_DENIED`, `ERROR_SHARING_VIOLATION`, `ERROR_LOCK_VIOLATION`.
+fn held_by_another_program(e: &std::io::Error) -> bool {
+    cfg!(windows) && matches!(e.raw_os_error(), Some(5 | 32 | 33))
 }
 
 /// Whether `write_atomic_sync` may replace a file that is already there.
@@ -186,7 +238,7 @@ pub(crate) fn write_atomic_sync(
         f.sync_all()?;
         drop(f);
         match replace {
-            Replace::Always => std::fs::rename(&tmp, file),
+            Replace::Always => replace_file(&tmp, file),
             Replace::Never => match std::fs::hard_link(&tmp, file) {
                 Ok(()) => Ok(()),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Err(e),
@@ -317,50 +369,159 @@ pub(crate) fn validate_sha1(hash: &str) -> Result<()> {
 mod tests {
     use super::*;
 
-    /// A download task aborted (the play operation cancelled) while it writes: dropping the write
-    /// at any point leaves the finished file or nothing, never this process's temp file, which
-    /// `remove_stale_temps` would keep (own pid).
+    fn temps(dir: &Path) -> usize {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
+            .count()
+    }
+
+    /// A download task aborted (the play operation cancelled) while it writes: the write is
+    /// dropped exactly while its temp file exists (held there by the hook), and still ends with
+    /// the finished file and without this process's temp file, which `remove_stale_temps` would
+    /// keep (own pid).
     #[tokio::test(flavor = "multi_thread")]
-    async fn a_write_dropped_midway_leaves_no_temp_file() {
-        use std::future::Future;
-        use std::task::{Context, Poll};
-        let mut caught = 0;
-        for _ in 0..20 {
-            let dir = tempfile::tempdir().unwrap();
-            let file = dir.path().join("client.jar");
-            let temps = || {
-                std::fs::read_dir(dir.path())
-                    .unwrap()
-                    .flatten()
-                    .filter(|e| e.file_name().to_string_lossy().ends_with(".part"))
-                    .count()
-            };
-            let mut write = Box::pin(write_atomic(&file, &[7u8; 64 * 1024]));
-            let waker = futures::task::noop_waker();
-            let mut cx = Context::from_waker(&waker);
-            let start = std::time::Instant::now();
-            loop {
-                if let Poll::Ready(r) = write.as_mut().poll(&mut cx) {
-                    r.unwrap();
-                    break;
-                }
-                if temps() > 0 {
-                    caught += 1;
-                    break;
-                }
-                if start.elapsed() > std::time::Duration::from_secs(5) {
-                    break;
-                }
-                std::thread::sleep(std::time::Duration::from_micros(200));
-            }
-            // The abort.
-            drop(write);
-            // Whatever was started on a blocking thread settles.
-            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            assert_eq!(temps(), 0, "a temp file was left behind");
+    async fn a_write_dropped_while_its_temp_file_exists_still_finishes_and_leaves_no_temp() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("client.jar");
+        let (at_temp, temp_written) = std::sync::mpsc::channel();
+        let (go, wait_for_go) = std::sync::mpsc::channel::<()>();
+        let write = tokio::spawn(write_atomic_hooked(
+            file.clone(),
+            vec![7u8; 64 * 1024],
+            move || {
+                at_temp.send(()).unwrap();
+                wait_for_go.recv().unwrap();
+            },
+        ));
+        tokio::task::spawn_blocking(move || temp_written.recv().unwrap())
+            .await
+            .unwrap();
+        assert_eq!(temps(dir.path()), 1, "held with its temp file written");
+        // The abort, while the blocking part waits with the temp file in place.
+        write.abort();
+        assert!(write.await.unwrap_err().is_cancelled());
+        go.send(()).unwrap();
+        // The blocking part goes on by itself; the finished file appears in one rename.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+        while !file.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the write never ended"
+            );
+            tokio::task::yield_now().await;
         }
-        // Not vacuous: some rounds dropped the write while its temp file existed.
-        assert!(caught > 0, "no round caught the write midway");
+        assert_eq!(std::fs::read(&file).unwrap().len(), 64 * 1024);
+        assert_eq!(temps(dir.path()), 0, "a temp file was left behind");
+    }
+
+    #[tokio::test]
+    async fn a_write_dropped_before_it_starts_writes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("client.jar");
+        drop(write_atomic(&file, b"x"));
+        assert!(std::fs::read_dir(dir.path()).unwrap().next().is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_replace_tries_again_while_another_program_holds_the_file_then_gives_up() {
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (
+            dir.path().join("new.part"),
+            dir.path().join("instance.json"),
+        );
+        std::fs::write(&from, b"new").unwrap();
+        // Held twice, then free: two pauses, then the replace.
+        let mut tries = 0;
+        let mut pauses = Vec::new();
+        replace_with(
+            &mut || {
+                tries += 1;
+                if tries <= 2 {
+                    Err(std::io::Error::from_raw_os_error(32))
+                } else {
+                    std::fs::rename(&from, &to)
+                }
+            },
+            &mut |d| pauses.push(d),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), b"new");
+        assert_eq!(pauses, REPLACE_PAUSES[..2]);
+        // Held for good: every pause, then the error; the whole wait stays short.
+        for code in [5, 32, 33] {
+            let mut pauses = Vec::new();
+            let err = replace_with(
+                &mut || Err(std::io::Error::from_raw_os_error(code)),
+                &mut |d| pauses.push(d),
+            )
+            .unwrap_err();
+            assert_eq!(err.raw_os_error(), Some(code));
+            assert_eq!(pauses, REPLACE_PAUSES);
+        }
+        assert!(
+            REPLACE_PAUSES.iter().sum::<std::time::Duration>() < std::time::Duration::from_secs(1)
+        );
+        // Any other error is final at once.
+        let mut pauses = Vec::new();
+        let err = replace_with(
+            &mut || Err(std::io::Error::from(std::io::ErrorKind::NotFound)),
+            &mut |d| pauses.push(d),
+        )
+        .unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+        assert!(pauses.is_empty());
+    }
+
+    /// The flake this fixes: a program that opens the target without delete sharing (as a virus
+    /// scanner may right after a file was written) makes a plain rename over it fail with
+    /// "access denied"; `replace_file` waits it out.
+    #[cfg(windows)]
+    #[test]
+    fn a_replace_waits_for_a_reader_without_delete_sharing() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE};
+        let dir = tempfile::tempdir().unwrap();
+        let (from, to) = (
+            dir.path().join("new.part"),
+            dir.path().join("instance.json"),
+        );
+        std::fs::write(&from, b"new").unwrap();
+        std::fs::write(&to, b"old").unwrap();
+        let open = || {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .open(&to)
+                .unwrap()
+        };
+        let held = open();
+        let err = std::fs::rename(&from, &to).unwrap_err();
+        assert_eq!(err.raw_os_error(), Some(5), "{err}");
+        let mut held = Some(held);
+        let mut pauses = 0;
+        replace_with(&mut || std::fs::rename(&from, &to), &mut |_| {
+            pauses += 1;
+            // The other program closes the file during the first pause.
+            held.take();
+        })
+        .unwrap();
+        assert_eq!(pauses, 1);
+        assert_eq!(std::fs::read(&to).unwrap(), b"new");
+        assert!(!from.exists());
+        // Through the real entry point, with a reader that never lets go: the error after the
+        // bounded wait.
+        std::fs::write(&from, b"newer").unwrap();
+        let _held = open();
+        let started = std::time::Instant::now();
+        assert_eq!(
+            replace_file(&from, &to).unwrap_err().raw_os_error(),
+            Some(5)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        assert_eq!(std::fs::read(&to).unwrap(), b"new");
     }
 
     #[test]

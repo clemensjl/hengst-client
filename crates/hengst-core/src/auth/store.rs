@@ -198,7 +198,7 @@ impl<S: SecretStore> AccountStore<S> {
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
         std::fs::write(&tmp, serde_json::to_vec_pretty(file)?)?;
-        std::fs::rename(&tmp, &self.file)?;
+        crate::paths::replace_file(&tmp, &self.file)?;
         Ok(())
     }
 

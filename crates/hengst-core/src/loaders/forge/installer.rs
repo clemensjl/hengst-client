@@ -300,7 +300,11 @@ fn extract_entry<R: Read + Seek>(
         Err(e) => Err(e.into()),
     };
     // Every failure, also of the check or the rename, removes the temp file.
-    match result.and_then(|n| std::fs::rename(&tmp, dest).map(|()| n).map_err(Error::from)) {
+    match result.and_then(|n| {
+        crate::paths::replace_file(&tmp, dest)
+            .map(|()| n)
+            .map_err(Error::from)
+    }) {
         Ok(n) => {
             *budget += n;
             Ok(n)

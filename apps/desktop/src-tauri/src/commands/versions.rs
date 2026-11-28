@@ -180,7 +180,9 @@ mod tests {
     }
 
     async fn serve(body: ResponseTemplate) -> MockServer {
-        let server = MockServer::start().await;
+        // A server of its own: a pooled one (`MockServer::start`) is handed to the next test after
+        // a reset, and a request still on its way from an earlier test would count there.
+        let server = MockServer::builder().start().await;
         Mock::given(method("GET"))
             .respond_with(body)
             .mount(&server)
@@ -195,14 +197,19 @@ mod tests {
         url
     }
 
+    /// Waits for a background refresh to show its effect. Generous on purpose: a refused
+    /// connection to a closed local port alone takes about 2 s on Windows, and a loaded test run
+    /// is slower still. Measured by the clock, not by a number of sleeps (whose length depends on
+    /// the system timer resolution).
     async fn wait_until(mut done: impl FnMut() -> bool) {
-        for _ in 0..200 {
-            if done() {
-                return;
-            }
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !done() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "condition not met within 30 s"
+            );
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
-        panic!("condition not met within 2 s");
     }
 
     fn data_changed() -> AppEvent {

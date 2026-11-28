@@ -591,7 +591,7 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
     tmp.push(".part");
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, marker)?;
+    crate::paths::replace_file(&tmp, marker)?;
     Ok(())
 }
 
