@@ -64,11 +64,20 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: apps/desktop/.nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm -C apps/desktop install --frozen-lockfile
       - run: pnpm -C apps/desktop typecheck
+      # Includes licenses.test.ts: it hashes the lock files, about.toml and the generator, so a stale
+      # third-party license list fails here without cargo-about on the runner.
       - run: pnpm -C apps/desktop test
       - run: pnpm -C apps/desktop format:check
       - run: pnpm -C apps/desktop build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The app as `tauri build` makes it (frontend from beforeBuildCommand, custom-protocol), debug,
+      # without installers. Output stays in target/, which is git-ignored; the app is not started.
+      - run: pnpm -C apps/desktop tauri build --debug --no-bundle
 
   prepare-matrix:
     # Hits live third-party services and "latest" moves upstream: weekly and on demand only.

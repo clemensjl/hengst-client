@@ -37,9 +37,13 @@ Frontend checks:
     pnpm -C apps/desktop test
     pnpm -C apps/desktop format:check
 
+CI also builds the app once (`pnpm -C apps/desktop tauri build --debug --no-bundle`; it is not started).
+
 ### End-to-end tests
 
 The suite in `apps/desktop/e2e` drives the real app through WebDriver ([tauri-driver](https://v2.tauri.app/develop/tests/webdriver/) and Microsoft Edge WebDriver). It only tests debug builds with the `e2e` feature: every service is the local mock `hengst-mock`, secrets stay in memory, and each spec file runs on its own fresh data folder in `%TEMP%` (`HENGST_HOME`). No Microsoft or Mojang server is contacted. Every run of `instances.e2e.ts` leaves a test instance folder `9.9-fabric` in the Recycle Bin.
+
+CI does not run this suite: the Edge WebDriver must match the WebView2 runtime of the machine, which a hosted runner does not pin. Run it locally before a pull request that changes the desktop app.
 
 One-time setup (tauri-driver, and the Edge WebDriver that matches the installed WebView2 runtime, saved to the git-ignored `apps/desktop/e2e/.driver/`):
 
