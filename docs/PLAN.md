@@ -226,7 +226,7 @@ Stand 21.11.2026: Phase 3 (Loader) umgesetzt: `hengst launch --loader` und `heng
 
 **Wie geprüft:**
 
-- Automatisch: Rust-Tests des Workspace (861 mit allen Features, Dienste gemockt, `fake-java` statt Java), 860 Frontend-Tests (Vitest), Clippy und Formatprüfung. Das sind Tests gegen Mocks, keine Prüfung am echten Fenster.
+- Automatisch: Rust-Tests des Workspace (870 mit allen Features, Dienste gemockt, `fake-java` statt Java), 878 Frontend-Tests (Vitest), Clippy und Formatprüfung. Das sind Tests gegen Mocks, keine Prüfung am echten Fenster.
 - E2E über WebDriver gegen die echte App mit `hengst-mock`: die fünf Spec-Dateien der Phase 4a (16 Tests, Konten, Anmeldung, Instanzen) liefen am 23.11. grün, auf dem Stand vor 4b.
 - In der echten App auf dem unsichtbaren Agent-Desktop angesehen: Anmeldeabläufe gegen den Mock, Instanzen anlegen, Startseite in ihren Ruhezuständen, Logansicht leer, Öffnen einer Logdatei. Aus der App wurde noch **kein Spiel gestartet**; Vorbereiten, Laufen und Beenden kennen nur die Tests.
 - Neue E2E-Specs aus Task 22 (Spielen mit `fake-java`, Live-Log unter Last, Einstellungen mit Neustart, Infobereich und Beenden, Laufsperre nach einem beendeten Launcher, Java auf einer Netzwerkfreigabe) sind geschrieben und typgeprüft, aber **noch nicht gelaufen**.
