@@ -396,12 +396,23 @@ function Advanced({ forced, children }: { forced: boolean; children: ReactNode }
     if (forced) setChosen(true);
   }, [forced]);
   const open = chosen || forced;
+  const reasonId = useId();
   return (
     <Collapsible open={open} onOpenChange={(next) => setChosen(next || forced)} className="mt-4">
-      <CollapsibleTrigger render={<Button variant="ghost" />}>
+      {/* While forced the trigger does nothing: aria-disabled with its reason (DESIGN.md 10.0). */}
+      <CollapsibleTrigger
+        render={<Button variant="ghost" />}
+        aria-disabled={forced || undefined}
+        aria-describedby={forced ? reasonId : undefined}
+      >
         {t("settings.advanced")}
         {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
       </CollapsibleTrigger>
+      {forced && (
+        <span id={reasonId} className="sr-only">
+          {t("settings.advancedOpenReason")}
+        </span>
+      )}
       <CollapsibleContent className="mt-4">{children}</CollapsibleContent>
     </Collapsible>
   );

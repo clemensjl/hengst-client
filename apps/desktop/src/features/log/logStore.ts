@@ -476,25 +476,39 @@ let generation = 0;
 // is the last one done. A call that is no longer the newest by the time its turn comes is not
 // sent at all (StrictMode's effect, cleanup, effect sends one attach). A call that does not settle
 // within `CALL_TIMEOUT_MS` counts as failed, so it cannot hold up the calls after it for good.
+// If it settles after all, it may have finished after a newer call in the backend (and an attach
+// then feeds its old channel): `resend` sends the newest wish once more, so it is the last call
+// done again.
 let chain: Promise<unknown> = Promise.resolve();
 const CALL_TIMEOUT_MS = 10_000;
 function bounded<T>(call: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(
-      () => reject(new Error(`no answer from the backend within ${CALL_TIMEOUT_MS} ms`)),
-      CALL_TIMEOUT_MS,
-    );
+    let late = false;
+    const timer = setTimeout(() => {
+      late = true;
+      reject(new Error(`no answer from the backend within ${CALL_TIMEOUT_MS} ms`));
+    }, CALL_TIMEOUT_MS);
+    const settled = () => {
+      clearTimeout(timer);
+      if (late) resend();
+    };
     call.then(
       (value) => {
-        clearTimeout(timer);
+        settled();
         resolve(value);
       },
       (e: unknown) => {
-        clearTimeout(timer);
+        settled();
         reject(e);
       },
     );
   });
+}
+/** A stream is wanted: attach to its run again; otherwise detach. */
+function resend() {
+  const a = useLog.getState().attach;
+  if (a.status === "attaching" || a.status === "live") attachTo(a.runId);
+  else detach();
 }
 function enqueue<T>(call: () => Promise<T> | undefined): Promise<T | undefined> {
   const next = chain.then(() => {

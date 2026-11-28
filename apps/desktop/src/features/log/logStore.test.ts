@@ -461,6 +461,40 @@ describe("the stream", () => {
       vi.useRealTimers();
     }
   });
+
+  it("a timed-out attach that answers after the retry is followed by the newest call again", async () => {
+    vi.useFakeTimers();
+    try {
+      let release!: () => void;
+      attachGate = new Promise((r) => (release = r));
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(useLog.getState().attach).toMatchObject({ status: "failed", runId: 7 });
+      attachGate = null;
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+      // The first call answers late: in the backend it finished last and feeds its old channel.
+      // The view sends its attach once more, so the newest call is the last one done.
+      release();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls.filter((c) => c[0] === "log_attach")).toHaveLength(3);
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+      // Without a stream wanted, a late answer is followed by a detach instead.
+      let late!: () => void;
+      attachGate = new Promise((r) => (late = r));
+      attachTo(8);
+      await vi.advanceTimersByTimeAsync(10_000);
+      detach();
+      await vi.advanceTimersByTimeAsync(1);
+      const before = calls.filter((c) => c[0] === "log_detach").length;
+      late();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls.filter((c) => c[0] === "log_detach").length).toBe(before + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("copy and open", () => {

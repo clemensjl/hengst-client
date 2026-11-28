@@ -359,6 +359,10 @@ describe("Java", () => {
     view();
     const advanced = screen.getByRole("button", { name: "Advanced" });
     expect(advanced.getAttribute("aria-expanded")).toBe("true");
+    // DESIGN.md 10.0: the trigger does nothing now, so it is aria-disabled and names why.
+    expect(advanced.getAttribute("aria-disabled")).toBe("true");
+    const reason = document.getElementById(advanced.getAttribute("aria-describedby")!)!;
+    expect(reason.textContent).toBe("Stays open while the stored Java path cannot be used.");
     expect(screen.getByText("D:\\gone\\java.exe")).toBeTruthy();
     expect(screen.getByText("This file no longer exists.")).toBeTruthy();
     // A click on the trigger does not hide the reason.
@@ -370,6 +374,10 @@ describe("Java", () => {
     expect(screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-expanded")).toBe(
       "true",
     );
+    // Fixed: the trigger works again.
+    expect(
+      screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-disabled"),
+    ).toBeNull();
   });
 
   it("is closed on arrival when the stored path is fine", () => {

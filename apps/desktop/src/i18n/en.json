@@ -23,6 +23,7 @@
   "settings.memory.range": "Choose a value between {{min}} and {{max}} MB.",
   "settings.memory.aboveInstalled": "More than installed. The game may not start.",
   "settings.advanced": "Advanced",
+  "settings.advancedOpenReason": "Stays open while the stored Java path cannot be used.",
   "settings.java.label": "Java (optional)",
   "settings.java.automatic": "Automatic, matching the game version",
   "settings.java.choose": "Choose Java…",
