@@ -40,6 +40,28 @@ pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error
         .await
 }
 
+/// The profile folder (`<target>/debug`) above a test executable. Cargo puts tests into
+/// `<profile>/deps/` or, in newer versions, into `<profile>/build/<package>/<hash>/out/`; a
+/// binary lies right in the profile folder.
+fn profile_folder(exe: &std::path::Path) -> std::path::PathBuf {
+    let folder = exe.parent().expect("a folder");
+    let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    if named(folder, "deps") {
+        if let Some(profile) = folder.parent() {
+            return profile.to_path_buf();
+        }
+    }
+    if named(folder, "out") {
+        // out -> <hash> -> <package> -> build -> <profile>
+        if let Some(build) = folder.ancestors().nth(3).filter(|p| named(p, "build")) {
+            if let Some(profile) = build.parent() {
+                return profile.to_path_buf();
+            }
+        }
+    }
+    folder.to_path_buf()
+}
+
 /// The `fake-java` binary of this crate, for tests of other crates (only this crate's own tests
 /// get `CARGO_BIN_EXE_fake-java`). It is looked for in the profile folder of the running test
 /// executable (`<target>/debug`, where `cargo test --workspace` puts it); when it is missing or
@@ -52,11 +74,7 @@ pub fn fake_java() -> std::path::PathBuf {
     static PATH: OnceLock<PathBuf> = OnceLock::new();
     PATH.get_or_init(|| {
         let exe = std::env::current_exe().expect("the test executable's path");
-        // `<target>/debug/deps/<test>.exe` (unit and integration tests) or `<target>/debug/<x>.exe`.
-        let mut profile = exe.parent().expect("a folder").to_path_buf();
-        if profile.file_name().is_some_and(|n| n == "deps") {
-            profile.pop();
-        }
+        let profile = profile_folder(&exe);
         let bin = profile.join(format!("fake-java{}", std::env::consts::EXE_SUFFIX));
         let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/fake-java.rs");
         let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
@@ -176,6 +194,22 @@ mod tests {
     use hengst_core::paths::Paths;
     use hengst_core::Error;
     use std::time::Duration;
+
+    #[test]
+    fn the_profile_folder_is_found_in_both_cargo_layouts() {
+        use std::path::Path;
+        let profile = Path::new("t").join("debug");
+        // Tests of older cargo versions: `<profile>/deps/<test>.exe`.
+        assert_eq!(profile_folder(&profile.join("deps").join("x.exe")), profile);
+        // Tests of newer cargo versions: `<profile>/build/<package>/<hash>/out/<test>.exe`.
+        let new_layout = profile.join("build").join("pkg").join("0a1b").join("out");
+        assert_eq!(profile_folder(&new_layout.join("x.exe")), profile);
+        // A binary or example right in the profile folder.
+        assert_eq!(profile_folder(&profile.join("x.exe")), profile);
+        // A folder that only happens to be called `out` is no build output folder.
+        let other = Path::new("t").join("a").join("b").join("c").join("out");
+        assert_eq!(profile_folder(&other.join("x.exe")), other);
+    }
 
     fn pages() -> BrowserLoginPages {
         BrowserLoginPages {
