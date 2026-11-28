@@ -287,13 +287,15 @@ export function focusedName(): Promise<string> {
 
 /**
  * The single displayed element with this role and accessible name (`singleByRole`), waited for;
- * with `within` only inside the first element that CSS selector matches.
+ * with `within` only inside the first element that CSS selector matches. `interval` is the poll
+ * interval in ms (WebdriverIO's default otherwise), short where a click must follow a change fast.
  */
 export async function byRole(
   role: string,
   name: string,
   timeout?: number,
   within?: string,
+  interval?: number,
 ): Promise<WebdriverIO.Element> {
   let found: unknown = null;
   await browser.waitUntil(
@@ -303,6 +305,7 @@ export async function byRole(
     },
     {
       timeout,
+      interval,
       timeoutMsg: `no single displayed ${role} named "${name}"${within ? ` in ${within}` : ""}`,
     },
   );

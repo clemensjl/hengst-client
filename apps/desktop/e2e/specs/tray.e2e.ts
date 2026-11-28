@@ -110,13 +110,17 @@ describe("tray and quit", () => {
     expect(alive(pid)).toBe(true);
     await expect(caption()).toHaveText(expect.stringContaining("Running since"));
 
-    // Again, and this time "Stop game and quit" by double click: the second click must not turn
-    // into a force stop (the button ignores clicks for 600 ms after it changes).
+    // Again, and this time a double click on "Stop game and quit": its second click must not turn
+    // into a force stop (the button ignores clicks for 600 ms after it changes). WebDriver's
+    // `doubleClick` sends both clicks before the stop is answered, so the second would hit the old
+    // button: it is sent as soon as "Force stop and quit" shows (polled every 50 ms).
     appRequest("tray-quit");
     await expect(alertDialog()).toBeDisplayed();
     const runsBefore = gameLogs().length;
-    await alertDialog().$("button=Stop game and quit").doubleClick();
-    await expect(alertDialog().$("button=Force stop and quit")).toBeDisplayed();
+    await alertDialog().$("button=Stop game and quit").click();
+    const force = alertDialog().$("button=Force stop and quit");
+    await force.waitForDisplayed({ timeout: 15_000, interval: 50 });
+    await force.click();
     await browser.pause(1500);
     // The second click was ignored: the game still runs, the app too, the question stays.
     expect(alive(pid)).toBe(true);

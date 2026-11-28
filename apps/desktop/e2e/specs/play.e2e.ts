@@ -62,7 +62,8 @@ describe("playing", () => {
     // reach the guard: the second click is sent as soon as the label reads "Play" again.
     const cancel = await mainButton("Cancel", 10_000);
     await cancel.click();
-    const again = await mainButton("Play", 15_000);
+    // Polled every 50 ms, so the click comes well inside the 600 ms.
+    const again = await mainButton("Play", 15_000, 50);
     await again.click();
     await waitReady(15_000);
     await browser.pause(1500);

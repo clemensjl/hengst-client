@@ -14,8 +14,8 @@ export async function openView(name: ViewName | string) {
 }
 
 /** A button of the view (not the sidebar's or the header's button of the same name). */
-export const mainButton = (name: string, timeout?: number) =>
-  byRole("button", name, timeout, "main");
+export const mainButton = (name: string, timeout?: number, interval?: number) =>
+  byRole("button", name, timeout, "main", interval);
 
 /** The line above the Play button: "Running since …" while a game runs. */
 export const caption = () => $('[data-slot="play-caption"]');
