@@ -10,6 +10,7 @@ import { account } from "@/test/fakeBackend";
 import { instance } from "@/test/instancesBackend";
 import { IDLE, mira, playBackend } from "@/test/playBackend";
 import { AccountChip } from "@/features/accounts/AccountChip";
+import { resetLog, useLog } from "@/features/log/logStore";
 import { PlayView } from "./PlayView";
 
 const initial = useApp.getState();
@@ -324,6 +325,28 @@ describe("start page", () => {
     fireEvent.click(playButton());
     await flush();
     expect(b.count("game_stop")).toBe(1);
+  });
+});
+
+describe("Show log (DESIGN.md 10.2, 11.8)", () => {
+  beforeEach(resetLog);
+
+  it("the unexpected-exit panel opens the log of that run", async () => {
+    const b = await setup({ game: running(4) });
+    act(() => b.state(exited(3, false, 4)));
+    const panel = screen.getByRole("alert");
+    fireEvent.click(within(panel).getByRole("button", { name: "Show log" }));
+    expect(useApp.getState().view).toBe("log");
+    expect(useLog.getState().chosen).toBe(4);
+  });
+
+  it("the running state offers Show log for the running game, other states do not", async () => {
+    const b = await setup({ game: running(6) });
+    fireEvent.click(screen.getByRole("button", { name: "Show log" }));
+    expect(useApp.getState().view).toBe("log");
+    expect(useLog.getState().chosen).toBe(6);
+    act(() => b.state(exited(0, false, 6)));
+    expect(screen.queryByRole("button", { name: "Show log" })).toBeNull();
   });
 });
 

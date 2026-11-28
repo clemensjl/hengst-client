@@ -1,7 +1,7 @@
 import type { Plugin } from "vite";
 
 /**
- * The dev-only galleries (`src/dev/ErrorGallery.tsx`, `src/dev/SignInGallery.tsx`) must not be in a production bundle. Its
+ * The dev-only galleries (`src/dev/ErrorGallery.tsx`, `src/dev/SignInGallery.tsx`, `src/dev/LogGallery.tsx`) must not be in a production bundle. Its
  * name, its hash and its sample text are searched for in the output of every build; a hit fails the
  * build, so the check does not depend on the order of the CI steps.
  */
@@ -12,6 +12,9 @@ export const GALLERY_MARKERS = [
   "sign-in-gallery",
   "SignInGallery",
   "gallery sample:",
+  "log-gallery",
+  "LogGallery",
+  "log gallery",
 ] as const;
 
 /** `file: marker` for every marker found in the named outputs. */

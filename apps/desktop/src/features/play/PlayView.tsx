@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorPanel } from "@/features/errors/ErrorPanel";
+import { useLog } from "@/features/log/logStore";
 import { useCreateDialogHost } from "@/features/instances/CreateDialogHost";
 import { lastPlayedText, loaderText } from "@/features/instances/format";
 import { effectiveSelection } from "@/features/instances/selection";
@@ -259,6 +260,12 @@ export function PlayView() {
     }
   };
 
+  // DESIGN.md 10.2 and 11.8: the log view with this run chosen.
+  const showLog = (run: number) => {
+    useLog.getState().choose(run);
+    app().setView("log");
+  };
+
   const onErrorAction = (a: ErrorAction) => {
     if (a.kind === "signIn") app().openSignIn(null, buttonRef.current);
     if (a.kind === "openSettings") app().setView("settings");
@@ -365,6 +372,11 @@ export function PlayView() {
             {t("play.noWindow")}
           </p>
         )}
+        {runId !== null && state.kind === "running" && (
+          <Button variant="link" className="self-start" onClick={() => showLog(runId)}>
+            {t("play.showLog")}
+          </Button>
+        )}
         {(state.kind === "starting" || state.kind === "preparing") && (
           <ProgressPanel progress={launch?.progress ?? null} />
         )}
@@ -383,6 +395,7 @@ export function PlayView() {
             <ErrorPanel
               error={{ code: "internal", params: {}, action: null, detail: "" }}
               copy={{ title: t("play.exit.title"), body: t("play.exit.body") }}
+              extraAction={{ label: t("play.showLog"), onClick: () => showLog(exit.runId) }}
               dismiss={{
                 label: t("play.exit.dismiss"),
                 onClick: () => app().dismissExit(exit.runId),

@@ -117,6 +117,28 @@ function DropdownMenuRadioItem({ className, children, ...props }: MenuPrimitive.
   );
 }
 
+/**
+ * A checkbox inside a menu (DESIGN.md 10.13 "Stufen"): the 20 px box of 10.8, with its
+ * --surface-raised interior also on a highlighted item, then the label. Toggling keeps the menu
+ * open, so several items can be changed in one go.
+ */
+function DropdownMenuCheckboxItem({ className, children, ...props }: MenuPrimitive.CheckboxItem.Props) {
+  return (
+    <MenuPrimitive.CheckboxItem
+      data-slot="dropdown-menu-checkbox-item"
+      className={cn(item, "group", className)}
+      {...props}
+    >
+      <span className="checkbox-box flex size-5 shrink-0 items-center justify-center border border-input bg-secondary text-background group-data-checked:border-foreground group-data-checked:bg-foreground">
+        <MenuPrimitive.CheckboxItemIndicator>
+          <CheckIcon aria-hidden="true" />
+        </MenuPrimitive.CheckboxItemIndicator>
+      </span>
+      {children}
+    </MenuPrimitive.CheckboxItem>
+  );
+}
+
 function DropdownMenuSeparator({ className, ...props }: MenuPrimitive.Separator.Props) {
   return (
     <MenuPrimitive.Separator
@@ -129,6 +151,7 @@ function DropdownMenuSeparator({ className, ...props }: MenuPrimitive.Separator.
 
 export {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuRadioGroup,

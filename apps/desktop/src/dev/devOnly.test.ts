@@ -40,6 +40,25 @@ describe("the galleries are dev-server pages", () => {
     expect(main).not.toMatch(/^import .*SignInGallery/m);
   });
 
+  it("only main.tsx loads the log gallery, by dynamic import, behind import.meta.env.DEV and the hash", () => {
+    expect(loaders("LogGallery")).toEqual(["main.tsx"]);
+    expect(main).toMatch(
+      /else if \(import\.meta\.env\.DEV && location\.hash\.startsWith\("#log-gallery"\)\) \{\s*void import\("@\/dev\/LogGallery"\)/,
+    );
+    expect(main).not.toMatch(/^import .*LogGallery/m);
+    const plugin = readFileSync(
+      path.resolve(import.meta.dirname, "../../vite-plugins/noDevGallery.ts"),
+      "utf8",
+    );
+    for (const marker of ["log-gallery", "LogGallery", "log gallery"]) {
+      expect(plugin).toContain(`"${marker}"`);
+    }
+    // Every sample message of the log gallery carries the marker the build searches for.
+    const gallery = readFileSync(path.join(SRC, "dev/LogGallery.tsx"), "utf8");
+    const samples = [...gallery.matchAll(/return [`"]([^`"]*)/g)].map((m) => m[1]);
+    expect(samples.filter((s) => s.startsWith("log gallery")).length).toBeGreaterThan(4);
+  });
+
   it("the sign-in gallery's markers are among those the build searches for", () => {
     const plugin = readFileSync(
       path.resolve(import.meta.dirname, "../../vite-plugins/noDevGallery.ts"),

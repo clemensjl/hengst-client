@@ -41,6 +41,7 @@ describe.each([
     expect(items.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
       "Spielen",
       "Instanzen",
+      "Log",
       "Einstellungen",
     ]);
     expect(items.filter((b) => b.getAttribute("aria-current") === "page")).toHaveLength(1);

@@ -39,6 +39,26 @@ function SelectTrigger({ className, children, ...props }: SelectPrimitive.Trigge
   );
 }
 
+/**
+ * DESIGN.md 10.15 ghost select (only the log run switcher): no border or fill, 14/20 --text,
+ * --hover on hover, 40 px high; the text truncates, the chevron stays.
+ */
+function SelectGhostTrigger({ className, children, ...props }: SelectPrimitive.Trigger.Props) {
+  return (
+    <SelectPrimitive.Trigger
+      data-slot="select-ghost-trigger"
+      className={cn(
+        "group inline-flex h-10 max-w-full min-w-0 items-center gap-2 rounded-md px-3 text-small text-foreground select-none hover:bg-hover data-disabled:text-text-disabled data-popup-open:bg-selected",
+        className,
+      )}
+      {...props}
+    >
+      {children}
+      <TriggerChevron />
+    </SelectPrimitive.Trigger>
+  );
+}
+
 function SelectValue({ className, ...props }: SelectPrimitive.Value.Props) {
   return (
     <SelectPrimitive.Value
@@ -97,6 +117,7 @@ const SelectItemText = SelectPrimitive.ItemText;
 export {
   Select,
   SelectContent,
+  SelectGhostTrigger,
   SelectItem,
   SelectItemText,
   SelectTrigger,
