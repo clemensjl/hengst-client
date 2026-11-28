@@ -154,11 +154,30 @@ pub async fn commit_settled(ops: &crate::accounts::Operations) {
     }
 }
 
-/// Whether a start is committing right now (see `on_close_requested`).
-pub fn committing<R: Runtime>(app: &AppHandle<R>) -> bool {
-    app.state::<AppState>()
-        .operations
-        .has_committing(crate::accounts::OpKind::Play)
+/// The game state and whether a start is committing (see `on_close_requested`), the flag read
+/// first. `PlayTask::running` clears the flag and sets `Running` in one critical section of the
+/// game lock, and `Game::state` takes that lock: so a flag read as clear means the state read
+/// after it already shows a game that has started. Read the other way round, a start that
+/// finishes in between looks like `Preparing` with nothing committing, and the app would quit
+/// without asking or close instead of hiding to the tray.
+pub fn snapshot(
+    committing: impl FnOnce() -> bool,
+    state: impl FnOnce() -> GameStateDto,
+) -> (GameStateDto, bool) {
+    let committing = committing();
+    (state(), committing)
+}
+
+/// `snapshot` of the app.
+pub fn game_snapshot(state: &AppState) -> (GameStateDto, bool) {
+    snapshot(
+        || {
+            state
+                .operations
+                .has_committing(crate::accounts::OpKind::Play)
+        },
+        || state.game.state(),
+    )
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,8 +355,8 @@ pub fn exit_app<R: Runtime>(app: &AppHandle<R>) {
 
 /// "Quit" from the tray: asks first while a game runs, otherwise quits.
 pub(crate) fn quit<R: Runtime>(app: &AppHandle<R>) {
-    let state = app.state::<AppState>().game.state();
-    match on_quit(&state, committing(app)) {
+    let (state, committing) = game_snapshot(&app.state::<AppState>());
+    match on_quit(&state, committing) {
         QuitAction::Confirm => {
             show_window(app, true);
             // Waits for the page if it is reloading right now.
@@ -574,6 +593,27 @@ mod tests {
     /// A start in its commit window (the process is being created, the state still says
     /// `Preparing`) counts as a game: closing or quitting then waits for `Running` or the failure
     /// instead of ending the launcher mid-spawn.
+    /// The commit flag is read before the state: `PlayTask::running` clears the flag and sets
+    /// `Running` in one critical section of the game lock, so this order never sees `Preparing`
+    /// with nothing committing for a game that already runs.
+    #[test]
+    fn the_snapshot_reads_committing_before_the_state() {
+        let order = std::cell::RefCell::new(Vec::new());
+        let (state, committing) = snapshot(
+            || {
+                order.borrow_mut().push("committing");
+                true
+            },
+            || {
+                order.borrow_mut().push("state");
+                preparing()
+            },
+        );
+        assert_eq!(*order.borrow(), ["committing", "state"]);
+        assert!(committing);
+        assert_eq!(state, preparing());
+    }
+
     #[test]
     fn close_and_quit_wait_while_a_start_is_committing() {
         assert_eq!(on_close_requested(&preparing(), true), CloseAction::Wait);

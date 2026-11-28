@@ -39,13 +39,9 @@ fn installed_memory_mb() -> Option<u32> {
 /// Whether `app_quit` may quit now: no game process exists and none is being created (a start
 /// still being prepared is cancelled by the quit).
 pub fn app_quit_allowed(state: &AppState) -> bool {
-    let game = state.game.state();
-    crate::tray::quit_allowed(
-        &game,
-        state
-            .operations
-            .has_committing(crate::accounts::OpKind::Play),
-    )
+    // The commit flag before the state (`tray::snapshot` says why).
+    let (game, committing) = crate::tray::game_snapshot(state);
+    crate::tray::quit_allowed(&game, committing)
 }
 
 /// Quits the app, the end of the quit dialog (DESIGN.md 11.11) once the game has exited. `false`

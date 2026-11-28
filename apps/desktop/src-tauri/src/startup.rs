@@ -344,16 +344,18 @@ fn create_window(
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
                 use crate::tray::CloseAction;
-                let state = handle.state::<AppState>().game.state();
-                let ops = handle.state::<AppState>().operations.clone();
-                let mut action =
-                    crate::tray::on_close_requested(&state, crate::tray::committing(&handle));
+                let app_state = handle.state::<AppState>();
+                let ops = app_state.operations.clone();
+                // The commit flag before the state (`tray::snapshot` says why).
+                let (state, committing) = crate::tray::game_snapshot(&app_state);
+                let mut action = crate::tray::on_close_requested(&state, committing);
                 if action == CloseAction::Close {
                     // What is being prepared is cancelled with the window anyway; cancelled now, no
                     // start can begin its commit any more, and one that already did holds the close.
+                    // Both are read again: the start may also have finished meanwhile.
                     ops.cancel_all();
-                    action =
-                        crate::tray::on_close_requested(&state, crate::tray::committing(&handle));
+                    let (state, committing) = crate::tray::game_snapshot(&app_state);
+                    action = crate::tray::on_close_requested(&state, committing);
                 }
                 match action {
                     // Never hide into a tray icon that could not be shown: the window would be lost.
