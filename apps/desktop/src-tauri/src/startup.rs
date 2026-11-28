@@ -482,6 +482,8 @@ pub fn run() {
         .setup(move |app| {
             create_window(app.handle(), &args, &paths, dev_url, theme)?;
             crate::tray::install(app.handle());
+            #[cfg(feature = "e2e")]
+            crate::e2e_hook::install(app.handle(), paths.root().to_path_buf());
             Ok(())
         })
         .run(context)

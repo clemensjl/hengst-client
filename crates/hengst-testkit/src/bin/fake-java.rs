@@ -9,6 +9,8 @@
 //!   stderr, and straddling the 8 KiB cut of a very long stderr line.
 //! - `out <text>` / `err <text>`: one line on stdout / stderr.
 //! - `xml <LEVEL>|<thread>|<message>`: one log4j XML event on stdout, as the game prints it.
+//! - `burst <n> <length>`: `n` lines `burst-line <i> xxx...` on stdout as fast as it can write them,
+//!   each `length` bytes long (at least its number), numbered from 1.
 //! - `sleep <ms>`.
 //! - `wait <file>`: waits until `<file>` exists in the working directory, so a test ends the game
 //!   when it wants to (and a guard can end it when the test panics).
@@ -57,6 +59,12 @@ fn main() {
                     thread.replace('&', "&amp;").replace('"', "&quot;").replace('<', "&lt;")
                 ));
             }
+            "burst" => {
+                let mut parts = rest.split(' ');
+                let n: usize = parts.next().and_then(|n| n.parse().ok()).unwrap_or(0);
+                let len: usize = parts.next().and_then(|l| l.parse().ok()).unwrap_or(0);
+                burst(n, len);
+            }
             "sleep" => std::thread::sleep(Duration::from_millis(rest.parse().unwrap_or(0))),
             "wait" => {
                 while !std::path::Path::new(rest).exists() {
@@ -74,6 +82,16 @@ fn main() {
 fn out(text: &str) {
     let mut o = std::io::stdout().lock();
     let _ = writeln!(o, "{text}");
+    let _ = o.flush();
+}
+
+fn burst(n: usize, len: usize) {
+    let mut o = std::io::BufWriter::new(std::io::stdout().lock());
+    for i in 1..=n {
+        let head = format!("burst-line {i} ");
+        let pad = len.saturating_sub(head.len());
+        let _ = writeln!(o, "{head}{}", "x".repeat(pad));
+    }
     let _ = o.flush();
 }
 

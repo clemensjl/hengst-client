@@ -19,7 +19,7 @@ pub use auth::{
     auth_endpoints, mount_auth, AuthHandle, AuthScenario, MockAccount, RecordedRequest, Redacted,
     PLAYER_A, PLAYER_B,
 };
-pub use mojang::{endpoints, mount_mojang};
+pub use mojang::{endpoints, mount_mojang, mount_mojang_delayed};
 
 use wiremock::MockServer;
 
@@ -149,8 +149,13 @@ pub struct Services {
 
 impl Services {
     pub async fn start(scenario: AuthScenario) -> Services {
+        Self::start_with(scenario, std::time::Duration::ZERO).await
+    }
+
+    /// `start` whose Mojang and Fabric answers each wait `mojang_delay` (`mount_mojang_delayed`).
+    pub async fn start_with(scenario: AuthScenario, mojang_delay: std::time::Duration) -> Services {
         let server = MockServer::builder().start().await;
-        mount_mojang(&server).await;
+        mojang::mount_mojang_delayed(&server, mojang_delay).await;
         let auth = mount_auth(&server, scenario, &[PLAYER_A, PLAYER_B]).await;
         Services { server, auth }
     }

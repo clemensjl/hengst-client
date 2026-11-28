@@ -7,6 +7,7 @@ use hengst_core::launch::Endpoints;
 use hengst_core::loaders::LoaderEndpoints;
 use serde_json::{json, Value};
 use std::io::Write;
+use std::time::Duration;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -32,10 +33,14 @@ fn native_jar() -> Vec<u8> {
     buf.into_inner()
 }
 
-async fn serve(server: &MockServer, p: &str, body: Vec<u8>) {
+async fn serve(server: &MockServer, delay: Duration, p: &str, body: Vec<u8>) {
     Mock::given(method("GET"))
         .and(path(p))
-        .respond_with(ResponseTemplate::new(200).set_body_bytes(body))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_bytes(body)
+                .set_delay(delay),
+        )
         .mount(server)
         .await;
 }
@@ -56,6 +61,12 @@ fn fabric_entry(version: &str, stable: bool) -> Value {
 /// alpha, every file with a valid SHA-1) and the Fabric version lists (`9.9`: `0.99.0` stable and
 /// `0.100.0-beta.1` unstable; `b9.9`: empty; other games: 404).
 pub async fn mount_mojang(server: &MockServer) {
+    mount_mojang_delayed(server, Duration::ZERO).await;
+}
+
+/// `mount_mojang` whose every answer (Mojang and Fabric) waits `delay` first, so a preparation
+/// against it lasts long enough to watch its progress or cancel it.
+pub async fn mount_mojang_delayed(server: &MockServer, delay: Duration) {
     let base = server.uri();
     let jar = native_jar();
     let asset_hash = sha1_hex(b"snd");
@@ -97,33 +108,54 @@ pub async fn mount_mojang(server: &MockServer) {
             "sha1": sha1_hex(&version),
             "releaseTime": format!("2099-01-0{}T00:00:00+00:00", 4 - i),
         }));
-        serve(server, &format!("/mojang/versions/{id}.json"), version).await;
+        serve(
+            server,
+            delay,
+            &format!("/mojang/versions/{id}.json"),
+            version,
+        )
+        .await;
     }
     let manifest =
         json!({"latest": {"release": "9.9", "snapshot": "9.9-snap"}, "versions": entries});
     serve(
         server,
+        delay,
         MANIFEST,
         serde_json::to_vec(&manifest).expect("json"),
     )
     .await;
-    serve(server, "/mojang/files/client.jar", b"client".to_vec()).await;
-    serve(server, "/mojang/files/lwjgl-natives.jar", jar).await;
-    serve(server, "/mojang/files/index.json", index).await;
-    serve(server, "/mojang/files/java.exe", b"exe".to_vec()).await;
     serve(
         server,
+        delay,
+        "/mojang/files/client.jar",
+        b"client".to_vec(),
+    )
+    .await;
+    serve(server, delay, "/mojang/files/lwjgl-natives.jar", jar).await;
+    serve(server, delay, "/mojang/files/index.json", index).await;
+    serve(server, delay, "/mojang/files/java.exe", b"exe".to_vec()).await;
+    serve(
+        server,
+        delay,
         &format!("/mojang/resources/{}/{}", &asset_hash[..2], asset_hash),
         b"snd".to_vec(),
     )
     .await;
     serve(
         server,
+        delay,
         "/mojang/runtime/all.json",
         serde_json::to_vec(&runtimes).expect("json"),
     )
     .await;
-    serve(server, "/mojang/runtime/manifest.json", runtime_manifest).await;
+    serve(
+        server,
+        delay,
+        "/mojang/runtime/manifest.json",
+        runtime_manifest,
+    )
+    .await;
 
     let list = json!([
         fabric_entry("0.100.0-beta.1", false),
@@ -131,11 +163,18 @@ pub async fn mount_mojang(server: &MockServer) {
     ]);
     serve(
         server,
+        delay,
         "/fabric/versions/loader/9.9",
         serde_json::to_vec(&list).expect("json"),
     )
     .await;
-    serve(server, "/fabric/versions/loader/b9.9", b"[]".to_vec()).await;
+    serve(
+        server,
+        delay,
+        "/fabric/versions/loader/b9.9",
+        b"[]".to_vec(),
+    )
+    .await;
 }
 
 /// The core's endpoints for a mock at `base`. Quilt, Legacy Fabric, Forge and NeoForge point at

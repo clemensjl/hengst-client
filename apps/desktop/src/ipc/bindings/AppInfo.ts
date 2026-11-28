@@ -2,6 +2,10 @@
 
 export type AppInfo = { version: string, dataDir: string, devBuild: boolean, devOffline: boolean, 
 /**
+ * Built with the `e2e` feature (mock services); the e2e harness refuses any other build.
+ */
+e2eBuild: boolean, 
+/**
  * The machine's physical memory in MiB (`GlobalMemoryStatusEx`), for the memory setting's
  * help line and its warning; `None` if Windows does not say.
  */

@@ -251,9 +251,9 @@ pub fn tooltip(lang: Lang, instance: &str, name: Option<&str>) -> String {
 }
 
 const TRAY_ID: &str = "main";
-const MENU_OPEN: &str = "tray-open";
-const MENU_STOP: &str = "tray-stop";
-const MENU_QUIT: &str = "tray-quit";
+pub(crate) const MENU_OPEN: &str = "tray-open";
+pub(crate) const MENU_STOP: &str = "tray-stop";
+pub(crate) const MENU_QUIT: &str = "tray-quit";
 
 /// The tray icon is in the notification area.
 pub fn tray_shown<R: Runtime>(app: &AppHandle<R>) -> bool {
@@ -407,7 +407,7 @@ fn show_tray<R: Runtime>(
 }
 
 /// On the main thread: nothing here waits.
-fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
+pub(crate) fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
     match id {
         MENU_OPEN => show_window(app, true),
         MENU_STOP => {

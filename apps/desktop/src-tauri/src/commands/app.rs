@@ -12,6 +12,7 @@ pub fn app_info_impl(state: &AppState) -> AppInfo {
         data_dir: state.paths.root().display().to_string(),
         dev_build: crate::dev_build(),
         dev_offline: cfg!(feature = "dev-offline"),
+        e2e_build: cfg!(feature = "e2e"),
         installed_memory_mb: installed_memory_mb(),
     }
 }
@@ -86,6 +87,14 @@ mod tests {
     use super::*;
     use hengst_core::launch::Endpoints;
     use hengst_core::paths::Paths;
+
+    #[test]
+    fn app_info_says_whether_this_is_an_e2e_build() {
+        // The e2e harness refuses any other build: a plain debug build reaches the real services.
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(Paths::new(dir.path()), Endpoints::default());
+        assert_eq!(app_info_impl(&state).e2e_build, cfg!(feature = "e2e"));
+    }
 
     #[test]
     fn app_info_reports_the_installed_memory() {
