@@ -8,6 +8,7 @@ import type { LastExit } from "@/ipc/bindings/LastExit";
 import { useApp } from "@/stores/app";
 import { account } from "@/test/fakeBackend";
 import { instance } from "@/test/instancesBackend";
+import { watchAnnouncements } from "@/test/liveRegion";
 import { IDLE, mira, playBackend } from "@/test/playBackend";
 import { AccountChip } from "@/features/accounts/AccountChip";
 import { resetLog, useLog } from "@/features/log/logStore";
@@ -319,6 +320,16 @@ describe("start page", () => {
     expect(screen.getByRole("button", { name: "Force stop" })).toBeTruthy();
   });
 
+  it("the no-window notice is announced: its status region is there before the text", async () => {
+    const b = await setup({ game: running() });
+    b.stopAnswer = "noWindow";
+    const watch = watchAnnouncements();
+    fireEvent.click(playButton());
+    await flush();
+    expect(watch.announced()).toContain("The game has no window yet and was not asked to close.");
+    watch.stop();
+  });
+
   it("a double click on Stop asks the game once", async () => {
     const b = await setup({ game: running() });
     fireEvent.click(playButton());
@@ -551,6 +562,17 @@ describe("review fixes", () => {
     act(() => b.play({ event: "preparing", data: { op: 1 } }));
     const panel = document.querySelector<HTMLElement>('[data-slot="launch-progress"]')!;
     expect(panel.querySelector("[aria-live]")!.textContent).toBe("Preparing");
+  });
+
+  it("the first phase is announced: the phase region is there before its text", async () => {
+    const b = await setup();
+    const watch = watchAnnouncements();
+    fireEvent.click(playButton());
+    await flush();
+    act(() => b.play({ event: "preparing", data: { op: 1 } }));
+    await flush();
+    expect(watch.announced()).toContain("Preparing");
+    watch.stop();
   });
 
   it("after the last download batch the line returns to Preparing, not between batches", async () => {

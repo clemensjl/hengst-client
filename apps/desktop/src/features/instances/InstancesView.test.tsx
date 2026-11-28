@@ -234,7 +234,7 @@ describe("InstancesView delete", () => {
     const backend = await setup(three());
     const menu = await openMenu("Alpha");
     fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
-    expect(within(dialog()).getByText("Delete Alpha?")).toBeTruthy();
+    expect(within(dialog()).getByText("Delete ⁨Alpha⁩?")).toBeTruthy();
     expect(
       within(dialog()).getByText(
         "The folder with worlds, settings and screenshots is moved to the Recycle Bin.",
@@ -244,8 +244,26 @@ describe("InstancesView delete", () => {
     fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(backend.of("instance_delete")).toEqual([{ id: "a" }]);
-    expect(toast).toHaveBeenCalledWith("Alpha is in the Recycle Bin");
+    expect(toast).toHaveBeenCalledWith("⁨Alpha⁩ is in the Recycle Bin");
     await waitFor(() => expect(screen.queryByText("Alpha")).toBeNull());
+  });
+
+  it("a name with bidi controls is isolated in the delete dialog, its toast and the actions tooltip", async () => {
+    await setup([instance("a", { name: "Al‮pha" })]);
+    const button = actionButton("Al‮pha");
+    fireEvent.keyDown(document.body, { key: "Tab" });
+    act(() => button.focus());
+    await waitFor(() =>
+      expect(
+        [...document.querySelectorAll("[data-slot=tooltip-content]")].map((e) => e.textContent),
+      ).toContain("Actions for ⁨Alpha⁩"),
+    );
+    fireEvent.click(button);
+    const menu = await screen.findByRole("menu");
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Delete" }));
+    expect(within(dialog()).getByText("Delete ⁨Alpha⁩?")).toBeTruthy();
+    fireEvent.click(within(dialog()).getByRole("button", { name: "Move to Recycle Bin" }));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("⁨Alpha⁩ is in the Recycle Bin"));
   });
 
   it("keep has initial focus in the delete dialog and deletes nothing", async () => {
@@ -264,7 +282,7 @@ describe("InstancesView delete", () => {
     const row = rowButton("Beta");
     act(() => row.focus());
     fireEvent.keyDown(row, { key: "Delete" });
-    expect(within(await screen.findByRole("alertdialog")).getByText("Delete Beta?")).toBeTruthy();
+    expect(within(await screen.findByRole("alertdialog")).getByText("Delete ⁨Beta⁩?")).toBeTruthy();
   });
 
   it("delete is disabled with its reason for the active instance", async () => {
@@ -425,7 +443,7 @@ describe("InstancesView delete", () => {
     fireEvent.click(within(panel).getByRole("button", { name: "Try again" }));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
     expect(backend.count("instance_delete")).toBe(2);
-    expect(toast).toHaveBeenCalledWith("Alpha is in the Recycle Bin");
+    expect(toast).toHaveBeenCalledWith("⁨Alpha⁩ is in the Recycle Bin");
   });
 
   it("while moving both buttons are inert and a second click deletes once", async () => {

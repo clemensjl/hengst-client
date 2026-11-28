@@ -17,7 +17,6 @@ import {
   locateHit,
   resetLog,
   searchPattern,
-  testing,
   useLog,
   visibleRows,
   type LineRow,
@@ -258,7 +257,6 @@ describe("the stream", () => {
     runFrame();
     off();
     expect(commits).toBe(1);
-    expect(testing.commits).toBe(1);
     expect(useLog.getState().feed.lines).toBe(300);
   });
 
@@ -376,10 +374,15 @@ describe("the stream", () => {
       attachTo(7);
       // The attach goes out after the call before it has settled.
       await vi.advanceTimersByTimeAsync(1);
+      let commits = 0;
+      const off = useLog.subscribe((s, before) => {
+        if (s.feed !== before.feed) commits += 1;
+      });
       send(batch([line(1)]));
       runFrame();
       vi.advanceTimersByTime(300);
-      expect(testing.commits).toBe(1);
+      off();
+      expect(commits).toBe(1);
       expect(useLog.getState().feed.lines).toBe(1);
     } finally {
       vi.useRealTimers();
@@ -423,6 +426,40 @@ describe("the stream", () => {
     attachTo(8);
     await settle();
     expect(useLog.getState().attach).toMatchObject({ status: "failed", runId: 8 });
+  });
+
+  it("a refused attach that means gone lets the lines go, as expired does", async () => {
+    attachTo(7);
+    await settle();
+    send(batch([line(1), line(2, "half", { more: true })]));
+    runFrame();
+    expect(useLog.getState().feed.lines).toBe(1);
+    // The same run again (the view came back), and now the backend no longer has it.
+    attachFails = { code: "invalidInput", params: { field: "runId" }, action: null, detail: "x" };
+    attachTo(7);
+    await settle();
+    expect(useLog.getState().attach).toEqual({ status: "gone", runId: 7 });
+    expect(useLog.getState().feed).toEqual(EMPTY_FEED);
+  });
+
+  it("an attach that never answers fails after 10 s with a retry, and the queue goes on", async () => {
+    vi.useFakeTimers();
+    try {
+      attachGate = new Promise(() => {});
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(9_999);
+      expect(useLog.getState().attach).toEqual({ status: "attaching", runId: 7 });
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useLog.getState().attach).toMatchObject({ status: "failed", runId: 7 });
+      // Try again: the next call is not stuck behind the first.
+      attachGate = null;
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls.filter((c) => c[0] === "log_attach")).toHaveLength(2);
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
@@ -508,6 +545,26 @@ describe("copy and open", () => {
     await useLog.getState().openFile(7);
     expect(targets).toEqual([{ kind: "gameLog", runId: 7 }]);
     expect(useLog.getState().openError?.code).toBe("openFailed");
+  });
+
+  it("a double click on Open log file opens one viewer", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let opens = 0;
+    mockIPC(async (cmd) => {
+      if (cmd !== "open_location") return null;
+      opens += 1;
+      await gate;
+      return null;
+    });
+    const first = useLog.getState().openFile(7);
+    const second = useLog.getState().openFile(7);
+    release();
+    await Promise.all([first, second]);
+    expect(opens).toBe(1);
+    // Done: the next click opens again.
+    await useLog.getState().openFile(7);
+    expect(opens).toBe(2);
   });
 });
 

@@ -136,6 +136,30 @@ describe("memory", () => {
     expect(patches).toEqual([]);
   });
 
+  // A node that flips between role status and alert is not announced reliably: the help line
+  // holds one fixed status region and one fixed alert region, and the text moves between them.
+  it("the line under the field keeps a status and an alert region and fills the right one", async () => {
+    view();
+    const field = memory();
+    const line = document.getElementById(field.getAttribute("aria-describedby")!)!;
+    const status = line.querySelector('[role="status"]');
+    const alert = line.querySelector('[role="alert"]');
+    expect(status).not.toBeNull();
+    expect(alert).not.toBeNull();
+    expect(line.getAttribute("role")).toBeNull();
+    await waitFor(() =>
+      expect(status!.textContent).toBe("Recommended: 2048 to 4096 MB. Installed: 16.0 GB."),
+    );
+    expect(alert!.textContent).toBe("");
+    fireEvent.change(field, { target: { value: "100" } });
+    fireEvent.blur(field);
+    await waitFor(() =>
+      expect(alert!.textContent).toBe("Choose a value between 512 and 65,536 MB."),
+    );
+    expect(status!.textContent).toBe("");
+    expect(line.querySelector('[role="alert"]')).toBe(alert);
+  });
+
   it("saves on Enter and on blur, once", async () => {
     view();
     const field = memory();
@@ -250,6 +274,35 @@ describe("Java", () => {
     expect(screen.getByText("C:\\old\\java.exe")).toBeTruthy();
   });
 
+  it("Reset is aria-disabled while a picked file is checked, with Checking as its reason", async () => {
+    useApp.setState({
+      settings: {
+        status: "ready",
+        data: { ...saved, javaOverride: { path: "C:\\old\\java.exe", problem: null } },
+      },
+    });
+    let finish: (c: JavaChoice) => void = () => undefined;
+    javaAnswer = () => new Promise((r) => (finish = r));
+    view();
+    openAdvanced();
+    fireEvent.click(screen.getByRole("button", { name: "Choose Java…" }));
+    await waitFor(() => expect(javaCalls).toBe(1));
+    act(() => javaChannel?.onmessage?.("checking"));
+    await screen.findByText("Checking…");
+    const reset = screen.getByRole("button", { name: "Reset" });
+    expect(reset.getAttribute("aria-disabled")).toBe("true");
+    const reason = document.getElementById(reset.getAttribute("aria-describedby")!)!;
+    expect(reason.textContent).toBe("Checking…");
+    fireEvent.click(reset);
+    expect(patches).toEqual([]);
+    await act(async () => finish({ kind: "cancelled" }));
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: "Reset" }).getAttribute("aria-disabled"),
+      ).toBeNull(),
+    );
+  });
+
   it("a cancelled dialog changes nothing", async () => {
     view();
     openAdvanced();
@@ -270,7 +323,6 @@ describe("Java", () => {
       },
     });
     view();
-    openAdvanced();
     expect(screen.getByText("\\\\fileserver\\share\\java.exe")).toBeTruthy();
     expect(screen.getByText("Choose a Java file on a local drive.")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Reset" }));
@@ -291,9 +343,47 @@ describe("Java", () => {
       },
     });
     view();
-    openAdvanced();
     const path = screen.getByText("C:\\xexe.avaj");
     expect(path.closest("[dir=ltr]")).toBeTruthy();
+  });
+
+  // DESIGN.md 11.7: "Erweitert" is open while the stored Java path cannot be used, so
+  // "Open settings" from a refused start lands on the reason, not on a page that looks fine.
+  it("is open on arrival while the stored path cannot be used, and stays open", async () => {
+    useApp.setState({
+      settings: {
+        status: "ready",
+        data: { ...saved, javaOverride: { path: "D:\\gone\\java.exe", problem: "missing" } },
+      },
+    });
+    view();
+    const advanced = screen.getByRole("button", { name: "Advanced" });
+    expect(advanced.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("D:\\gone\\java.exe")).toBeTruthy();
+    expect(screen.getByText("This file no longer exists.")).toBeTruthy();
+    // A click on the trigger does not hide the reason.
+    fireEvent.click(advanced);
+    expect(screen.getByText("This file no longer exists.")).toBeTruthy();
+    // Reset clears the problem; the section stays open around the focused button.
+    fireEvent.click(screen.getByRole("button", { name: "Reset" }));
+    expect(await screen.findByText("Automatic, matching the game version")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("is closed on arrival when the stored path is fine", () => {
+    useApp.setState({
+      settings: {
+        status: "ready",
+        data: { ...saved, javaOverride: { path: "C:\\jdk\\java.exe", problem: null } },
+      },
+    });
+    view();
+    expect(screen.getByRole("button", { name: "Advanced" }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(screen.queryByText("C:\\jdk\\java.exe")).toBeNull();
   });
 });
 

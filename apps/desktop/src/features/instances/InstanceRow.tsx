@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
+import { isolate } from "@/lib/bidi";
 import { cn } from "@/lib/utils";
 import { useTruncated } from "@/lib/useTruncated";
 import { lastPlayedText, loaderText } from "./format";
@@ -181,7 +182,9 @@ export function InstanceRow({
           >
             <EllipsisIcon aria-hidden="true" />
           </TooltipTrigger>
-          <TooltipContent>{t("instances.actions", { name: instance.name })}</TooltipContent>
+          <TooltipContent>
+            {t("instances.actions", { name: isolate(instance.name) })}
+          </TooltipContent>
         </Tooltip>
         <DropdownMenuContent align="end">
           <DropdownMenuItem onClick={() => onOpenFolder(instance.id)}>

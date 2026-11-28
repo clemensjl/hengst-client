@@ -462,7 +462,16 @@ function endText(run: LogRunDto | undefined, t: TFunction): string {
   if (!run || run.state.state === "running") return t("log.end.output");
   if (run.state.stopRequested) return t("log.end.stopped");
   if (run.state.code === 0) return t("log.end.closed");
-  return t("log.end.code", { code: run.state.code });
+  return t("log.end.code", { code: exitCodeText(run.state.code) });
+}
+
+/**
+ * DESIGN.md 10.13: a Windows status code (negative as a signed 32-bit number) in its usual unsigned
+ * hex form, "0xC0000005"; -1 ("unknown") and non-negative codes as they are.
+ */
+export function exitCodeText(code: number): string {
+  if (code >= 0 || code === -1) return String(code);
+  return `0x${(code >>> 0).toString(16).toUpperCase().padStart(8, "0")}`;
 }
 
 // ---- The view --------------------------------------------------------------------------------
@@ -494,6 +503,7 @@ function LineSkeleton() {
 const LOADING_ID = "log-loading";
 const EMPTY_TITLE_ID = "log-empty-title";
 const GONE_TITLE_ID = "log-gone-title";
+const RUN_VALUE_ID = "log-run-value";
 
 /** DESIGN.md 10.13 and 11.9: toolbar, run switcher and the virtualized log area. */
 export function LogView() {
@@ -751,8 +761,9 @@ export function LogView() {
             if (v !== null) log().choose(v);
           }}
         >
-          <SelectGhostTrigger aria-label={t("log.run.label")} className="-ml-3 mb-2 self-start">
-            <SelectValue placeholder={t("log.run.choose")} />
+          {/* Named by its visible value (WCAG 2.5.3), not by a hidden label. */}
+          <SelectGhostTrigger aria-labelledby={RUN_VALUE_ID} className="-ml-3 mb-2 self-start">
+            <SelectValue id={RUN_VALUE_ID} placeholder={t("log.run.choose")} />
           </SelectGhostTrigger>
           <SelectContent>
             {runList.map((r, i) => (

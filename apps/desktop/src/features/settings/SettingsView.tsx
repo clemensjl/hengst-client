@@ -102,7 +102,11 @@ function HelpLine({ failed, slow }: { failed: boolean; slow: boolean }) {
   );
 }
 
-/** The 20 px line under a field (DESIGN.md 10.7): help, a warning or an error, never more than one. */
+/**
+ * The 20 px line under a field (DESIGN.md 10.7): help, a warning or an error, never more than one.
+ * It holds a status and an alert region that both stay mounted; the text goes into the one its
+ * tone needs (a node whose role flips between the two is not announced reliably).
+ */
 function FieldLine({
   id,
   tone,
@@ -122,12 +126,17 @@ function FieldLine({
     ) : busy ? (
       <LoaderCircleIcon className="spinner size-4 shrink-0" aria-hidden="true" />
     ) : null;
+  const content = children ? (
+    <>
+      {icon}
+      {children}
+    </>
+  ) : null;
   return (
     <p
       id={id}
-      role={tone === "error" ? "alert" : "status"}
       className={
-        "mt-2 flex min-h-5 items-center gap-2 text-small " +
+        "mt-2 min-h-5 text-small " +
         (tone === "error"
           ? "text-danger"
           : tone === "warning"
@@ -135,8 +144,12 @@ function FieldLine({
             : "text-muted-foreground")
       }
     >
-      {children ? icon : null}
-      {children}
+      <span role="status" className="flex items-center gap-2">
+        {tone === "error" ? null : content}
+      </span>
+      <span role="alert" className="flex items-center gap-2">
+        {tone === "error" ? content : null}
+      </span>
     </p>
   );
 }
@@ -351,7 +364,16 @@ function JavaSetting() {
           {t("settings.java.choose")}
         </Button>
         {java && (
-          <Button variant="ghost" onClick={() => void reset()}>
+          // While a picked file is checked, Reset waits; the help line ("Checking…") says why
+          // (DESIGN.md 10.0).
+          <Button
+            variant="ghost"
+            aria-disabled={checking || undefined}
+            aria-describedby={checking ? lineId : undefined}
+            onClick={() => {
+              if (!checking) void reset();
+            }}
+          >
             {t("settings.java.reset")}
           </Button>
         )}
@@ -363,12 +385,19 @@ function JavaSetting() {
   );
 }
 
-/** The "Advanced" collapsible under Memory (DESIGN.md 11.7, 10.15). */
-function Advanced({ children }: { children: ReactNode }) {
+/**
+ * The "Advanced" collapsible under Memory (DESIGN.md 11.7, 10.15). Open while the stored Java path
+ * cannot be used (`forced`), from the first render on; it stays open once that is fixed.
+ */
+function Advanced({ forced, children }: { forced: boolean; children: ReactNode }) {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const [chosen, setChosen] = useState(forced);
+  useEffect(() => {
+    if (forced) setChosen(true);
+  }, [forced]);
+  const open = chosen || forced;
   return (
-    <Collapsible open={open} onOpenChange={setOpen} className="mt-4">
+    <Collapsible open={open} onOpenChange={(next) => setChosen(next || forced)} className="mt-4">
       <CollapsibleTrigger render={<Button variant="ghost" />}>
         {t("settings.advanced")}
         {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
@@ -517,7 +546,7 @@ export function SettingsView() {
       </Section>
       <Section title={t("settings.memory.title")} titleId={ids[2]}>
         <MemoryField titleId={ids[2]} saved={settings.memoryMb} />
-        <Advanced>
+        <Advanced forced={Boolean(settings.javaOverride?.problem)}>
           <JavaSetting />
         </Advanced>
       </Section>

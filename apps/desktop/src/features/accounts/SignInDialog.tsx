@@ -14,6 +14,7 @@ import {
 import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { Language } from "@/ipc/bindings/Language";
 import { api } from "@/ipc/client";
+import { isolate } from "@/lib/bidi";
 import { useApp } from "@/stores/app";
 import { dialogReturnRef } from "./dialogReturn";
 import { InfoBlock, useOpenUrl } from "./InfoBlock";
@@ -436,7 +437,7 @@ export function SignInDialog({
     // Only a change of phase matters; `resign`, `t` and `loadAccounts` do not change meanwhile.
   }, [state.phase]);
 
-  const title = resign ? t("signIn.titleAgain", { name: resign.name }) : t("signIn.title");
+  const title = resign ? t("signIn.titleAgain", { name: isolate(resign.name) }) : t("signIn.title");
   return (
     <Dialog
       open={open}

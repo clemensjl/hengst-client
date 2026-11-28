@@ -372,7 +372,6 @@
   "log.copyOmitted_other": "The oldest {{count, number}} lines are missing because at most 4 MiB are copied.",
   "log.copyFailed": "The lines could not be copied.",
   "log.openFile": "Open log file",
-  "log.run.label": "Run",
   "log.run.current": "Current run: {{instance}}, since {{time}}",
   "log.run.previous": "Previous run: {{instance}}, {{time}}",
   "log.run.earlier": "Earlier run: {{instance}}, {{time}}",

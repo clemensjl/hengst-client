@@ -16,6 +16,7 @@ import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
 import { api, IpcError } from "@/ipc/client";
+import { isolate } from "@/lib/bidi";
 import { useApp, type InstanceFocus } from "@/stores/app";
 import { effectiveSelection } from "./selection";
 
@@ -102,7 +103,7 @@ export function DeleteInstanceDialog({
     try {
       await api.instanceDelete(instance.id);
       moveFocus.current = after;
-      toast(t("instances.deleted", { name: instance.name }));
+      toast(t("instances.deleted", { name: isolate(instance.name) }));
       await settleSelection(wasSelected);
       setOpen(false);
     } catch (e) {
@@ -156,7 +157,7 @@ export function DeleteInstanceDialog({
         finalFocus={() => (moveFocus.current ? false : (returnTo ?? true))}
       >
         <AlertDialogTitle className="pr-0">
-          {t("instances.deleteDialog.title", { name: instance.name })}
+          {t("instances.deleteDialog.title", { name: isolate(instance.name) })}
         </AlertDialogTitle>
         <AlertDialogBody className="flex flex-col gap-4">
           <AlertDialogDescription>{t("instances.deleteDialog.body")}</AlertDialogDescription>

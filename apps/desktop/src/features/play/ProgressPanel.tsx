@@ -34,6 +34,10 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
   const step = progress?.step;
   const log = progress?.installLog ?? null;
   const notices = (progress?.notices ?? []).slice(openFailed ? -1 : -2);
+  // The live region mounts empty and gets its first phase right after: a region that mounts
+  // together with its text is not announced.
+  const [shown, setShown] = useState(false);
+  useEffect(() => setShown(true), []);
 
   const openLog = async (path: string) => {
     if (opening.current) return;
@@ -53,8 +57,8 @@ export function ProgressPanel({ progress }: { progress: LaunchProgress | null })
     // Fixed height and nothing drawn past it: the bottom slot holds at most two lines.
     <div data-slot="launch-progress" className="flex h-40 max-w-120 flex-col overflow-hidden">
       {/* The phase is announced; the counts below are not, they change too often. */}
-      <p aria-live="polite" className="text-body">
-        {t(`play.progress.phase.${phase}`)}
+      <p aria-live="polite" className="min-h-6 text-body">
+        {shown ? t(`play.progress.phase.${phase}`) : null}
       </p>
       <p className="mt-1 flex h-5 min-w-0 gap-1 text-small text-muted-foreground tabular-nums">
         {count && <span className="shrink-0">{count.text}</span>}

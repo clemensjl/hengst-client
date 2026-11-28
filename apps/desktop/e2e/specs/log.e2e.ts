@@ -121,7 +121,8 @@ describe("the live log in WebView2", () => {
     await openView("Log");
     // The view follows the newest run.
     await waitForLogText("the second run");
-    const runs = $('[aria-label="Run"]');
+    // The run switcher is named by its visible value (aria-labelledby).
+    const runs = $('[role="combobox"][aria-labelledby="log-run-value"]');
     await expect(runs).toHaveText(expect.stringContaining("Current run: E2E Game"));
     await runs.click();
     await $('[role="option"]*=Previous run: E2E Game').click();

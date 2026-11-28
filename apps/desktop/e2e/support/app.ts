@@ -240,7 +240,11 @@ export async function stopMock(mock: Mock) {
 export const dialog = () => $('[role="dialog"][aria-labelledby]');
 export const alertDialog = () => $('[role="alertdialog"]');
 
-/** The accessible name of the open dialog (its `aria-labelledby` title); "" without one. */
+/**
+ * The accessible name of the open dialog (its `aria-labelledby` title); "" without one. Names in a
+ * title are wrapped in bidi isolates (`lib/bidi.ts` `isolate`); those are dropped here, so specs
+ * compare the plain text.
+ */
 export function dialogName(): Promise<string> {
   return browser.execute(() => {
     const el = document.querySelector('[role="dialog"][aria-labelledby], [role="alertdialog"]');
@@ -249,6 +253,7 @@ export function dialogName(): Promise<string> {
       .split(/\s+/)
       .map((id) => (document.getElementById(id)?.textContent ?? "").trim())
       .join(" ")
+      .replace(/[⁦-⁩]/g, "")
       .trim();
   });
 }

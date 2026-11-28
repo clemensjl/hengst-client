@@ -384,6 +384,8 @@ const INITIAL = {
 
 let runsRequests = 0;
 let copyTimer: ReturnType<typeof setTimeout> | undefined;
+/** `openFile` is waiting for the backend. */
+let opening = false;
 
 /** The filter of `log_copy` for the level choice; search finds, it does not filter (10.13). */
 export const copyFilter = (levels: Levels): LogFilter => ({ ...levels, text: "" });
@@ -448,11 +450,16 @@ export const useLog = create<LogState>()((set, get) => ({
   },
 
   openFile: async (runId) => {
+    // One open at a time: a double click must not start a second viewer.
+    if (opening) return;
+    opening = true;
     set({ openError: null });
     try {
       await api.openLocation({ kind: "gameLog", runId });
     } catch (e) {
       set({ openError: errorOf(e) });
+    } finally {
+      opening = false;
     }
   },
   dismissOpenError: () => set({ openError: null }),
@@ -467,10 +474,33 @@ let generation = 0;
 // runs `log_attach` as an async command on a multi-thread runtime: two in flight can finish in
 // either order, and the one that finishes last becomes the consumer. Chained, the last call sent
 // is the last one done. A call that is no longer the newest by the time its turn comes is not
-// sent at all (StrictMode's effect, cleanup, effect sends one attach).
+// sent at all (StrictMode's effect, cleanup, effect sends one attach). A call that does not settle
+// within `CALL_TIMEOUT_MS` counts as failed, so it cannot hold up the calls after it for good.
 let chain: Promise<unknown> = Promise.resolve();
+const CALL_TIMEOUT_MS = 10_000;
+function bounded<T>(call: Promise<T>): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`no answer from the backend within ${CALL_TIMEOUT_MS} ms`)),
+      CALL_TIMEOUT_MS,
+    );
+    call.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e);
+      },
+    );
+  });
+}
 function enqueue<T>(call: () => Promise<T> | undefined): Promise<T | undefined> {
-  const next = chain.then(call);
+  const next = chain.then(() => {
+    const sent = call();
+    return sent === undefined ? undefined : bounded(sent);
+  });
   chain = next.catch(() => undefined);
   return next;
 }
@@ -482,9 +512,6 @@ let fallback: ReturnType<typeof setTimeout> | null = null;
 // A hidden window gets no animation frames (the app sits in the tray while the game runs): the
 // timer still applies the queue, so it stays bounded.
 const FALLBACK_MS = 250;
-
-/** For tests only: store commits of batches (many batches in one frame must make one). */
-export const testing = { commits: 0 };
 
 function schedule() {
   if (frame === null && typeof requestAnimationFrame === "function")
@@ -514,13 +541,11 @@ export function flush() {
   if (end === "expired") {
     // DESIGN.md 11.9: the log area says the log is no longer available; what was shown goes (it
     // cannot be copied or opened any more either), an open line with it.
-    testing.commits += 1;
     useLog.setState({ feed: EMPTY_FEED, attach: { status: "gone", runId: attach.runId } });
     void s.loadRuns();
     return;
   } else if (end === "complete") next = { status: "ended", runId: attach.runId };
   else if (attach.status === "attaching") next = { status: "live", runId: attach.runId };
-  testing.commits += 1;
   useLog.setState({ feed, attach: next });
   // The end state (exit code) and what is still held come from the run list.
   if (end) void s.loadRuns();
@@ -574,9 +599,12 @@ export function attachTo(runId: number): void {
       if (mine !== generation) return;
       const error = errorOf(e);
       const gone = error.code === "invalidInput" && error.params.field === "runId";
-      useLog.setState({
-        attach: gone ? { status: "gone", runId } : { status: "failed", runId, error },
-      });
+      // Gone: the lines go with the log, as for `expired` (DESIGN.md 11.9).
+      useLog.setState(
+        gone
+          ? { feed: EMPTY_FEED, attach: { status: "gone", runId } }
+          : { attach: { status: "failed", runId, error } },
+      );
     },
   );
 }
@@ -602,6 +630,6 @@ export function resetLog() {
   cancelScheduled();
   chain = Promise.resolve();
   clearTimeout(copyTimer);
-  testing.commits = 0;
+  opening = false;
   useLog.setState(INITIAL);
 }

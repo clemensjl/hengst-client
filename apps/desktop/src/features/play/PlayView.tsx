@@ -367,11 +367,11 @@ export function PlayView() {
         )}
       </div>
       <div className="mt-6 flex flex-col gap-4">
-        {noWindow && (
-          <p role="status" className="text-small text-muted-foreground">
-            {t("play.noWindow")}
-          </p>
-        )}
+        {/* Always there (out of the layout while empty), so its text is announced, as the
+            caption's is. */}
+        <p role="status" className={noWindow ? "text-small text-muted-foreground" : "sr-only"}>
+          {noWindow ? t("play.noWindow") : null}
+        </p>
         {runId !== null && state.kind === "running" && (
           <Button variant="link" className="self-start" onClick={() => showLog(runId)}>
             {t("play.showLog")}

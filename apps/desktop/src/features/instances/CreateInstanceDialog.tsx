@@ -41,6 +41,7 @@ import type { LoaderKindDto } from "@/ipc/bindings/LoaderKindDto";
 import type { LoaderVersionsDto } from "@/ipc/bindings/LoaderVersionsDto";
 import type { VersionFilter } from "@/ipc/bindings/VersionFilter";
 import { api, IpcError } from "@/ipc/client";
+import { isolate } from "@/lib/bidi";
 import { useApp, type InstanceDraft } from "@/stores/app";
 import { MAX_NAME, nameLength, nameProblem, suggestName, trimName } from "./naming";
 import { DEFAULT_FILTER, filterVersions } from "./versionFilter";
@@ -112,7 +113,7 @@ export function CreateInstanceDialog() {
     created.current = true;
     app.setInstanceDraft(null);
     app.setInstanceFocus({ kind: "row", id: made.id });
-    toast(t("instances.created", { name: made.name }));
+    toast(t("instances.created", { name: isolate(made.name) }));
     closeCreate();
     void app.loadInstances();
   };

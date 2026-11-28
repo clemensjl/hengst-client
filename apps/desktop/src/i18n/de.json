@@ -372,7 +372,6 @@
   "log.copyOmitted_other": "Die ältesten {{count, number}} Zeilen fehlen, weil höchstens 4 MiB kopiert werden.",
   "log.copyFailed": "Die Zeilen ließen sich nicht kopieren.",
   "log.openFile": "Logdatei öffnen",
-  "log.run.label": "Lauf",
   "log.run.current": "Aktueller Lauf: {{instance}}, seit {{time}}",
   "log.run.previous": "Letzter Lauf: {{instance}}, {{time}}",
   "log.run.earlier": "Lauf davor: {{instance}}, {{time}}",

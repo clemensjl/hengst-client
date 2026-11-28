@@ -434,8 +434,39 @@ describe("log view", () => {
 
   it("the run switcher names the current run with its instance and start", async () => {
     await attached([run(8), run(7, { state: { state: "ended", code: 0, stopRequested: false } })]);
-    const trigger = screen.getByRole("combobox", { name: "Run" });
-    await waitFor(() => expect(trigger.textContent).toMatch(/^Current run: ⁨Überleben⁩, since /));
+    // WCAG 2.5.3: the accessible name is the visible value, not a separate "Run" label.
+    const trigger = await screen.findByRole("combobox", {
+      name: /^Current run: ⁨Überleben⁩, since /,
+    });
+    expect(trigger.getAttribute("aria-label")).toBeNull();
+    expect(trigger.textContent).toMatch(/^Current run: ⁨Überleben⁩, since /);
+  });
+
+  it("follows the newest run when a second game starts and no run was chosen", async () => {
+    const { b } = await attached([run(7)]);
+    b.runs = [run(8), run(7, { state: { state: "ended", code: 0, stopRequested: false } })];
+    act(() =>
+      useApp.setState({
+        game: {
+          status: "ready",
+          data: { state: "running", data: { instance: "survival", runId: 8, since: Date.now() } },
+        },
+      }),
+    );
+    await waitFor(() => expect(b.of("log_attach").at(-1)?.runId).toBe(8));
+    expect(useLog.getState().chosen).toBeNull();
+  });
+
+  it.each([
+    [-1073741819, "The game exited with code 0xC0000005."],
+    [-1, "The game exited with code -1."],
+    [3, "The game exited with code 3."],
+  ])("the end of a run with code %i reads %s", async (code, text) => {
+    const { b } = await attached();
+    b.runs = [run(7, { closed: true, state: { state: "ended", code, stopRequested: false } })];
+    act(() => b.send(batch([line(1)], { end: "complete" })));
+    frame();
+    expect(await screen.findByText(text)).toBeTruthy();
   });
 
   it("leaving detaches; coming back continues after the last whole line", async () => {
