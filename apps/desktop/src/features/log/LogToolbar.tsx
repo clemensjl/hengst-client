@@ -25,12 +25,13 @@ const HITS_ID = "log-search-hits";
 function IconButton({
   label,
   icon,
-  inert,
+  reason,
   onClick,
 }: {
   label: string;
   icon: ReactNode;
-  inert: boolean;
+  /** Set while the button does nothing: the id of the visible text that says why. */
+  reason: string | null;
   onClick: () => void;
 }) {
   const button = (
@@ -38,11 +39,10 @@ function IconButton({
       variant="ghost"
       size="icon"
       aria-label={label}
-      // Without matches there is nothing to step to; the count next to it says why.
-      aria-disabled={inert || undefined}
-      aria-describedby={inert ? HITS_ID : undefined}
+      aria-disabled={reason ? true : undefined}
+      aria-describedby={reason ?? undefined}
       onClick={() => {
-        if (!inert) onClick();
+        if (!reason) onClick();
       }}
     >
       {icon}
@@ -69,6 +69,11 @@ function SteadyLabel({ idle, shown }: { idle: string; shown: string }) {
 }
 
 export interface LogToolbarProps {
+  /**
+   * The id of a visible text that says why the toolbar does nothing (loading, no run, run gone);
+   * every control is then `aria-disabled` and described by it (DESIGN.md 10.0, 11.9).
+   */
+  disabledBy: string | null;
   query: string;
   onQuery: (query: string) => void;
   /** Matches of the query; `null` while there is no query. */
@@ -88,6 +93,7 @@ export interface LogToolbarProps {
  * wraps instead of being cut (10.1).
  */
 export function LogToolbar({
+  disabledBy,
   query,
   onQuery,
   hits,
@@ -101,7 +107,11 @@ export function LogToolbar({
 }: LogToolbarProps) {
   const { t } = useTranslation();
   const shown = LEVEL_GROUPS.filter((g) => levels[g]).length;
-  const noHits = !hits;
+  // Without matches there is nothing to step to; the count next to the buttons says why.
+  const stepReason = disabledBy ?? (hits ? null : HITS_ID);
+  const off = disabledBy !== null;
+  const offProps = off ? { "aria-disabled": true as const, "aria-describedby": disabledBy } : {};
+  const levelsLabel = t("log.levels.label", { shown, total: LEVEL_GROUPS.length });
   const copyLabel =
     copy.status === "busy"
       ? t("log.copying")
@@ -121,9 +131,12 @@ export function LogToolbar({
             type="text"
             maxLength={256}
             value={query}
-            aria-describedby={HITS_ID}
+            readOnly={off}
+            aria-disabled={off || undefined}
+            aria-describedby={off ? disabledBy! : HITS_ID}
             onChange={(e) => onQuery(e.target.value)}
             onKeyDown={(e) => {
+              if (off) return;
               if (e.key === "Enter") {
                 e.preventDefault();
                 onStep(e.shiftKey ? -1 : 1);
@@ -141,39 +154,50 @@ export function LogToolbar({
         <IconButton
           label={t("log.search.previous")}
           icon={<ChevronUpIcon aria-hidden="true" />}
-          inert={noHits}
+          reason={stepReason}
           onClick={() => onStep(-1)}
         />
         <IconButton
           label={t("log.search.next")}
           icon={<ChevronDownIcon aria-hidden="true" />}
-          inert={noHits}
+          reason={stepReason}
           onClick={() => onStep(1)}
         />
       </div>
       <div className="flex flex-wrap items-center gap-2 full:flex-nowrap">
-        <DropdownMenu>
-          <DropdownMenuTrigger render={<Button variant="secondary" />}>
-            {t("log.levels.label", { shown, total: LEVEL_GROUPS.length })}
+        {off ? (
+          // The same button, but it opens nothing.
+          <Button variant="secondary" {...offProps}>
+            {levelsLabel}
             <ChevronDownIcon aria-hidden="true" />
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start">
-            {LEVEL_GROUPS.map((g) => (
-              <DropdownMenuCheckboxItem
-                key={g}
-                checked={levels[g]}
-                onCheckedChange={(on) => onLevel(g, on)}
-              >
-                {t(`log.levels.${g}`)}
-              </DropdownMenuCheckboxItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
+          </Button>
+        ) : (
+          <DropdownMenu>
+            <DropdownMenuTrigger render={<Button variant="secondary" />}>
+              {levelsLabel}
+              <ChevronDownIcon aria-hidden="true" />
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start">
+              {LEVEL_GROUPS.map((g) => (
+                <DropdownMenuCheckboxItem
+                  key={g}
+                  checked={levels[g]}
+                  onCheckedChange={(on) => onLevel(g, on)}
+                >
+                  {t(`log.levels.${g}`)}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <Button
             variant="secondary"
-            aria-disabled={copy.status === "busy" || undefined}
-            onClick={onCopy}
+            aria-disabled={off || copy.status === "busy" || undefined}
+            aria-describedby={off ? disabledBy! : undefined}
+            onClick={() => {
+              if (!off) onCopy();
+            }}
           >
             {copy.status === "busy" ? (
               <LoaderCircleIcon className="spinner" aria-hidden="true" />
@@ -185,7 +209,13 @@ export function LogToolbar({
           <span role="status" className="sr-only">
             {copy.status === "copied" ? t("log.copied") : ""}
           </span>
-          <Button variant="ghost" onClick={onOpenFile}>
+          <Button
+            variant="ghost"
+            {...offProps}
+            onClick={() => {
+              if (!off) onOpenFile();
+            }}
+          >
             <ExternalLinkIcon aria-hidden="true" />
             {t("log.openFile")}
           </Button>

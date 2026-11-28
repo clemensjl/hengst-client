@@ -366,14 +366,14 @@
   "log.copy": "Kopieren",
   "log.copying": "Wird kopiert…",
   "log.copied": "Kopiert",
-  "log.copyOmitted_one": "Die älteste Zeile fehlt, weil höchstens 4 MB kopiert werden.",
-  "log.copyOmitted_other": "Die ältesten {{count, number}} Zeilen fehlen, weil höchstens 4 MB kopiert werden.",
+  "log.copyOmitted_one": "Die älteste Zeile fehlt, weil höchstens 4 MiB kopiert werden.",
+  "log.copyOmitted_other": "Die ältesten {{count, number}} Zeilen fehlen, weil höchstens 4 MiB kopiert werden.",
   "log.copyFailed": "Die Zeilen ließen sich nicht kopieren.",
   "log.openFile": "Logdatei öffnen",
   "log.run.label": "Lauf",
   "log.run.current": "Aktueller Lauf: {{instance}}, seit {{time}}",
   "log.run.previous": "Letzter Lauf: {{instance}}, {{time}}",
-  "log.run.earlier": "Vorheriger Lauf: {{instance}}, {{time}}",
+  "log.run.earlier": "Lauf davor: {{instance}}, {{time}}",
   "log.area": "Log-Zeilen",
   "log.jumpToEnd": "Zum Ende springen",
   "log.empty.title": "Noch kein Log",
@@ -397,5 +397,6 @@
   "log.loadFailed.body": "Versuche es erneut. Hilft das nicht, starte Hengst Client neu.",
   "log.run.choose": "Lauf wählen",
   "errors.javaInvalid.title": "Java lässt sich nicht verwenden",
-  "errors.javaInvalid.body": "Das in den Einstellungen gewählte Java lässt sich nicht verwenden. Wähle Java dort neu aus oder setze es zurück."
+  "errors.javaInvalid.body": "Das in den Einstellungen gewählte Java lässt sich nicht verwenden. Wähle Java dort neu aus oder setze es zurück.",
+  "log.loading": "Das Log wird geladen…"
 }

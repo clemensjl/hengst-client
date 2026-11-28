@@ -161,21 +161,6 @@ function trim(feed: Feed, limit: number): Feed {
   return { ...feed, rows: [lead, ...rows.slice(i)], lines: feed.lines - removed };
 }
 
-/**
- * The run expired while a line's parts were coming: what came is kept, marked as cut (the
- * nearest pattern of DESIGN.md 10.13: a line the backend shortened).
- */
-export function closeOpenLine(feed: Feed): Feed {
-  if (!feed.partial) return feed;
-  const row = lineOf(feed.partial, true);
-  return {
-    rows: [...feed.rows, row],
-    lines: feed.lines + 1,
-    lastSeq: feed.partial.head.seq,
-    partial: null,
-  };
-}
-
 /** The rows the level filter lets through; gaps always show. */
 export function visibleRows(rows: readonly Row[], levels: Levels): readonly Row[] {
   if (LEVEL_GROUPS.every((g) => levels[g])) return rows;
@@ -256,6 +241,73 @@ export function hitIndex(
   return prefix[lo] % total;
 }
 
+// ---- List position (used by the view's virtualized list) ------------------------------------
+
+/** Where `ord` is in `rows` (ordered by `ord`), or -1. */
+export function indexOfOrd(rows: readonly Row[], ord: number): number {
+  let lo = 0;
+  let hi = rows.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (rows[mid].ord === ord) return mid;
+    if (rows[mid].ord < ord) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+/**
+ * How many rows left the front of `prev` to give `next`, found by the first rows of `next` that
+ * `prev` also holds (the leading note is new each time the oldest lines go); `null` when none
+ * of them is in `prev`. The list's `firstItemIndex` grows by this, so the viewport stays.
+ */
+export function frontShift(prev: readonly Row[], next: readonly Row[]): number | null {
+  for (let i = 0; i < Math.min(3, next.length); i++) {
+    const j = indexOfOrd(prev, next[i].ord);
+    if (j >= 0) return j - i;
+  }
+  return null;
+}
+
+/** A match the list is scrolling to, by its row; kept up until `until` (ms). */
+export interface ScrollTarget {
+  ord: number;
+  until: number;
+}
+
+/**
+ * What the list does after its rows changed. Following: go to the end (at the limit the row count
+ * stays the same, so the list's own follow, which reacts to a growing count, does not fire).
+ * Scrolling to a match: go to its row's current index, because lines leaving the front move every
+ * index while the list still retries the old one.
+ */
+export function followAction(
+  rows: readonly Row[],
+  following: boolean,
+  target: ScrollTarget | null,
+  now: number,
+): { kind: "end" } | { kind: "index"; index: number } | null {
+  if (following) return { kind: "end" };
+  if (!target || now > target.until) return null;
+  const index = indexOfOrd(rows, target.ord);
+  return index >= 0 ? { kind: "index", index } : null;
+}
+
+/**
+ * Where a list that starts over (a new level filter) opens: at the end while following, else at
+ * the line it showed on top, or the first one after it that is still shown.
+ */
+export function initialIndex(
+  rows: readonly Row[],
+  following: boolean,
+  topOrd: number | null,
+): number | { index: "LAST"; align: "end" } {
+  const end = { index: "LAST" as const, align: "end" as const };
+  if (following || topOrd === null) return end;
+  const i = rows.findIndex((r) => r.ord >= topOrd);
+  return i < 0 ? end : i;
+}
+
 /** Text of an error that did not come from the backend. */
 function errorOf(e: unknown): ErrorDto {
   if (e instanceof IpcError) return e.dto;
@@ -275,12 +327,15 @@ export type AttachState =
 export type CopyState =
   | { status: "idle" }
   | { status: "busy" }
-  | { status: "copied"; omitted: number }
+  | { status: "copied" }
   | { status: "failed"; error: ErrorDto | null };
 
 interface LogState {
   runs: { status: "idle" | "loading" | "ready" | "error"; data?: LogRunDto[]; error?: ErrorDto };
-  /** The run the user chose; `null`: always the newest one. */
+  /**
+   * The run the user chose; `null`: the newest one, whichever it is (it follows a new start). A
+   * choice made before the run list is there becomes `null` once the list shows it is the newest.
+   */
   chosen: number | null;
   attach: AttachState;
   /** The run `feed` belongs to. */
@@ -291,6 +346,11 @@ interface LogState {
   /** The current match by its row and occurrence, so new lines do not move it. */
   current: { ord: number; nth: number } | null;
   copy: CopyState;
+  /**
+   * Lines the last copy left out at the 4 MiB limit. Shown until the next copy, a level change or
+   * another run; "Kopiert" itself goes after 2 s.
+   */
+  omitted: number;
   openError: ErrorDto | null;
   /** Ctrl+A in the log area: every line of the current filter is selected (for Ctrl+C). */
   allSelected: boolean;
@@ -317,6 +377,7 @@ const INITIAL = {
   query: "",
   current: null,
   copy: { status: "idle" as const },
+  omitted: 0,
   openError: null,
   allSelected: false,
 };
@@ -335,7 +396,11 @@ export const useLog = create<LogState>()((set, get) => ({
     set((s) => ({ runs: s.runs.data ? s.runs : { status: "loading" } }));
     try {
       const data = await api.logRuns();
-      if (mine === runsRequests) set({ runs: { status: "ready", data } });
+      if (mine !== runsRequests) return;
+      set((s) => ({
+        runs: { status: "ready", data },
+        chosen: s.chosen !== null && s.chosen === data[0]?.runId ? null : s.chosen,
+      }));
     } catch (e) {
       if (mine === runsRequests)
         set((s) => ({ runs: { ...s.runs, status: "error", error: errorOf(e) } }));
@@ -347,8 +412,11 @@ export const useLog = create<LogState>()((set, get) => ({
     set({ chosen: runId === newest ? null : runId });
   },
 
-  setLevel: (group, on) => set((s) => ({ levels: { ...s.levels, [group]: on } })),
-  showAllLevels: () => set({ levels: ALL_LEVELS }),
+  // A level change ends a select-all (it selected the old filter's lines) and the omitted note
+  // (it was about the old filter); an open-file error is not about the filter and stays.
+  setLevel: (group, on) =>
+    set((s) => ({ levels: { ...s.levels, [group]: on }, allSelected: false, omitted: 0 })),
+  showAllLevels: () => set({ levels: ALL_LEVELS, allSelected: false, omitted: 0 }),
   setQuery: (query) => set({ query, current: null }),
   setCurrent: (current) => set({ current }),
   setAllSelected: (on) => set({ allSelected: on }),
@@ -357,7 +425,7 @@ export const useLog = create<LogState>()((set, get) => ({
     // One copy at a time: the backend refuses a second one (`busy`), the button waits instead.
     if (get().copy.status === "busy") return;
     clearTimeout(copyTimer);
-    set({ copy: { status: "busy" } });
+    set({ copy: { status: "busy" }, omitted: 0 });
     let text: string;
     let omitted: number;
     try {
@@ -372,11 +440,10 @@ export const useLog = create<LogState>()((set, get) => ({
       set({ copy: { status: "failed", error: null } });
       return;
     }
-    set({ copy: { status: "copied", omitted } });
+    set({ copy: { status: "copied" }, omitted });
     // "Kopiert" shows for 2 s, as "Code kopieren" (DESIGN.md 11.5); the omitted note stays.
     copyTimer = setTimeout(() => {
-      const c = get().copy;
-      if (c.status === "copied" && c.omitted === 0) set({ copy: { status: "idle" } });
+      if (get().copy.status === "copied") set({ copy: { status: "idle" } });
     }, 2000);
   },
 
@@ -396,9 +463,17 @@ export const useLog = create<LogState>()((set, get) => ({
 // Each attach gets a number; batches of an earlier channel (a replaced backend task can still
 // deliver one) are dropped because their number is no longer the current one.
 let generation = 0;
-// The attach a detach has to wait for: `log_attach` is async in the backend and `log_detach`
-// is not, so a detach sent at once could overtake it and leave the attach running.
-let pendingAttach: Promise<unknown> = Promise.resolve();
+// Every `log_attach` and `log_detach` waits until the call before it has settled. The backend
+// runs `log_attach` as an async command on a multi-thread runtime: two in flight can finish in
+// either order, and the one that finishes last becomes the consumer. Chained, the last call sent
+// is the last one done. A call that is no longer the newest by the time its turn comes is not
+// sent at all (StrictMode's effect, cleanup, effect sends one attach).
+let chain: Promise<unknown> = Promise.resolve();
+function enqueue<T>(call: () => Promise<T> | undefined): Promise<T | undefined> {
+  const next = chain.then(call);
+  chain = next.catch(() => undefined);
+  return next;
+}
 // Batches that arrived and are not applied yet. They are applied together once per frame, so
 // many small batches cost one store update and one render (the ack went out on arrival).
 let queue: LogBatch[] = [];
@@ -408,8 +483,8 @@ let fallback: ReturnType<typeof setTimeout> | null = null;
 // timer still applies the queue, so it stays bounded.
 const FALLBACK_MS = 250;
 
-/** Counts store commits of batches; for the test that many batches make one commit. */
-export const flushes = { count: 0 };
+/** For tests only: store commits of batches (many batches in one frame must make one). */
+export const testing = { commits: 0 };
 
 function schedule() {
   if (frame === null && typeof requestAnimationFrame === "function")
@@ -433,15 +508,19 @@ export function flush() {
   const s = useLog.getState();
   const attach = s.attach;
   if (attach.status === "idle") return;
-  let feed = ingest(s.feed, batches);
+  const feed = ingest(s.feed, batches);
   const end: LogEnd | null = batches.reduce<LogEnd | null>((e, b) => b.end ?? e, null);
   let next: AttachState = attach;
   if (end === "expired") {
-    feed = closeOpenLine(feed);
-    next = { status: "gone", runId: attach.runId };
+    // DESIGN.md 11.9: the log area says the log is no longer available; what was shown goes (it
+    // cannot be copied or opened any more either), an open line with it.
+    testing.commits += 1;
+    useLog.setState({ feed: EMPTY_FEED, attach: { status: "gone", runId: attach.runId } });
+    void s.loadRuns();
+    return;
   } else if (end === "complete") next = { status: "ended", runId: attach.runId };
   else if (attach.status === "attaching") next = { status: "live", runId: attach.runId };
-  flushes.count += 1;
+  testing.commits += 1;
   useLog.setState({ feed, attach: next });
   // The end state (exit code) and what is still held come from the run list.
   if (end) void s.loadRuns();
@@ -463,16 +542,27 @@ export function attachTo(runId: number): void {
     feed,
     feedRun: runId,
     attach: { status: "attaching", runId },
-    ...(same ? {} : { current: null, allSelected: false }),
+    // What belonged to the last run's lines goes with them.
+    ...(same
+      ? {}
+      : {
+          current: null,
+          allSelected: false,
+          copy: { status: "idle" as const },
+          omitted: 0,
+          openError: null,
+        }),
   });
   const since = feed.lastSeq === 0 ? 0 : feed.lastSeq + 1;
-  const call = api.logAttach(runId, since, (b) => {
-    // Hand off and return: no work here beyond the checks.
-    if (mine !== generation || b.runId !== runId) return;
-    queue.push(b);
-    schedule();
+  const call = enqueue(() => {
+    if (mine !== generation) return undefined;
+    return api.logAttach(runId, since, (b) => {
+      // Hand off and return: no work here beyond the checks.
+      if (mine !== generation || b.runId !== runId) return;
+      queue.push(b);
+      schedule();
+    });
   });
-  pendingAttach = call.catch(() => undefined);
   call.then(
     () => {
       // A run without lines yet sends nothing: the answer alone says the stream is there.
@@ -501,10 +591,8 @@ export function detach(): void {
       ? { attach: { status: "idle" } }
       : {},
   );
-  void pendingAttach.then(() => {
-    // A newer attach replaces the old one in the backend by itself.
-    if (mine === generation) void api.logDetach().catch(() => undefined);
-  });
+  // A newer attach replaces the old one in the backend by itself.
+  void enqueue(() => (mine === generation ? api.logDetach() : undefined)).catch(() => undefined);
 }
 
 /** Back to the start (tests). */
@@ -512,8 +600,8 @@ export function resetLog() {
   generation += 1;
   queue = [];
   cancelScheduled();
-  pendingAttach = Promise.resolve();
+  chain = Promise.resolve();
   clearTimeout(copyTimer);
-  flushes.count = 0;
+  testing.commits = 0;
   useLog.setState(INITIAL);
 }

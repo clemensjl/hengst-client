@@ -12,7 +12,7 @@ import { useApp } from "@/stores/app";
 import { instance } from "@/test/instancesBackend";
 import { IDLE } from "@/test/playBackend";
 import { resetLog, useLog } from "./logStore";
-import { batch, line } from "./logStore.test";
+import { batch, line } from "@/test/logFixtures";
 import { LogView, printable } from "./LogView";
 
 const initial = useApp.getState();
@@ -35,6 +35,8 @@ function logBackend(runs: LogRunDto[]) {
     calls,
     runs,
     attachFails: null as ErrorDto | null,
+    /** Held until resolved: `log_attach` answers only then. */
+    attachGate: null as Promise<void> | null,
     copyAnswer: { text: "copied text\n", lines: 1, omitted: 0 },
     openFails: null as ErrorDto | null,
     of: (cmd: string) => calls.filter((c) => c[0] === cmd).map((c) => c[1]),
@@ -45,6 +47,7 @@ function logBackend(runs: LogRunDto[]) {
     if (cmd === "log_attach") {
       calls.push([cmd, { runId: args.runId, sinceSeq: args.sinceSeq }]);
       channels.push(args.channel as never);
+      if (b.attachGate) await b.attachGate;
       if (b.attachFails) throw b.attachFails;
       return null;
     }
@@ -132,13 +135,31 @@ async function attached(runs = [run(7)], strict = false) {
 
 const area = () => screen.getByRole("region", { name: "Log lines" });
 
+/** Every control of the toolbar is aria-disabled and described by the visible `reason`. */
+function expectInertToolbar(reason: string) {
+  const controls = [
+    screen.getByLabelText("Search log"),
+    screen.getByRole("button", { name: "Previous match" }),
+    screen.getByRole("button", { name: "Next match" }),
+    screen.getByRole("button", { name: /^Levels: / }),
+    screen.getByRole("button", { name: "Copy" }),
+    screen.getByRole("button", { name: "Open log file" }),
+  ];
+  for (const c of controls) {
+    expect(c.getAttribute("aria-disabled"), c.textContent ?? "").toBe("true");
+    const ids = (c.getAttribute("aria-describedby") ?? "").split(" ");
+    const texts = ids.map((id) => document.getElementById(id)?.textContent);
+    expect(texts, c.textContent ?? "").toContain(reason);
+  }
+}
+
 describe("log view", () => {
-  it("without a run: the empty state, Open Play, and an inert toolbar", async () => {
+  it("without a run: the empty state, Open Play, and a toolbar that is inert with its reason", async () => {
     const b = logBackend([]);
     view();
     expect(await screen.findByText("No log yet")).toBeTruthy();
     expect(screen.getByText("Start an instance and its output appears here.")).toBeTruthy();
-    expect(screen.getByLabelText("Search log").closest("[inert]")).not.toBeNull();
+    expectInertToolbar("No log yet");
     fireEvent.click(screen.getByRole("button", { name: "Open Play" }));
     expect(useApp.getState().view).toBe("play");
     expect(b.of("log_attach")).toEqual([]);
@@ -180,8 +201,13 @@ describe("log view", () => {
     // ESC and BEL are shown as their pictures, the escape sequence is not interpreted.
     expect(row.textContent).toContain("␛[31mred");
     expect(row.textContent).toContain("␇");
-    // Every cell is its own bidi isolate.
-    for (const cell of row.children) expect(cell.className).toContain("[unicode-bidi:isolate]");
+    // The text of every cell is inside its own <bdi>, so an unterminated U+202E cannot run past
+    // it: not into the neighbouring cells, not into the cut hint after the message.
+    const [time, level, thread, message] = [...row.children];
+    for (const cell of [time, level, thread, message])
+      expect(cell.querySelector("bdi")).not.toBeNull();
+    expect(thread.querySelector("bdi")!.textContent).toBe("<b>t</b>\u202E");
+    expect(message.querySelector("bdi")!.textContent).toBe(printable(evil));
     expect(printable("a\tb\nc\r\u0085")).toBe("a\tb\nc␍�");
   });
 
@@ -195,7 +221,10 @@ describe("log view", () => {
     expect(screen.getByText("2 lines skipped")).toBeTruthy();
     const row = area().querySelector('[data-seq="3"]')!;
     expect(row.textContent).toContain("first second");
-    expect(within(row as HTMLElement).getByText("Line shortened")).toBeTruthy();
+    const hint = within(row as HTMLElement).getByText("Line shortened");
+    // The hint is outside the message's isolate, so the message's own direction cannot reach it.
+    expect(hint.closest("bdi")).toBeNull();
+    expect(row.children[3].querySelector("bdi")!.textContent).toBe("first second");
   });
 
   it("filters by level: the count in the label, all hidden, show all levels", async () => {
@@ -261,6 +290,64 @@ describe("log view", () => {
     expect(jump()).not.toBeNull();
   });
 
+  it("a long thread name shows the whole name in a tooltip, a short one has none", async () => {
+    const { b } = await attached();
+    const wide = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (
+      this: HTMLElement,
+    ) {
+      return this.textContent === "Netty Server IO #12 with a long name" ? 400 : 0;
+    });
+    try {
+      act(() =>
+        b.send(
+          batch([
+            line(1, "a", { thread: "Netty Server IO #12 with a long name" }),
+            line(2, "b", { thread: "main" }),
+          ]),
+        ),
+      );
+      frame();
+      const cell = (seq: number) =>
+        area().querySelector(`[data-seq="${seq}"]`)!.children[2] as HTMLElement;
+      expect(cell(1).getAttribute("title")).toBeNull();
+      expect(cell(2).getAttribute("title")).toBeNull();
+      fireEvent.pointerEnter(cell(1).firstElementChild!);
+      fireEvent.mouseEnter(cell(1).firstElementChild!);
+      await waitFor(() =>
+        expect(document.querySelector("[data-slot=tooltip-content]")?.textContent).toBe(
+          "Netty Server IO #12 with a long name",
+        ),
+      );
+      expect(cell(2).querySelector("[data-slot=tooltip-trigger]")).toBeNull();
+    } finally {
+      wide.mockRestore();
+    }
+  });
+
+  it("while attaching the toolbar is inert and says why; Copy does nothing", async () => {
+    const b = logBackend([run(7)]);
+    let release!: () => void;
+    b.attachGate = new Promise((r) => (release = r));
+    view();
+    expect(await screen.findByText("Loading the log…")).toBeTruthy();
+    expectInertToolbar("Loading the log…");
+    fireEvent.click(screen.getByRole("button", { name: "Copy" }));
+    expect(b.of("log_copy")).toEqual([]);
+    act(() => release());
+    await waitFor(() => expect(screen.queryByText("Loading the log…")).toBeNull());
+    expect(screen.getByLabelText("Search log").getAttribute("aria-disabled")).toBeNull();
+  });
+
+  it("Escape in the log area ends a select-all", async () => {
+    const { b } = await attached();
+    act(() => b.send(batch([line(1)])));
+    frame();
+    fireEvent.keyDown(area(), { key: "a", ctrlKey: true });
+    expect(area().querySelector(".bg-selection")).not.toBeNull();
+    fireEvent.keyDown(area(), { key: "Escape" });
+    expect(area().querySelector(".bg-selection")).toBeNull();
+  });
+
   it("the log area is focusable and not a live region", async () => {
     const { b } = await attached();
     act(() => b.send(batch([line(1)])));
@@ -279,11 +366,17 @@ describe("log view", () => {
       runId: 7,
       filter: { error: true, warning: true, info: true, debug: true, other: true, text: "" },
     });
+    expect(screen.getByRole("button", { name: "Copied" })).toBeTruthy();
     const note = await screen.findByText(/^The oldest 3 lines are missing because at most 4/);
     // The unit keeps its no-break space (DESIGN.md 3.3).
     expect(note.textContent).toBe(
-      "The oldest 3 lines are missing because at most 4 MB are copied.",
+      "The oldest 3 lines are missing because at most 4\u00a0MiB are copied.",
     );
+    // "Copied" goes back after 2 s; the note stays.
+    await waitFor(() => expect(screen.getByRole("button", { name: "Copy" })).toBeTruthy(), {
+      timeout: 3000,
+    });
+    expect(screen.getByText(/^The oldest 3 lines are missing/)).toBeTruthy();
   });
 
   it("Ctrl+A in the log area then Ctrl+C copies every line of the filter", async () => {
@@ -320,6 +413,9 @@ describe("log view", () => {
     act(() => b.send(batch([], { end: "expired" })));
     frame();
     expect(screen.getByText("Log no longer available")).toBeTruthy();
+    // Its lines go with it (DESIGN.md 11.9): the block takes the log area.
+    expect(document.querySelector("[data-seq]")).toBeNull();
+    expectInertToolbar("Log no longer available");
     cleanup();
     resetLog();
     const b2 = logBackend([run(9)]);

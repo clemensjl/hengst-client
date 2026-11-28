@@ -4,6 +4,7 @@ import {
   memo,
   useEffect,
   useImperativeHandle,
+  useDeferredValue,
   useMemo,
   useRef,
   useState,
@@ -29,18 +30,23 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Skeleton } from "@/components/ui/skeleton";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { GameStateDto } from "@/ipc/bindings/GameStateDto";
 import type { LogRunDto } from "@/ipc/bindings/LogRunDto";
 import type { LogTimeDto } from "@/ipc/bindings/LogTimeDto";
 import { isolate } from "@/lib/bidi";
+import { useTruncated } from "@/lib/useTruncated";
 import { cn } from "@/lib/utils";
 import { useApp } from "@/stores/app";
 import { LogToolbar } from "./LogToolbar";
 import {
   attachTo,
   detach,
+  followAction,
+  frontShift,
   hitIndex,
+  initialIndex,
   hitPrefix,
   hitRanges,
   locateHit,
@@ -49,6 +55,7 @@ import {
   visibleRows,
   type LevelGroup,
   type Row,
+  type ScrollTarget,
 } from "./logStore";
 
 // ---- Text ------------------------------------------------------------------------------------
@@ -133,9 +140,39 @@ interface RowProps {
 }
 
 /**
- * DESIGN.md 10.13 line grid: time 8ch | level 5ch | thread 16ch | message. Every cell is its own
- * bidi isolate and the row clips what draws outside it (stacked marks), so no text of a line can
- * reorder or cover its neighbours. Continuation lines of a message hang 2ch in.
+ * The thread name, cut with an ellipsis at 16ch; a cut name shows in full in a tooltip
+ * (DESIGN.md 10.15), as text inside its own isolate.
+ */
+function Thread({ name, muted }: { name: string; muted: string }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  const text = printable(name);
+  const truncated = useTruncated(ref, text);
+  const cut = (
+    <span ref={ref} className="block truncate">
+      <bdi>{text}</bdi>
+    </span>
+  );
+  return (
+    <span className={cn("min-w-0", muted)}>
+      {truncated ? (
+        <Tooltip>
+          <TooltipTrigger render={cut} />
+          <TooltipContent>
+            <bdi>{text}</bdi>
+          </TooltipContent>
+        </Tooltip>
+      ) : (
+        cut
+      )}
+    </span>
+  );
+}
+
+/**
+ * DESIGN.md 10.13 line grid: time 8ch | level 5ch | thread 16ch | message. The text of every cell
+ * is its own `<bdi>`, so bidi controls in it (an unterminated U+202E) cannot reorder anything
+ * outside it, not even the cut hint in the same cell; the row clips what draws outside it
+ * (stacked marks). Continuation lines of a message hang 2ch in.
  */
 const LogRow = memo(function LogRow({ row, pattern, current, selected, clock }: RowProps) {
   const { t } = useTranslation();
@@ -147,6 +184,7 @@ const LogRow = memo(function LogRow({ row, pattern, current, selected, clock }: 
     );
   }
   const color = selected ? "text-foreground" : LEVEL_COLOR[row.group];
+  const muted = selected ? "text-foreground" : "text-muted-foreground";
   return (
     <div
       data-seq={row.seq}
@@ -155,31 +193,19 @@ const LogRow = memo(function LogRow({ row, pattern, current, selected, clock }: 
         selected && "bg-selection",
       )}
     >
-      <span
-        className={cn(
-          "tabular-nums [unicode-bidi:isolate]",
-          selected ? "text-foreground" : "text-muted-foreground",
-        )}
-      >
-        {clock(row.time)}
+      <span className={cn("tabular-nums", muted)}>
+        <bdi>{clock(row.time)}</bdi>
       </span>
-      <span className={cn("[unicode-bidi:isolate]", color)}>{row.level?.toUpperCase() ?? ""}</span>
-      <span
-        className={cn(
-          "truncate [unicode-bidi:isolate]",
-          selected ? "text-foreground" : "text-muted-foreground",
-        )}
-        title={row.thread ?? undefined}
-      >
-        {row.thread === null ? "" : printable(row.thread)}
+      <span className={color}>
+        <bdi>{row.level?.toUpperCase() ?? ""}</bdi>
       </span>
+      {row.thread === null ? <span /> : <Thread name={row.thread} muted={muted} />}
       <span
-        className={cn(
-          "-indent-[2ch] pl-[2ch] whitespace-pre-wrap [overflow-wrap:anywhere] [unicode-bidi:isolate]",
-          color,
-        )}
+        className={cn("-indent-[2ch] pl-[2ch] whitespace-pre-wrap [overflow-wrap:anywhere]", color)}
       >
-        <Message text={row.message} pattern={pattern} current={current} />
+        <bdi>
+          <Message text={row.message} pattern={pattern} current={current} />
+        </bdi>
         {row.cut && (
           <span className="ml-2 font-sans text-caption whitespace-normal text-muted-foreground">
             {t("log.cut")}
@@ -191,32 +217,6 @@ const LogRow = memo(function LogRow({ row, pattern, current, selected, clock }: 
 });
 
 // ---- The list --------------------------------------------------------------------------------
-
-/** Where `ord` is in `rows` (ordered by `ord`), or -1. */
-function indexOfOrd(rows: readonly Row[], ord: number): number {
-  let lo = 0;
-  let hi = rows.length - 1;
-  while (lo <= hi) {
-    const mid = (lo + hi) >> 1;
-    if (rows[mid].ord === ord) return mid;
-    if (rows[mid].ord < ord) lo = mid + 1;
-    else hi = mid - 1;
-  }
-  return -1;
-}
-
-/**
- * How many rows left the front of `prev` to give `next`, found by the first rows of `next` that
- * `prev` also holds; `null` when none of them is in `prev`. Virtuoso keeps the viewport where it
- * is when `firstItemIndex` grows by this (the oldest lines going at the limit).
- */
-export function frontShift(prev: readonly Row[], next: readonly Row[]): number | null {
-  for (let i = 0; i < Math.min(3, next.length); i++) {
-    const j = indexOfOrd(prev, next[i].ord);
-    if (j >= 0) return j - i;
-  }
-  return null;
-}
 
 interface ListContext {
   label: string;
@@ -340,25 +340,19 @@ function LogList(props: ListProps) {
   // following, the view goes to the end after every change of the rows.
   // A match being scrolled to keeps its row, not its index: lines leaving the front move every
   // index, and Virtuoso retries a scroll with the index it was given while rows still change.
-  const target = useRef<{ ord: number; until: number } | null>(null);
+  const target = useRef<ScrollTarget | null>(null);
   useEffect(() => {
-    if (followingRef.current) {
-      virtuoso.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER });
-      return;
-    }
-    const t = target.current;
-    if (!t || Date.now() > t.until) return;
-    const index = indexOfOrd(rows, t.ord);
-    if (index >= 0) virtuoso.current?.scrollToIndex({ index, align: "center" });
+    const action = followAction(rows, followingRef.current, target.current, Date.now());
+    if (action?.kind === "end") virtuoso.current?.scrollTo({ top: Number.MAX_SAFE_INTEGER });
+    if (action?.kind === "index")
+      virtuoso.current?.scrollToIndex({ index: action.index, align: "center" });
   }, [rows]);
 
-  const initial = useMemo(() => {
-    if (followingRef.current || topOrd.current === null)
-      return { index: "LAST" as const, align: "end" as const };
-    const i = rows.findIndex((r) => r.ord >= topOrd.current!);
-    return i < 0 ? { index: "LAST" as const, align: "end" as const } : i;
-    // Read only when the list (re)mounts: `rows` is left out on purpose.
-  }, [s.mount, resetKey]);
+  // Read only when the list (re)mounts: `rows` is left out on purpose.
+  const initial = useMemo(
+    () => initialIndex(rows, followingRef.current, topOrd.current),
+    [s.mount, resetKey],
+  );
 
   const context = useMemo<ListContext>(
     () => ({
@@ -497,6 +491,10 @@ function LineSkeleton() {
   );
 }
 
+const LOADING_ID = "log-loading";
+const EMPTY_TITLE_ID = "log-empty-title";
+const GONE_TITLE_ID = "log-gone-title";
+
 /** DESIGN.md 10.13 and 11.9: toolbar, run switcher and the virtualized log area. */
 export function LogView() {
   const { t, i18n } = useTranslation();
@@ -509,6 +507,7 @@ export function LogView() {
   const query = useLog((s) => s.query);
   const current = useLog((s) => s.current);
   const copy = useLog((s) => s.copy);
+  const omitted = useLog((s) => s.omitted);
   const openError = useLog((s) => s.openError);
   const allSelected = useLog((s) => s.allSelected);
   const gameKey = useApp((s) => gameKeyOf(s.game.data));
@@ -552,7 +551,10 @@ export function LogView() {
 
   const rows = feedRun === runId ? feed.rows : [];
   const visible = useMemo(() => visibleRows(rows, levels), [rows, levels]);
-  const pattern = useMemo(() => searchPattern(query), [query]);
+  // The field shows every keystroke at once; counting and marking follow when React has time
+  // (with 10,000 lines that can be a frame later).
+  const deferredQuery = useDeferredValue(query);
+  const pattern = useMemo(() => searchPattern(deferredQuery), [deferredQuery]);
   const prefix = useMemo(() => hitPrefix(visible, pattern), [visible, pattern]);
   const hits = pattern ? prefix[visible.length] : null;
   const currentIndex = current && hits ? hitIndex(visible, prefix, current) : null;
@@ -605,11 +607,19 @@ export function LogView() {
   const ended = attach.status === "ended" && attach.runId === runId;
   const end = ended ? endText(selectedRun, t) : null;
   const levelsKey = Object.values(levels).join("");
-  const usable =
-    runId !== null &&
-    attach.status !== "idle" &&
-    attach.status !== "gone" &&
-    attach.runId === runId;
+  // DESIGN.md 11.9 and 10.0: the toolbar stays visible but does nothing until there are lines
+  // to act on; each control names the visible reason (the loading line or the block's title).
+  const loading = !runList
+    ? runs.status !== "error"
+    : runId !== null && attach.status === "attaching";
+  const disabledReason =
+    runList && runId === null
+      ? EMPTY_TITLE_ID
+      : attach.status === "gone" && attach.runId === runId
+        ? GONE_TITLE_ID
+        : loading
+          ? LOADING_ID
+          : null;
 
   let area: React.ReactNode;
   if (!runList) {
@@ -624,7 +634,9 @@ export function LogView() {
   } else if (runId === null) {
     area = (
       <div className="flex max-w-120 flex-col items-start p-4">
-        <h2 className="text-heading">{t("log.empty.title")}</h2>
+        <h2 id={EMPTY_TITLE_ID} className="text-heading">
+          {t("log.empty.title")}
+        </h2>
         <p className="mt-2 text-body">{t("log.empty.body")}</p>
         <Button
           variant="primary"
@@ -638,7 +650,9 @@ export function LogView() {
   } else if (attach.status === "gone" && attach.runId === runId) {
     area = (
       <div className="flex max-w-120 flex-col items-start p-4">
-        <h2 className="text-heading">{t("log.gone.title")}</h2>
+        <h2 id={GONE_TITLE_ID} className="text-heading">
+          {t("log.gone.title")}
+        </h2>
         <p className="mt-2 text-body">{t("log.gone.body")}</p>
       </div>
     );
@@ -685,8 +699,9 @@ export function LogView() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="mb-4" inert={!usable}>
+      <div className="mb-4">
         <LogToolbar
+          disabledBy={disabledReason}
           query={query}
           onQuery={(q) => log().setQuery(q)}
           hits={hits}
@@ -700,15 +715,20 @@ export function LogView() {
           }}
           searchRef={searchRef}
         />
+        {loading && (
+          <p id={LOADING_ID} className="mt-2 text-caption text-muted-foreground">
+            {t("log.loading")}
+          </p>
+        )}
         {copy.status === "failed" && (
           <p className="mt-2 flex items-center gap-2 text-small text-danger">
             <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
             {t("log.copyFailed")}
           </p>
         )}
-        {copy.status === "copied" && copy.omitted > 0 && (
+        {omitted > 0 && (
           <p className="mt-2 text-caption text-muted-foreground">
-            {t("log.copyOmitted", { count: copy.omitted })}
+            {t("log.copyOmitted", { count: omitted })}
           </p>
         )}
         {openError && (

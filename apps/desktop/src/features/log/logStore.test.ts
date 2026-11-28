@@ -1,49 +1,28 @@
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LogBatch } from "@/ipc/bindings/LogBatch";
-import type { LogLineDto } from "@/ipc/bindings/LogLineDto";
+import { batch, line } from "@/test/logFixtures";
 import {
   ALL_LEVELS,
   attachTo,
-  closeOpenLine,
   detach,
   EMPTY_FEED,
-  flushes,
+  followAction,
+  frontShift,
   hitIndex,
   hitPrefix,
   hitRanges,
   ingest,
+  initialIndex,
   locateHit,
   resetLog,
   searchPattern,
+  testing,
   useLog,
   visibleRows,
   type LineRow,
   type Row,
 } from "./logStore";
-
-export const line = (seq: number, message = `line ${seq}`, extra: Partial<LogLineDto> = {}) =>
-  ({
-    seq,
-    time: null,
-    level: "info",
-    thread: "main",
-    message,
-    stream: "stdout",
-    cut: false,
-    part: 0,
-    more: false,
-    ...extra,
-  }) as LogLineDto;
-
-export const batch = (lines: LogLineDto[], extra: Partial<LogBatch> = {}): LogBatch => ({
-  ack: 1,
-  runId: 7,
-  dropped: 0,
-  lines,
-  end: null,
-  ...extra,
-});
 
 const messages = (rows: readonly Row[]) =>
   rows.map((r) => (r.kind === "line" ? r.message : `gap ${r.count}${r.older ? " older" : ""}`));
@@ -118,12 +97,6 @@ describe("ingest", () => {
     expect(feed.rows).toHaveLength(10_001);
     expect(messages(feed.rows.slice(0, 2))).toEqual(["gap 50 older", "line 51"]);
   });
-
-  it("a line whose parts stop (the run expired) is kept, marked as cut", () => {
-    const feed = closeOpenLine(ingest(EMPTY_FEED, [batch([line(1, "half", { more: true })])]));
-    expect(messages(feed.rows)).toEqual(["half"]);
-    expect((feed.rows[0] as LineRow).cut).toBe(true);
-  });
 });
 
 describe("filter and search", () => {
@@ -162,6 +135,62 @@ describe("filter and search", () => {
     expect(hitIndex(rows, prefix, { ord: rows[1].ord, nth: 0 })).toBe(1);
     expect(hitIndex(rows, prefix, { ord: 999, nth: 0 })).toBe(0);
     expect(hitIndex(rows, prefix, null)).toBe(0);
+  });
+
+  it("a current match whose row left the front falls forward to the first remaining match", () => {
+    let feed = ingest(EMPTY_FEED, [batch([line(1, "boom"), line(2, "x"), line(3, "boom")])], 3);
+    const current = { ord: feed.rows[0].ord, nth: 0 };
+    feed = ingest(feed, [batch([line(4, "boom")])], 3);
+    // Now: older note, line 2, line 3 ("boom"), line 4 ("boom").
+    const prefix = hitPrefix(feed.rows, searchPattern("boom"));
+    expect(prefix[feed.rows.length]).toBe(2);
+    const k = hitIndex(feed.rows, prefix, current)!;
+    expect(feed.rows[locateHit(prefix, k).index]).toMatchObject({ seq: 3 });
+  });
+});
+
+describe("list position", () => {
+  const rows = (seqs: number[], older = 0) =>
+    ingest(EMPTY_FEED, [
+      batch(
+        seqs.map((n) => line(n)),
+        { dropped: older },
+      ),
+    ]).rows;
+
+  it("frontShift counts the rows that left the front, also behind a new leading note", () => {
+    const prev = ingest(EMPTY_FEED, [batch([1, 2, 3, 4].map((n) => line(n)))], 3).rows;
+    // [older 1, line 2, line 3, line 4]
+    const next = ingest(EMPTY_FEED, [batch([1, 2, 3, 4, 5].map((n) => line(n)))], 3).rows;
+    // [older 2, line 3, line 4, line 5]: the note is new, line 3 moved from 2 to 1.
+    expect(frontShift(prev, next)).toBe(1);
+    expect(frontShift(rows([1, 2]), rows([1, 2, 3]))).toBe(0);
+    expect(frontShift(rows([1, 2]), rows([8, 9]))).toBeNull();
+  });
+
+  it("follows the end after every change while following, also when the count stays the same", () => {
+    const at = 1000;
+    // At the limit a batch adds as many rows as leave the front: same length, new rows.
+    expect(followAction(rows([2, 3]), true, null, at)).toEqual({ kind: "end" });
+    expect(followAction(rows([2, 3]), false, null, at)).toBeNull();
+  });
+
+  it("keeps scrolling to a match by its row while lines leave the front, for a while", () => {
+    const before = rows([1, 2, 3, 4]);
+    const target = { ord: before[2].ord, until: 2000 };
+    const after = rows([3, 4, 5]);
+    expect(followAction(after, false, target, 1500)).toEqual({ kind: "index", index: 0 });
+    expect(followAction(after, false, target, 2500)).toBeNull();
+    expect(followAction(rows([4, 5]), false, target, 1500)).toBeNull();
+  });
+
+  it("a list that starts over (filter change) opens at the end or at the line it showed", () => {
+    const list = rows([1, 2, 3, 4]);
+    expect(initialIndex(list, true, list[2].ord)).toEqual({ index: "LAST", align: "end" });
+    expect(initialIndex(list, false, list[2].ord)).toBe(2);
+    // The line it showed is filtered out now: the next one after it.
+    expect(initialIndex(list, false, list[2].ord - 1)).toBe(2);
+    expect(initialIndex(list, false, null)).toEqual({ index: "LAST", align: "end" });
   });
 });
 
@@ -229,7 +258,7 @@ describe("the stream", () => {
     runFrame();
     off();
     expect(commits).toBe(1);
-    expect(flushes.count).toBe(1);
+    expect(testing.commits).toBe(1);
     expect(useLog.getState().feed.lines).toBe(300);
   });
 
@@ -237,6 +266,8 @@ describe("the stream", () => {
     vi.useFakeTimers();
     try {
       attachTo(7);
+      // The attach goes out after the call before it has settled.
+      await vi.advanceTimersByTimeAsync(1);
       send(batch([line(1)]));
       expect(useLog.getState().feed.lines).toBe(0);
       vi.advanceTimersByTime(300);
@@ -248,6 +279,7 @@ describe("the stream", () => {
 
   it("drops batches of an earlier channel and of another run", async () => {
     attachTo(7);
+    await settle();
     attachTo(7);
     await settle();
     send(batch([line(1, "old channel")]), 0);
@@ -295,11 +327,12 @@ describe("the stream", () => {
     release();
     await settle();
     await settle();
-    expect(calls.map((c) => c[0])).toEqual(["log_attach", "log_attach"]);
+    // Effect, cleanup, effect: only the last one reaches the backend.
+    expect(calls.map((c) => c[0])).toEqual(["log_attach"]);
     detach();
     await settle();
     await settle();
-    expect(calls.map((c) => c[0])).toEqual(["log_attach", "log_attach", "log_detach"]);
+    expect(calls.map((c) => c[0])).toEqual(["log_attach", "log_detach"]);
   });
 
   it("complete ends the stream and reloads the runs for the exit state", async () => {
@@ -312,14 +345,73 @@ describe("the stream", () => {
     expect(calls.some((c) => c[0] === "log_runs")).toBe(true);
   });
 
-  it("expired makes the log unavailable and keeps an open line as cut", async () => {
+  it("expired makes the log unavailable and lets its lines go, an open line too", async () => {
     attachTo(7);
     await settle();
-    send(batch([line(1, "half", { more: true })]));
+    send(batch([line(1), line(2, "half", { more: true })]));
     send(batch([], { end: "expired" }));
     runFrame();
     expect(useLog.getState().attach).toEqual({ status: "gone", runId: 7 });
-    expect((useLog.getState().feed.rows[0] as LineRow).cut).toBe(true);
+    expect(useLog.getState().feed).toEqual(EMPTY_FEED);
+  });
+
+  it("attaching again after gone starts empty from the oldest line", async () => {
+    attachTo(7);
+    await settle();
+    send(batch([line(1), line(2)]));
+    send(batch([], { end: "expired" }));
+    runFrame();
+    attachTo(7);
+    await settle();
+    expect(calls.filter((c) => c[0] === "log_attach").at(-1)).toEqual([
+      "log_attach",
+      { runId: 7, sinceSeq: 0 },
+    ]);
+    expect(useLog.getState().feed.rows).toEqual([]);
+  });
+
+  it("a frame and the timer both pending apply the queue once", async () => {
+    vi.useFakeTimers();
+    try {
+      attachTo(7);
+      // The attach goes out after the call before it has settled.
+      await vi.advanceTimersByTimeAsync(1);
+      send(batch([line(1)]));
+      runFrame();
+      vi.advanceTimersByTime(300);
+      expect(testing.commits).toBe(1);
+      expect(useLog.getState().feed.lines).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a detach after a rejected attach still reaches the backend", async () => {
+    attachFails = { code: "internal", params: {}, action: null, detail: "y" };
+    attachTo(7);
+    await settle();
+    detach();
+    await settle();
+    expect(calls.map((c) => c[0])).toEqual(["log_attach", "log_detach"]);
+  });
+
+  it("another run resets what belonged to the last one: copy result, open error, selection", async () => {
+    attachTo(7);
+    await settle();
+    useLog.setState({
+      copy: { status: "failed", error: null },
+      omitted: 4,
+      openError: { code: "openFailed", params: {}, action: null, detail: "" },
+      allSelected: true,
+    });
+    attachTo(8);
+    const s = useLog.getState();
+    expect([s.copy, s.omitted, s.openError, s.allSelected]).toEqual([
+      { status: "idle" },
+      0,
+      null,
+      false,
+    ]);
   });
 
   it("an invalidInput on runId means the log is gone, another error is a failure", async () => {
@@ -362,7 +454,38 @@ describe("copy and open", () => {
       { error: true, warning: true, info: true, debug: false, other: true, text: "" },
     ]);
     expect(written).toEqual(["a\nb\n"]);
-    expect(useLog.getState().copy).toEqual({ status: "copied", omitted: 5 });
+    expect(useLog.getState().copy).toEqual({ status: "copied" });
+    expect(useLog.getState().omitted).toBe(5);
+  });
+
+  it("Copied goes back after 2 s also when lines were left out; the note stays until the next copy or filter change", async () => {
+    vi.useFakeTimers();
+    try {
+      let omitted = 5;
+      mockIPC(() => ({ text: "a", lines: 1, omitted }));
+      await useLog.getState().copyLines(7, async () => {});
+      expect(useLog.getState().copy.status).toBe("copied");
+      vi.advanceTimersByTime(2000);
+      expect(useLog.getState().copy.status).toBe("idle");
+      expect(useLog.getState().omitted).toBe(5);
+      omitted = 0;
+      await useLog.getState().copyLines(7, async () => {});
+      expect(useLog.getState().omitted).toBe(0);
+      omitted = 2;
+      await useLog.getState().copyLines(7, async () => {});
+      useLog.getState().setLevel("info", false);
+      expect(useLog.getState().omitted).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a filter change ends a select-all and the omitted note, an open-file error stays", () => {
+    const openError = { code: "openFailed" as const, params: {}, action: null, detail: "" };
+    useLog.setState({ allSelected: true, omitted: 3, openError });
+    useLog.getState().setLevel("debug", false);
+    expect([useLog.getState().allSelected, useLog.getState().omitted]).toEqual([false, 0]);
+    expect(useLog.getState().openError).toBe(openError);
   });
 
   it("a refused clipboard or a failed copy says so", async () => {
@@ -385,5 +508,118 @@ describe("copy and open", () => {
     await useLog.getState().openFile(7);
     expect(targets).toEqual([{ kind: "gameLog", runId: 7 }]);
     expect(useLog.getState().openError?.code).toBe("openFailed");
+  });
+});
+
+describe("attach order and the chosen run", () => {
+  // The backend runs `log_attach` on a multi-thread runtime: of two calls in flight, the one it
+  // finishes last is the consumer. This mock makes that explicit: a call takes effect when it is
+  // settled, and `settleAll` settles whatever is in flight newest first (the worst order).
+  let inFlight: {
+    runId: number;
+    channel: { onmessage?: (b: LogBatch) => void };
+    done: () => void;
+  }[];
+  let consumer: { runId: number; channel: { onmessage?: (b: LogBatch) => void } } | null;
+  let sent: string[];
+  let frames: FrameRequestCallback[];
+
+  beforeEach(() => {
+    resetLog();
+    inFlight = [];
+    consumer = null;
+    sent = [];
+    frames = [];
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => frames.push(cb));
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    mockIPC((cmd, args) => {
+      const a = args as Record<string, unknown>;
+      sent.push(cmd === "log_attach" ? `attach ${a.runId as number}` : cmd);
+      if (cmd === "log_attach") {
+        const call = { runId: a.runId as number, channel: a.channel as never };
+        return new Promise<null>((resolve) =>
+          inFlight.push({
+            ...call,
+            done: () => {
+              consumer = call;
+              resolve(null);
+            },
+          }),
+        );
+      }
+      if (cmd === "log_detach") consumer = null;
+      if (cmd === "log_runs") return [{ runId: 4 }];
+      return null;
+    });
+  });
+  afterEach(() => {
+    resetLog();
+    clearMocks();
+    vi.unstubAllGlobals();
+  });
+
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  async function settleAll() {
+    for (let round = 0; round < 10; round++) {
+      await tick();
+      if (inFlight.length === 0) continue;
+      for (const c of inFlight.splice(0).reverse()) c.done();
+    }
+  }
+  /** The backend sends a line to whoever it holds as the consumer. */
+  const stream = (seq: number) =>
+    consumer?.channel.onmessage?.(
+      batch([line(seq, `run ${consumer.runId}`)], { runId: consumer.runId }),
+    );
+
+  it("a second attach waits for the first, so the backend ends on the newest channel", async () => {
+    attachTo(7);
+    await tick();
+    attachTo(8);
+    await settleAll();
+    expect(consumer?.runId).toBe(8);
+    stream(1);
+    frames.splice(0).forEach((f) => f(0));
+    expect(messages(useLog.getState().feed.rows)).toEqual(["run 8"]);
+  });
+
+  it("A, then B, then A again ends on A with A's lines", async () => {
+    attachTo(7);
+    await tick();
+    attachTo(8);
+    attachTo(7);
+    await settleAll();
+    expect(sent).toEqual(["attach 7", "attach 7"]);
+    expect(consumer?.runId).toBe(7);
+    stream(1);
+    frames.splice(0).forEach((f) => f(0));
+    expect(messages(useLog.getState().feed.rows)).toEqual(["run 7"]);
+  });
+
+  it("StrictMode's effect, cleanup, effect sends one attach and leaves it in place", async () => {
+    attachTo(7);
+    detach();
+    attachTo(7);
+    await settleAll();
+    expect(sent).toEqual(["attach 7"]);
+    expect(consumer?.runId).toBe(7);
+  });
+
+  it("a detach waits for the attach before it", async () => {
+    attachTo(7);
+    detach();
+    await tick();
+    attachTo(7);
+    await tick();
+    detach();
+    await settleAll();
+    expect(consumer).toBeNull();
+  });
+
+  it("the run chosen before the run list is there becomes 'the newest' when it is the newest", async () => {
+    useLog.getState().choose(4);
+    expect(useLog.getState().chosen).toBe(4);
+    await useLog.getState().loadRuns();
+    expect(useLog.getState().chosen).toBeNull();
   });
 });

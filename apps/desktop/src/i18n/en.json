@@ -366,8 +366,8 @@
   "log.copy": "Copy",
   "log.copying": "Copying…",
   "log.copied": "Copied",
-  "log.copyOmitted_one": "The oldest line is missing because at most 4 MB are copied.",
-  "log.copyOmitted_other": "The oldest {{count, number}} lines are missing because at most 4 MB are copied.",
+  "log.copyOmitted_one": "The oldest line is missing because at most 4 MiB are copied.",
+  "log.copyOmitted_other": "The oldest {{count, number}} lines are missing because at most 4 MiB are copied.",
   "log.copyFailed": "The lines could not be copied.",
   "log.openFile": "Open log file",
   "log.run.label": "Run",
@@ -397,5 +397,6 @@
   "log.loadFailed.body": "Try again. If that does not help, restart Hengst Client.",
   "log.run.choose": "Choose run",
   "errors.javaInvalid.title": "Java could not be used",
-  "errors.javaInvalid.body": "The Java chosen in the settings cannot be used. Choose Java again there or reset it."
+  "errors.javaInvalid.body": "The Java chosen in the settings cannot be used. Choose Java again there or reset it.",
+  "log.loading": "Loading the log…"
 }
