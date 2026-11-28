@@ -7,7 +7,7 @@ const workspaceTarget = resolve(import.meta.dirname, "../../../../target/debug")
 
 describe("targetDebugDir", () => {
   it("uses CARGO_TARGET_DIR when it is set", () => {
-    const dir = resolve("D:/build-cache/x");
+    const dir = resolve(import.meta.dirname, "elsewhere", "build");
     expect(targetDebugDir({ CARGO_TARGET_DIR: dir })).toBe(join(dir, "debug"));
   });
 

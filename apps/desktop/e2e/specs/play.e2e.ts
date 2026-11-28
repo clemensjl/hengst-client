@@ -56,10 +56,14 @@ describe("playing", () => {
   it("cancels during the preparation, and a double click never undoes its first click", async () => {
     setScript(["out must not run", "exit 0"]);
     await (await mainButton("Play")).click();
-    // Preparing: the button turns into Cancel. A double click on it cancels once; its second
-    // click lands on "Play" within 600 ms and is ignored, so no new start begins.
+    // Preparing: the button turns into Cancel. One click cancels; the second click of a double
+    // click lands on "Play" within 600 ms of its change and is ignored, so no new start begins.
+    // WebDriver's `doubleClick` sends both clicks before the cancel is answered, so it would never
+    // reach the guard: the second click is sent as soon as the label reads "Play" again.
     const cancel = await mainButton("Cancel", 10_000);
-    await cancel.doubleClick();
+    await cancel.click();
+    const again = await mainButton("Play", 15_000);
+    await again.click();
     await waitReady(15_000);
     await browser.pause(1500);
     await mainButton("Play");
@@ -70,6 +74,7 @@ describe("playing", () => {
     expect(gameLogs()).toEqual([]);
     await openView("Play");
 
+    // Well past 600 ms the button takes clicks again: this start goes through.
     // A double click on Play starts once and does not cancel: the second click hits "Cancel"
     // within 600 ms and is ignored. (If WebDriver's two clicks both land before the button has
     // changed, the second one is a second start, which the app answers "busy": that would show

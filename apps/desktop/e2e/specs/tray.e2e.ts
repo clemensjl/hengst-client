@@ -21,6 +21,8 @@ import { caption, gameLogs, mainButton, openView, waitReady } from "../support/g
 
 /** fake-java with a hidden window that ends the game when asked to close. */
 const GAME = ["out tray game started", "window", "out tray game closed"];
+/** fake-java without any window: a stop reaches nothing, only the force stop ends it. */
+const WINDOWLESS = ["out windowless game started", "sleep 600000"];
 
 let pid = 0;
 
@@ -86,9 +88,12 @@ describe("tray and quit", () => {
     expect(await cspViolations()).toEqual([]);
   });
 
-  it("asks before quitting while a game runs; Keep playing keeps both, a double click quits once", async () => {
+  it("asks before quitting while a game runs; Keep playing keeps both, a double click never force-stops", async () => {
     await openView("Play");
-    setScript(GAME);
+    // A game without a window: "Stop game and quit" reaches nothing to ask, so the button turns
+    // into "Force stop and quit" at once. Only then does the second click of a double click meet
+    // the force button (with a window the game exits and the force button never appears).
+    setScript(WINDOWLESS);
     await (await mainButton("Play")).click();
     await pageSaysRunning();
     await waitWindow(false, "the window stayed visible after the game started");
@@ -111,15 +116,28 @@ describe("tray and quit", () => {
     await expect(alertDialog()).toBeDisplayed();
     const runsBefore = gameLogs().length;
     await alertDialog().$("button=Stop game and quit").doubleClick();
-    // The app quits once the game has exited; the session ends with it.
+    await expect(alertDialog().$("button=Force stop and quit")).toBeDisplayed();
+    await browser.pause(1500);
+    // The second click was ignored: the game still runs, the app too, the question stays.
+    expect(alive(pid)).toBe(true);
+    await expect(alertDialog()).toBeDisplayed();
+    expect(
+      await browser.execute(
+        () => document.querySelector('[data-slot="play-caption"]')?.textContent ?? "",
+      ),
+    ).toContain("Running since");
+    // Past the 600 ms a click forces the stop; the app quits once the game has exited, and the
+    // session ends with it.
+    await alertDialog().$("button=Force stop and quit").click();
     await browser.waitUntil(async () => !alive(pid), {
       timeout: 30_000,
-      timeoutMsg: "the app did not quit after the game stopped",
+      timeoutMsg: "the app did not quit after the force stop",
     });
     const logs = gameLogs();
     expect(logs.length).toBe(runsBefore);
     const last = logs.at(-1) ?? "";
-    expect(last).toContain("CLOSE REQUESTED");
-    expect(last).toContain("tray game closed");
+    expect(last).toContain("windowless game started");
+    // Ended by force, never asked to close (it has no window to ask).
+    expect(last).not.toContain("CLOSE REQUESTED");
   });
 });

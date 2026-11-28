@@ -12,8 +12,9 @@ const FAST_MS = 3000;
 describe("a stored Java path on a network share", () => {
   it("shows the Java setting as unusable", async () => {
     await openView("Settings");
-    // The Java setting sits in the collapsed "Advanced" section.
-    await (await byRole("button", "Advanced")).click();
+    // "Advanced" is open by itself while the stored path cannot be used (DESIGN.md 11.7); a
+    // click here would close it.
+    await expect(await byRole("button", "Advanced")).toHaveAttribute("aria-expanded", "true");
     await expect($("main")).toHaveText(
       expect.stringContaining("Choose a Java file on a local drive."),
       { wait: FAST_MS },
@@ -36,6 +37,12 @@ describe("a stored Java path on a network share", () => {
     await expect($('[data-slot="launch-progress"]')).not.toBeExisting();
     await (await mainButton("Open settings")).click();
     await expect($("header h1")).toHaveText("Settings");
+    // It lands on the reason, not on a page that looks fine.
+    await expect($("main")).toHaveText(
+      expect.stringContaining("Choose a Java file on a local drive."),
+      { wait: FAST_MS },
+    );
+    await expect(await byRole("button", "Reset")).toBeDisplayed();
   });
 
   it("logged no Content Security Policy violation", async () => {
