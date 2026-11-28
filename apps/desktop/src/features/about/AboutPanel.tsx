@@ -10,6 +10,7 @@ import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import { api, IpcError } from "@/ipc/client";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import { useApp } from "@/stores/app";
+import { LicensesDialog } from "./LicensesDialog";
 
 /** The "Source code" link: the address is fixed in Rust, only the target name is sent. */
 function SourceLink() {
@@ -106,6 +107,14 @@ export function AboutPanel() {
               {t("about.version", { version: info.data.version })}
               {info.data.devBuild && <Badge>{t("common.devBuild")}</Badge>}
             </span>
+          ) : info.status === "error" ? (
+            <span className="flex flex-wrap items-center gap-2 text-small text-danger">
+              <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
+              <span role="alert">{t("about.versionFailed")}</span>
+              <Button variant="ghost" onClick={() => void loadInfo()}>
+                {t("common.retry")}
+              </Button>
+            </span>
           ) : (
             <Delayed>
               <Skeleton className="h-5 w-24" />
@@ -118,6 +127,7 @@ export function AboutPanel() {
         <p>{t("about.license")}</p>
       </div>
       <SourceLink />
+      <LicensesDialog />
       {facts()}
     </div>
   );

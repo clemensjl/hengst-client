@@ -4,3 +4,4 @@ src-tauri
 pnpm-lock.yaml
 src/ipc/bindings
 src/components/ui
+src/features/about/licenses.json
