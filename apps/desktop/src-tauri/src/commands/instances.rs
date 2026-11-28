@@ -370,7 +370,7 @@ pub async fn instance_select_within(
 ///
 /// - The instance the app is preparing or running is refused (`InstanceRunning`), and so is one
 ///   whose game an earlier session of the app started (the core checks the run lock, which the
-///   game holds). A game the CLI started holds no run lock and is not covered. Task 15 sets
+///   game holds). A game the CLI started holds the run lock as well and is covered. Task 15 sets
 ///   `active_instance`; it must do that while holding `instance_lock`, or a delete can slip in
 ///   between the check and the start.
 /// - If the trasher fails with the folder untouched, the error is `RecycleBinFailed` with a

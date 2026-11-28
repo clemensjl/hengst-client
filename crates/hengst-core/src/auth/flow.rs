@@ -73,6 +73,11 @@ pub async fn launch_account_with<S: SecretStore>(
     save: impl FnOnce(&LoginSession) -> Result<()>,
 ) -> Result<Account> {
     let stored = store.find(selector)?;
+    // Flagged (a renewal was refused, or a sign-out failed halfway and may have left the
+    // Minecraft token behind): neither that token nor a renewal is used.
+    if stored.sign_in_required {
+        return Err(Error::Auth(AuthError::LoginExpired { name: stored.name }));
+    }
     let saved = |stored: &StoredAccount| -> Result<Account> {
         Ok(Account::microsoft(
             stored.name.clone(),
@@ -157,6 +162,22 @@ mod tests {
         let a = launch_account(&store, None, None, 0).await.unwrap();
         assert_eq!(a.access_token().expose(), "mc-old");
         assert_eq!(a.xuid(), "2535");
+    }
+
+    /// A sign-out that failed halfway leaves the entry "sign in again" with its Minecraft token
+    /// still stored: neither a token that is not due nor a renewal may start the game with it.
+    #[tokio::test]
+    async fn an_account_marked_sign_in_required_is_refused_before_any_token_or_renewal() {
+        for expires_at in [10_000, 1] {
+            let (_d, store) = store_with_old_token(expires_at);
+            store.mark_sign_in_required("Steve").unwrap();
+            // No auth: a renewal attempt would report `MissingClientId` instead.
+            let e = launch_account(&store, None, None, 0).await.unwrap_err();
+            assert!(
+                matches!(&e, Error::Auth(AuthError::LoginExpired { name }) if name == "Steve"),
+                "{e:?}"
+            );
+        }
     }
 
     #[test]

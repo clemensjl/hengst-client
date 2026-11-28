@@ -14,8 +14,8 @@
 //! empty file in `tmp` costs nothing.
 //!
 //! The hand-over happens before the game's first instruction, so there is no moment in which the
-//! game runs without the lock. What it does not cover: a game started by the CLI (`hengst launch`
-//! does not take the lock).
+//! game runs without the lock. A game started by the CLI holds it too: `hengst launch`
+//! (`launch::run`) takes the lock before the start and hands it to the game right after it.
 
 use crate::paths::{validate_id, Paths};
 use crate::Result;

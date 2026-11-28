@@ -14,6 +14,9 @@
 //!   icon could not be shown, nothing hides into it: the window closes, the game runs on alone.
 //! - "Quit" while a game runs (also while it stops) shows and focuses the window and asks the web
 //!   view to confirm (`AppEvent::QuitRequested`); without a game it quits at once.
+//! - A start in its commit window (its process is being created, the state still `Preparing`)
+//!   counts as a game: close and quit wait for `Running` (then as above) or for the failure. A
+//!   hard kill of the launcher in that window cannot be covered.
 //! - "Stop game" is `play::stop`, so the exit counts as requested. If it reached no window, the
 //!   window is shown and `AppEvent::StopNoWindow` tells the start page, which then offers the
 //!   force stop: the game was not asked to close.
@@ -101,11 +104,18 @@ pub enum CloseAction {
     HideToTray,
     /// The window closes and with it the app.
     Close,
+    /// The close is prevented until the committing start has an outcome, then decided again.
+    Wait,
 }
 
-pub fn on_close_requested(state: &GameStateDto) -> CloseAction {
+/// `committing`: a start is in its commit window (`Operations::has_committing(OpKind::Play)`).
+/// Its process is being created suspended in a detached job; ending the launcher then would leave
+/// it suspended for good, holding the run lock. So that window counts as a game.
+pub fn on_close_requested(state: &GameStateDto, committing: bool) -> CloseAction {
     if game_runs(state) {
         CloseAction::HideToTray
+    } else if committing {
+        CloseAction::Wait
     } else {
         CloseAction::Close
     }
@@ -117,14 +127,38 @@ pub enum QuitAction {
     Exit,
     /// Show the window and let the web view ask first.
     Confirm,
+    /// Wait for the committing start's outcome, then decide again (`Confirm` once it runs).
+    Wait,
 }
 
-pub fn on_quit(state: &GameStateDto) -> QuitAction {
+pub fn on_quit(state: &GameStateDto, committing: bool) -> QuitAction {
     if game_runs(state) {
         QuitAction::Confirm
+    } else if committing {
+        QuitAction::Wait
     } else {
         QuitAction::Exit
     }
+}
+
+/// `app_quit` may quit: no game process exists and none is being created.
+pub fn quit_allowed(state: &GameStateDto, committing: bool) -> bool {
+    on_quit(state, committing) == QuitAction::Exit
+}
+
+/// Waits until no start is committing any more: its process runs (the state says `Running`) or
+/// the start failed. Creating the process takes moments.
+pub async fn commit_settled(ops: &crate::accounts::Operations) {
+    while ops.has_committing(crate::accounts::OpKind::Play) {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
+/// Whether a start is committing right now (see `on_close_requested`).
+pub fn committing<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.state::<AppState>()
+        .operations
+        .has_committing(crate::accounts::OpKind::Play)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -283,10 +317,35 @@ fn restore_without_focus<R: Runtime>(window: &WebviewWindow<R>) {
 }
 
 /// Quits: what is still being prepared is cancelled, the tray icon is removed on the way out
-/// (Tauri drops its tray icons before the exit).
+/// (Tauri drops its tray icons before the exit). A start that committed before the cancel reached
+/// it is not cut off mid-spawn: once it has an outcome the quit is decided again (`quit`), which
+/// asks first if its game now runs. After the cancel no other start can begin its commit.
 pub fn exit_app<R: Runtime>(app: &AppHandle<R>) {
-    app.state::<AppState>().operations.cancel_all();
+    let ops = app.state::<AppState>().operations.clone();
+    ops.cancel_all();
+    if ops.has_committing(crate::accounts::OpKind::Play) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            commit_settled(&ops).await;
+            quit(&app);
+        });
+        return;
+    }
     app.exit(0);
+}
+
+/// "Quit" from the tray: asks first while a game runs, otherwise quits.
+pub(crate) fn quit<R: Runtime>(app: &AppHandle<R>) {
+    let state = app.state::<AppState>().game.state();
+    match on_quit(&state, committing(app)) {
+        QuitAction::Confirm => {
+            show_window(app, true);
+            // Waits for the page if it is reloading right now.
+            app.state::<AppState>().events.request_quit();
+        }
+        // `exit_app` waits for a committing start and comes back here.
+        QuitAction::Wait | QuitAction::Exit => exit_app(app),
+    }
 }
 
 /// Watches the game's states and keeps the tray and the window in step. Call once, after the
@@ -414,14 +473,7 @@ pub(crate) fn on_menu<R: Runtime>(app: &AppHandle<R>, id: &str) {
             let app = app.clone();
             tauri::async_runtime::spawn(async move { stop_from_tray(&app).await });
         }
-        MENU_QUIT => match on_quit(&app.state::<AppState>().game.state()) {
-            QuitAction::Confirm => {
-                show_window(app, true);
-                // Waits for the page if it is reloading right now.
-                app.state::<AppState>().events.request_quit();
-            }
-            QuitAction::Exit => exit_app(app),
-        },
+        MENU_QUIT => quit(app),
         _ => {}
     }
 }
@@ -489,20 +541,47 @@ mod tests {
 
     #[test]
     fn close_hides_to_tray_while_a_game_runs() {
-        assert_eq!(on_close_requested(&running()), CloseAction::HideToTray);
-        assert_eq!(on_close_requested(&stopping()), CloseAction::HideToTray);
+        for committing in [false, true] {
+            assert_eq!(
+                on_close_requested(&running(), committing),
+                CloseAction::HideToTray
+            );
+            assert_eq!(
+                on_close_requested(&stopping(), committing),
+                CloseAction::HideToTray
+            );
+        }
         for state in [idle(), ended(), preparing()] {
-            assert_eq!(on_close_requested(&state), CloseAction::Close, "{state:?}");
+            assert_eq!(
+                on_close_requested(&state, false),
+                CloseAction::Close,
+                "{state:?}"
+            );
         }
     }
 
     #[test]
     fn quit_while_running_needs_confirmation() {
-        assert_eq!(on_quit(&running()), QuitAction::Confirm);
-        assert_eq!(on_quit(&stopping()), QuitAction::Confirm);
-        for state in [idle(), ended(), preparing()] {
-            assert_eq!(on_quit(&state), QuitAction::Exit, "{state:?}");
+        for committing in [false, true] {
+            assert_eq!(on_quit(&running(), committing), QuitAction::Confirm);
+            assert_eq!(on_quit(&stopping(), committing), QuitAction::Confirm);
         }
+        for state in [idle(), ended(), preparing()] {
+            assert_eq!(on_quit(&state, false), QuitAction::Exit, "{state:?}");
+        }
+    }
+
+    /// A start in its commit window (the process is being created, the state still says
+    /// `Preparing`) counts as a game: closing or quitting then waits for `Running` or the failure
+    /// instead of ending the launcher mid-spawn.
+    #[test]
+    fn close_and_quit_wait_while_a_start_is_committing() {
+        assert_eq!(on_close_requested(&preparing(), true), CloseAction::Wait);
+        assert_eq!(on_quit(&preparing(), true), QuitAction::Wait);
+        assert!(!quit_allowed(&preparing(), true));
+        assert!(!quit_allowed(&running(), false));
+        assert!(quit_allowed(&preparing(), false));
+        assert!(quit_allowed(&ended(), false));
     }
 
     /// The window per state change, with and without "minimize to the notification area".

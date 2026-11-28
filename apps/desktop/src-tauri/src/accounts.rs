@@ -333,6 +333,15 @@ impl Operations {
         }
     }
 
+    /// An operation of `kind` is saving its result right now. For `Play` that is the commit
+    /// window: the game process is being created and the state still says `Preparing`.
+    pub fn has_committing(&self, kind: OpKind) -> bool {
+        lock(&self.inner)
+            .running
+            .values()
+            .any(|e| e.kind == kind && e.committing)
+    }
+
     /// The operation ends by itself. `true`: it owns the terminal event and must send it. `false`:
     /// `cancel` was first and has sent `Cancelled`.
     pub(crate) fn finish(&self, id: OperationId) -> bool {
@@ -576,6 +585,14 @@ impl Accounts {
             Ok(stored) => stored,
             Err(e) => return (Err(e), false),
         };
+        // Already flagged (also by a sign-out that failed halfway, which can leave the Minecraft
+        // token stored): refused before any token is read or renewed; nothing new to mark.
+        if stored.sign_in_required {
+            return (
+                Err(Error::Auth(AuthError::LoginExpired { name: stored.name })),
+                false,
+            );
+        }
         // A renewed session is saved like a sign-in: under `io_lock`, and only if the entry is
         // unchanged (it may have been signed out while the renewal was in flight, fully or
         // halfway, or signed out and in again). The lock is taken inside the synchronous

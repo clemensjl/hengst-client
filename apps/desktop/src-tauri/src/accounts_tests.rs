@@ -627,6 +627,26 @@ async fn an_operation_that_is_saving_cannot_be_cancelled() {
     assert!(!ops.try_commit(id));
 }
 
+/// Only a committing operation of the asked kind counts, and only until it finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn has_committing_sees_only_a_committing_operation_of_that_kind() {
+    let ops = Operations::default();
+    let pending = |_: OperationId| tokio::spawn(std::future::pending::<()>()).abort_handle();
+    let login = ops.start(OpKind::Login, Box::new(|| {}), pending);
+    let play = ops.start(OpKind::Play, Box::new(|| {}), pending);
+    assert!(!ops.has_committing(OpKind::Play), "not committing yet");
+    assert!(ops.try_commit(login));
+    assert!(
+        !ops.has_committing(OpKind::Play),
+        "a committing sign-in is no game"
+    );
+    assert!(ops.has_committing(OpKind::Login));
+    assert!(ops.try_commit(play));
+    assert!(ops.has_committing(OpKind::Play));
+    assert!(ops.finish(play));
+    assert!(!ops.has_committing(OpKind::Play));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn second_login_cancels_the_first() {
     let h = Harness::new(AuthScenario::DevicePending(u32::MAX), Browser::Silent).await;

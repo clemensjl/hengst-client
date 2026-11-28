@@ -1083,6 +1083,16 @@ async fn a_fresh_sign_in_during_the_login_renewal_is_kept_and_not_marked() {
     .unwrap();
     assert_eq!(now, fresh, "the fresh sign-in was overwritten or marked");
     assert!(!now.sign_in_required);
+    // The stored token is still the fresh sign-in's, not the late renewal's.
+    {
+        use hengst_core::auth::store::{secret_key, SecretKind};
+        let token = fx
+            .secrets
+            .get(&secret_key(PLAYER_A.uuid, SecretKind::Minecraft))
+            .unwrap()
+            .unwrap();
+        assert_eq!(token.expose(), "test-FRESH-TOKEN-of-the-new-sign-in");
+    }
     assert!(!fx
         .states()
         .iter()
@@ -1300,6 +1310,32 @@ async fn a_half_failed_sign_out_during_the_renewal_is_not_revived() {
         .states()
         .iter()
         .any(|s| matches!(s, GameStateDto::Running { .. })));
+}
+
+/// A sign-out that failed after deleting the refresh token leaves the entry "sign in again" with
+/// the Minecraft token still stored. Play with that token (not due) must not start the game, and
+/// nothing goes over the network (no renewal, no preparation).
+#[tokio::test(flavor = "multi_thread")]
+async fn an_account_left_sign_in_required_by_a_half_failed_sign_out_does_not_launch() {
+    let fx = fixture(Login::Valid).await;
+    fx.script("out started\nexit 0\n");
+    fx.state
+        .accounts
+        .mark_sign_in_required(PLAYER_A.uuid)
+        .unwrap();
+    let (_, events) = fx.play().await;
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::LoginExpired, "{error:?}");
+    assert_eq!(fx.idle().await, None);
+    let requests = fx.server.received_requests().await.unwrap();
+    assert!(requests.is_empty(), "{requests:?}");
+    assert!(!fx
+        .states()
+        .iter()
+        .any(|s| matches!(s, GameStateDto::Running { .. })));
+    assert!(fx.lines.lock().unwrap().is_empty());
 }
 
 // ---- the live log (Task 18) ----

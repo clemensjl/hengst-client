@@ -26,7 +26,8 @@
 //!   The exit moves to `Idle { last_exit }`, also when the watching task ends without a result
 //!   (code -1), so no state is ever stuck.
 //! - When the launcher closes, nothing stops the game: its job has no kill-on-close. A game that
-//!   is still being prepared is cancelled with the window (`cancel_all`).
+//!   is still being prepared is cancelled with the window (`cancel_all`); one that has committed
+//!   holds the close and the quit until it runs or failed (`tray.rs`).
 //!
 //! Game output: the core calls the line sink on its reader thread while it holds the run's output
 //! lock, so the sink only puts the line into an unbounded channel (it never waits and never drops

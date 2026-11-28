@@ -336,21 +336,44 @@ fn create_window(
         ),
     }
     cancel_operations_when_destroyed(&window);
-    // While a game runs, closing hides the window into the tray (DESIGN.md 11.11).
+    // While a game runs, closing hides the window into the tray (DESIGN.md 11.11). While a start
+    // is committing (its process is being created), the close waits for its outcome and is then
+    // decided again.
     {
         let (hidden, handle) = (window.clone(), app.clone());
         window.on_window_event(move |event| {
             if let WindowEvent::CloseRequested { api, .. } = event {
+                use crate::tray::CloseAction;
                 let state = handle.state::<AppState>().game.state();
-                // Never hide into a tray icon that could not be shown: the window would be lost.
-                let hide = crate::tray::on_close_requested(&state)
-                    == crate::tray::CloseAction::HideToTray
-                    && crate::tray::tray_shown(&handle);
-                if hide {
-                    api.prevent_close();
-                    if let Err(e) = hidden.hide() {
-                        eprintln!("could not hide the main window: {e}");
+                let ops = handle.state::<AppState>().operations.clone();
+                let mut action =
+                    crate::tray::on_close_requested(&state, crate::tray::committing(&handle));
+                if action == CloseAction::Close {
+                    // What is being prepared is cancelled with the window anyway; cancelled now, no
+                    // start can begin its commit any more, and one that already did holds the close.
+                    ops.cancel_all();
+                    action =
+                        crate::tray::on_close_requested(&state, crate::tray::committing(&handle));
+                }
+                match action {
+                    // Never hide into a tray icon that could not be shown: the window would be lost.
+                    CloseAction::HideToTray if crate::tray::tray_shown(&handle) => {
+                        api.prevent_close();
+                        if let Err(e) = hidden.hide() {
+                            eprintln!("could not hide the main window: {e}");
+                        }
                     }
+                    CloseAction::Wait => {
+                        api.prevent_close();
+                        let again = hidden.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::tray::commit_settled(&ops).await;
+                            if let Err(e) = again.close() {
+                                eprintln!("could not close the main window: {e}");
+                            }
+                        });
+                    }
+                    _ => {}
                 }
             }
         });

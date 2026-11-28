@@ -36,10 +36,16 @@ fn installed_memory_mb() -> Option<u32> {
     None
 }
 
-/// Whether `app_quit` may quit now: no game process exists (a start still being prepared is
-/// cancelled by the quit).
+/// Whether `app_quit` may quit now: no game process exists and none is being created (a start
+/// still being prepared is cancelled by the quit).
 pub fn app_quit_allowed(state: &AppState) -> bool {
-    !crate::tray::game_runs(&state.game.state())
+    let game = state.game.state();
+    crate::tray::quit_allowed(
+        &game,
+        state
+            .operations
+            .has_committing(crate::accounts::OpKind::Play),
+    )
 }
 
 /// Quits the app, the end of the quit dialog (DESIGN.md 11.11) once the game has exited. `false`
@@ -94,6 +100,26 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let state = AppState::new(Paths::new(dir.path()), Endpoints::default());
         assert_eq!(app_info_impl(&state).e2e_build, cfg!(feature = "e2e"));
+    }
+
+    /// A start whose process is being created counts as a running game for the quit dialog.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quitting_is_refused_while_a_start_is_committing() {
+        use crate::accounts::OpKind;
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(Paths::new(dir.path()), Endpoints::default());
+        assert!(app_quit_allowed(&state));
+        let op = state.operations.start(OpKind::Play, Box::new(|| {}), |_| {
+            tokio::spawn(std::future::pending::<()>()).abort_handle()
+        });
+        assert!(
+            app_quit_allowed(&state),
+            "preparing only: the quit cancels it"
+        );
+        assert!(state.operations.try_commit(op));
+        assert!(!app_quit_allowed(&state));
+        assert!(state.operations.finish(op));
+        assert!(app_quit_allowed(&state));
     }
 
     #[test]
