@@ -6,8 +6,8 @@
 //! Only what the CLI, the desktop app, the test kit and the integration tests use is public;
 //! everything else is crate-private.
 //!
-//! - [`launch`]: prepare a version (`prepare*`, `LaunchOptions`, `Endpoints`, `Prepared`) and
-//!   start it (`run`, `ensure_launch_allowed`).
+//! - [`launch`]: prepare a version (`prepare*`, `LaunchOptions`, `Endpoints`, `Prepared`), resolve
+//!   it from metadata alone (`resolve`, `Resolution`), start it (`run`, `ensure_launch_allowed`).
 //! - [`game`] and [`gamelog`]: a started game with its parsed, redacted output.
 //! - [`instances`], [`paths`], [`runlock`]: the data folder and the instances in it.
 //! - [`manifest`], [`loaders`]: version and loader metadata; [`loaders::forge`] only names the

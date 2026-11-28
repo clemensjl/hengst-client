@@ -52,6 +52,9 @@ Setting the environment variable `HENGST_MS_CLIENT_ID` before you start the app 
 
     hengst loaders <loader> <game>            # list loader builds for a game version, newest first
     hengst launch <version> --loader <fabric|quilt|legacy-fabric|forge|neoforge> [--loader-version <build>]
+    hengst launch <version> [--loader <loader>] --resolve-only  # print what would start, download nothing
+
+`--resolve-only` prints one JSON line on stdout and exits with 0 (1 and a message on stderr on errors), for example `{"game":"1.21.11","loader":{"kind":"fabric","version":"0.17.3","stable":true}}`, or `{"game":"1.21.11","loader":null}` without `--loader`. It fetches only the version manifest and the loader's version list; it downloads no libraries, assets or installers and needs no account and no Java. A named `--loader-version` must be on the loader's list.
 
 `<name>` is an account name or UUID. Without `--account`, `launch` uses the default account. Tokens are stored in the Windows Credential Manager, not in files.
 

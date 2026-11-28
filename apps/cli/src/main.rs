@@ -9,7 +9,8 @@ use hengst_core::auth::store::{load_accounts_file, AccountStore};
 use hengst_core::auth::{client_id, unix_now, AuthEndpoints, MicrosoftAuth};
 use hengst_core::download::http_client;
 use hengst_core::launch::{
-    ensure_launch_allowed, prepare_with_progress, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+    ensure_launch_allowed, prepare_with_progress, resolve, run, Endpoints, LaunchOptions,
+    Resolution, DEV_OFFLINE,
 };
 use hengst_core::loaders::{
     list_versions, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion,
@@ -72,6 +73,12 @@ enum Cmd {
         /// NeoForge also run the installer's processors)
         #[arg(long)]
         dry_run: bool,
+        /// Only resolve the game version and the loader build and print them as one JSON line,
+        /// e.g. {"game":"1.21.11","loader":{"kind":"fabric","version":"0.17.3","stable":true}}
+        /// ("loader":null without --loader). Fetches only the version manifest and the loader's
+        /// version list: no downloads, no account, no Java. Exit code 0, or 1 with an error.
+        #[arg(long, conflicts_with_all = ["account", "offline", "java", "memory", "instance", "dry_run"])]
+        resolve_only: bool,
     },
     /// List loader versions for a game version, newest first
     Loaders {
@@ -157,6 +164,21 @@ fn loader_lines(versions: &[LoaderVersion], limit: usize, default_id: &str) -> V
         .collect()
 }
 
+/// The stdout line of `launch --resolve-only`: one JSON object, keys in this order.
+fn resolution_line(r: &Resolution) -> String {
+    let text = |s: &str| serde_json::Value::from(s).to_string();
+    let loader = match &r.loader {
+        Some(l) => format!(
+            r#"{{"kind":{},"version":{},"stable":{}}}"#,
+            text(l.kind.slug()),
+            text(&l.version.id),
+            l.version.stable
+        ),
+        None => "null".to_string(),
+    };
+    format!(r#"{{"game":{},"loader":{loader}}}"#, text(&r.game))
+}
+
 /// Maps `latest` / `latest-snapshot` to a game version id; other ids pass through.
 async fn resolve_game(paths: &Paths, version: &str) -> anyhow::Result<String> {
     let manifest = fetch_manifest(&http_client(), paths, MANIFEST_URL).await?;
@@ -205,7 +227,29 @@ async fn main() -> anyhow::Result<()> {
             loader,
             loader_version,
             dry_run,
+            resolve_only,
         } => {
+            let request = loader.map(|kind| LoaderRequest {
+                kind,
+                version: loader_version.clone(),
+            });
+            if resolve_only {
+                let r = resolve(&paths, &version, request.as_ref(), &Endpoints::default()).await?;
+                if let Some(resolved) = r.loader.as_ref() {
+                    if r.loader_list_from_cache {
+                        eprintln!(
+                            "note: the {} version service is unreachable; picked {} from the last saved list",
+                            resolved.kind, resolved.version.id
+                        );
+                    }
+                    if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &r.game)
+                    {
+                        eprintln!("{note}");
+                    }
+                }
+                println!("{}", resolution_line(&r));
+                return Ok(());
+            }
             let account = match offline {
                 Some(name) => Account::offline(&name),
                 None => {
@@ -225,10 +269,7 @@ async fn main() -> anyhow::Result<()> {
                 account,
                 java,
                 memory_mb: memory,
-                loader: loader.map(|kind| LoaderRequest {
-                    kind,
-                    version: loader_version.clone(),
-                }),
+                loader: request,
             };
             let sink = Arc::new(|event: Progress| {
                 if let Some(line) = progress_line(&event) {
@@ -538,6 +579,64 @@ mod tests {
             }
             _ => panic!("expected launch"),
         }
+    }
+
+    #[test]
+    fn resolve_only_needs_no_account_and_refuses_launch_options() {
+        let cli = Cli::try_parse_from([
+            "hengst",
+            "launch",
+            "latest",
+            "--loader",
+            "fabric",
+            "--resolve-only",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Launch { resolve_only, .. } => assert!(resolve_only),
+            _ => panic!("expected launch"),
+        }
+        for extra in [
+            &["--offline", "Dev"][..],
+            &["--account", "Steve"],
+            &["--dry-run"],
+            &["--java", "java.exe"],
+            &["--memory", "1024"],
+            &["--instance", "x"],
+        ] {
+            let mut args = vec!["hengst", "launch", "1.21.11", "--resolve-only"];
+            args.extend_from_slice(extra);
+            assert!(Cli::try_parse_from(&args).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn a_resolution_is_one_json_line() {
+        let vanilla = Resolution {
+            game: "1.21.11".into(),
+            loader: None,
+            loader_list_from_cache: false,
+        };
+        assert_eq!(
+            resolution_line(&vanilla),
+            r#"{"game":"1.21.11","loader":null}"#
+        );
+        let fabric = Resolution {
+            game: "1.21.11".into(),
+            loader: Some(ResolvedLoader {
+                kind: LoaderKind::LegacyFabric,
+                version: LoaderVersion {
+                    id: "0.17.3".into(),
+                    maven: "net.fabricmc:fabric-loader:0.17.3".into(),
+                    stable: true,
+                },
+            }),
+            loader_list_from_cache: true,
+        };
+        assert_eq!(
+            resolution_line(&fabric),
+            r#"{"game":"1.21.11","loader":{"kind":"legacy-fabric","version":"0.17.3","stable":true}}"#
+        );
     }
 
     #[test]

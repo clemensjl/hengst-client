@@ -315,6 +315,27 @@ pub(crate) async fn prepare_loader(
     }
 }
 
+/// Picks the loader build of a request from the version list alone (no profile, no installer):
+/// what `hengst launch --resolve-only` reports. A named build must be on the list. `true` when the
+/// list is the saved one because the service was unreachable.
+pub(crate) async fn resolve_loader(
+    dl: &Downloader,
+    paths: &Paths,
+    ep: &LoaderEndpoints,
+    req: &LoaderRequest,
+    game: &str,
+) -> Result<(ResolvedLoader, bool)> {
+    let (list, cached) = list_saved(dl, paths, ep, req.kind, game).await?;
+    let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
+    Ok((
+        ResolvedLoader {
+            kind: req.kind,
+            version,
+        },
+        cached,
+    ))
+}
+
 /// The service could not be reached or failed on its side (not "this does not exist").
 fn is_unreachable(e: &Error) -> bool {
     match e {

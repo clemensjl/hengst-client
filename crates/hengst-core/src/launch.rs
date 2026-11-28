@@ -7,7 +7,9 @@ use crate::libraries;
 use crate::loaders::forge;
 use crate::loaders::forge::processors::{ProcessRunner, SystemRunner};
 use crate::loaders::merge::merge_version;
-use crate::loaders::{prepare_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader};
+use crate::loaders::{
+    prepare_loader, resolve_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader,
+};
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
 use crate::paths::{validate_id, Paths};
 use crate::progress::{self, ProgressSink, Transfer};
@@ -265,6 +267,48 @@ pub async fn prepare_with_progress(
         instance: instance.to_string(),
         game_log_dir: paths.logs().join("game"),
         run_lock: crate::runlock::run_lock_path(paths, instance)?,
+    })
+}
+
+/// What a launch would start, decided from metadata alone.
+#[derive(Clone, Debug)]
+pub struct Resolution {
+    /// The game version id (`latest` and `latest-snapshot` resolved).
+    pub game: String,
+    pub loader: Option<ResolvedLoader>,
+    /// The loader build was picked from the saved version list (its service was unreachable).
+    pub loader_list_from_cache: bool,
+}
+
+/// Resolves the game version and, with `loader`, the loader build, fetching only the version
+/// manifest and the loader's version list (both saved in the data folder like `prepare` does).
+/// Downloads no library, jar, asset or installer, needs no account, no Java and no run lock. A
+/// named loader build must be on the list.
+pub async fn resolve(
+    paths: &Paths,
+    version: &str,
+    loader: Option<&LoaderRequest>,
+    ep: &Endpoints,
+) -> Result<Resolution> {
+    let dl = Downloader::new(http_client());
+    let manifest = fetch_manifest(dl.client(), paths, &ep.manifest).await?;
+    let game = manifest
+        .find(version)
+        .ok_or_else(|| Error::UnknownVersion(version.to_string()))?
+        .id
+        .clone();
+    validate_id(&game)?;
+    let (loader, loader_list_from_cache) = match loader {
+        Some(req) => {
+            let (resolved, cached) = resolve_loader(&dl, paths, &ep.loaders, req, &game).await?;
+            (Some(resolved), cached)
+        }
+        None => (None, false),
+    };
+    Ok(Resolution {
+        game,
+        loader,
+        loader_list_from_cache,
     })
 }
 

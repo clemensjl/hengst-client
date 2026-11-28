@@ -105,6 +105,56 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --loader ${{ matrix.loader }} --offline Dev --dry-run
 
+  resolve-matrix:
+    # Pull requests only: the cheap counterpart of prepare-matrix and loader-matrix. `--resolve-only`
+    # fetches the version manifest and the loader version lists and nothing else (no libraries,
+    # assets, installers, account or Java). "latest" and the loader lists move upstream, so a
+    # failure here can come from upstream rather than from the change. No secrets are used, so it
+    # runs the same on pull requests from forks.
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p hengst-cli
+      - env:
+          HOME_DIR: ${{ runner.temp }}/hengst
+        run: |
+          failed=0
+          while read -r version loader; do
+            args=(launch "$version" --resolve-only)
+            if [ -n "$loader" ]; then args+=(--loader "$loader"); fi
+            echo "hengst ${args[*]}"
+            if ! target/debug/hengst --home "$HOME_DIR" "${args[@]}"; then failed=1; fi
+          done <<'EOF'
+          rd-132211
+          a1.2.6
+          b1.7.3
+          1.2.5
+          1.5.2
+          1.7.10
+          1.8.9
+          1.12.2
+          1.16.5
+          1.20.4
+          1.21.11
+          latest
+          latest-snapshot
+          1.21.11 fabric
+          latest fabric
+          1.21.11 quilt
+          1.8.9 legacy-fabric
+          1.12.2 legacy-fabric
+          1.20.1 forge
+          1.21.1 neoforge
+          EOF
+          exit $failed
+
   mod:
     # The companion mod under mod/. The workflow triggers stay as they are; the changes step below makes this job
     # do nothing unless files under mod/ or this workflow changed. It starts no game and runs no in-game tests.

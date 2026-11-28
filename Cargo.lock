@@ -1687,6 +1687,7 @@ dependencies = [
  "anyhow",
  "clap",
  "hengst-core",
+ "serde_json",
  "tokio",
 ]
 
