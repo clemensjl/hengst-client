@@ -14,9 +14,10 @@ use hengst_core::instances::NewInstance;
 use hengst_core::secret::Secret;
 use hengst_core::Error;
 use hengst_testkit::{
-    auth_endpoints, endpoints, fake_java, mount_auth, mount_mojang, AuthScenario,
+    auth_endpoints, endpoints, fake_java_exe, mount_auth, mount_mojang, AuthScenario,
 };
 use hengst_testkit::{PLAYER_A, PLAYER_B};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use wiremock::matchers::{method, path};
@@ -124,7 +125,7 @@ async fn fixture(login: Login) -> Fx {
     state
         .settings
         .update(|s| {
-            s.java_override = Some(fake_java());
+            s.java_override = Some(fake_java_exe());
             Ok(())
         })
         .unwrap();
@@ -1386,4 +1387,85 @@ async fn the_live_log_holds_the_lines_of_a_run_and_its_end() {
     let file = crate::open::resolve_game_log(&fx.state.paths, &fx.state.log, run_id).unwrap();
     let text = std::fs::read_to_string(file).unwrap();
     assert!(text.contains("first") && text.contains("second"), "{text}");
+}
+
+/// A preparer that only counts its calls (and then fails): proves a start stopped before it.
+fn counting_preparer() -> (Preparer, Arc<std::sync::atomic::AtomicUsize>) {
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let seen = calls.clone();
+    let preparer: Preparer = Arc::new(move |_| {
+        seen.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async { Err(Error::Cancelled) })
+    });
+    (preparer, calls)
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_unc_java_path_is_refused_before_the_preparation() {
+    let fx = fixture(Login::Valid).await;
+    let (preparer, calls) = counting_preparer();
+    fx.state.game.set_preparer(preparer);
+    // An older or hand-edited settings.json.
+    for stored in [
+        r"\192.0.2.1\share\java.exe",
+        r"\?\UNC\192.0.2.1\share\java.exe",
+        r"C:\Windows\notepad.exe",
+    ] {
+        fx.state
+            .settings
+            .update(|s| {
+                s.java_override = Some(stored.into());
+                Ok(())
+            })
+            .unwrap();
+        let start = Instant::now();
+        let (_, events) = fx.play().await;
+        let PlayEvent::Failed { error } = ended(&events).await else {
+            panic!("{:?}", events.lock().unwrap());
+        };
+        assert!(start.elapsed() < Duration::from_secs(2), "{stored}");
+        assert_eq!(error.code, ErrorCode::JavaInvalid, "{stored}");
+        assert_eq!(error.action, Some(ErrorAction::OpenSettings));
+        assert!(!error.detail.contains("192.0.2.1"), "{}", error.detail);
+        assert!(!error.detail.contains("notepad"), "{}", error.detail);
+        fx.idle().await;
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing was prepared");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stored_memory_value_outside_the_range_is_refused() {
+    let fx = fixture(Login::Valid).await;
+    let (preparer, calls) = counting_preparer();
+    fx.state.game.set_preparer(preparer);
+    fx.state
+        .settings
+        .update(|s| {
+            s.memory_mb = 100;
+            Ok(())
+        })
+        .unwrap();
+    let (_, events) = fx.play().await;
+    let PlayEvent::Failed { error } = ended(&events).await else {
+        panic!("{:?}", events.lock().unwrap());
+    };
+    assert_eq!(error.code, ErrorCode::InvalidInput);
+    assert_eq!(error.params["field"], "memoryMb");
+    assert_eq!(error.action, Some(ErrorAction::OpenSettings));
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_validated_canonical_java_path_is_the_one_started() {
+    let fx = fixture(Login::Valid).await;
+    let seen: Arc<Mutex<Option<PathBuf>>> = Arc::default();
+    let kept = seen.clone();
+    fx.state.game.set_preparer(Arc::new(move |job| {
+        *kept.lock().unwrap() = job.opts.java.clone();
+        Box::pin(async { Err(Error::Cancelled) })
+    }));
+    let (_, events) = fx.play().await;
+    ended(&events).await;
+    let java = seen.lock().unwrap().clone().unwrap();
+    assert_eq!(java, crate::java::validate_java(&fake_java_exe()).unwrap());
 }

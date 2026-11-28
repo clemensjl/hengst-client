@@ -14,6 +14,7 @@ import type { GameStateDto } from "@/ipc/bindings/GameStateDto";
 import type { GameVersionsDto } from "@/ipc/bindings/GameVersionsDto";
 import type { PlayEvent } from "@/ipc/bindings/PlayEvent";
 import type { InstanceDto } from "@/ipc/bindings/InstanceDto";
+import type { JavaChoice } from "@/ipc/bindings/JavaChoice";
 import type { LoaderKindDto } from "@/ipc/bindings/LoaderKindDto";
 import type { SettingsDto } from "@/ipc/bindings/SettingsDto";
 import type { SettingsPatch } from "@/ipc/bindings/SettingsPatch";
@@ -150,6 +151,8 @@ interface AppState {
   loadSettings: () => Promise<SettingsDto>;
   /** Saves a change; resolves with the saved settings, rejects with an `IpcError` (nothing changed). */
   updateSettings: (change: Partial<SettingsPatch>) => Promise<SettingsDto>;
+  /** "Choose Java": the dialog and the check run in Rust; a chosen file updates the settings. Rejects with an `IpcError`. */
+  chooseJava: () => Promise<JavaChoice>;
   loadVersions: (filter: VersionFilter) => Promise<void>;
   loadVersionsSummary: () => Promise<void>;
   loadAccounts: () => Promise<void>;
@@ -312,6 +315,16 @@ export const useApp = create<AppState>()((set, get) => ({
     // reload (which may fail) is not needed to learn it. The id keeps a second delivery to one toast.
     if (data.notice === "reset") toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
     return data;
+  },
+
+  chooseJava: async () => {
+    const answer = await api.javaChoose();
+    if (answer.kind === "chosen") {
+      // Counts as an update of the settings: an older answer that is still on its way loses.
+      const current = latest("settings");
+      if (current()) set({ settings: { status: "ready", data: answer.settings } });
+    }
+    return answer;
   },
 
   loadVersions: async (filter) => {

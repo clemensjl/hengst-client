@@ -11,6 +11,7 @@ macro_rules! with_commands {
             open::open_location,
             settings::settings_get,
             settings::settings_update,
+            settings::java_choose,
             accounts::accounts_list,
             accounts::account_select,
             accounts::account_remove,

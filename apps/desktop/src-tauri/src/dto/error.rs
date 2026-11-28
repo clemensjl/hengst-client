@@ -82,6 +82,10 @@ pub enum ErrorCode {
     RecycleBinPending,
     /// The instance is being prepared or runs; it cannot be deleted now. `params.id`.
     InstanceRunning,
+    /// The Java path cannot be used: chosen in the dialog (`params.reason`: `location`, `name`,
+    /// `missing`, `notStarted`) or stored and refused when a game starts (then with the action
+    /// `openSettings`). The path itself is never in the error.
+    JavaInvalid,
     /// Another create or delete of an instance is in progress, or (`play`) a game is already being
     /// prepared or running: one game at a time.
     Busy,

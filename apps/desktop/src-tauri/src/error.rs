@@ -1184,11 +1184,12 @@ mod mapping_tests {
             ErrorCode::RecycleBinUnknown => "recycleBinUnknown",
             ErrorCode::RecycleBinPending => "recycleBinPending",
             ErrorCode::InstanceRunning => "instanceRunning",
+            ErrorCode::JavaInvalid => "javaInvalid",
             ErrorCode::Busy => "busy",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 53] = [
+    const ALL_CODES: [ErrorCode; 54] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -1241,6 +1242,7 @@ mod mapping_tests {
         ErrorCode::RecycleBinUnknown,
         ErrorCode::RecycleBinPending,
         ErrorCode::InstanceRunning,
+        ErrorCode::JavaInvalid,
         ErrorCode::Busy,
     ];
 

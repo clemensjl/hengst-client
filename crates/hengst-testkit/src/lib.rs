@@ -108,6 +108,37 @@ pub fn fake_java() -> std::path::PathBuf {
     .clone()
 }
 
+/// `fake_java()` copied as `java.exe` into its own folder next to it (`<profile>/fake-java-as-java`),
+/// for code that accepts only a file named `java.exe` or `javaw.exe` (the desktop app's Java
+/// setting). Refreshed when `fake-java` is newer; the copy goes through a temp file and a rename.
+pub fn fake_java_exe() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let source = fake_java();
+        let folder = source
+            .parent()
+            .expect("a profile folder")
+            .join("fake-java-as-java");
+        std::fs::create_dir_all(&folder).expect("the fake-java-as-java folder");
+        let exe = folder.join("java.exe");
+        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let fresh = matches!((modified(&exe), modified(&source)), (Some(c), Some(s)) if c >= s);
+        if !fresh {
+            let tmp = folder.join(format!("java.exe.{}.tmp", std::process::id()));
+            std::fs::copy(&source, &tmp).expect("copying fake-java");
+            // Another test process may have put its copy there meanwhile; either copy is the same.
+            if std::fs::rename(&tmp, &exe).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        assert!(exe.is_file(), "no copy of fake-java at {}", exe.display());
+        exe
+    })
+    .clone()
+}
+
 /// One mock server with both the sign-in chain (accounts A and B) and the Mojang services
 /// mounted: what the end-to-end binary `hengst-mock` serves.
 pub struct Services {

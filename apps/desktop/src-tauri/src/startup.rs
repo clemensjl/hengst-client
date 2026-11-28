@@ -475,6 +475,8 @@ pub fn run() {
     }
     builder
         .plugin(tauri_plugin_opener::init())
+        // Used from Rust only (the Java choice); the capability grants no `dialog:` permission.
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(with_commands!(handler))
         .setup(move |app| {

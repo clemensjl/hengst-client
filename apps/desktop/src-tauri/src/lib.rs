@@ -30,6 +30,7 @@ pub mod commands;
 pub mod dto;
 pub mod error;
 pub mod events;
+pub mod java;
 pub mod log;
 pub mod open;
 pub mod play;

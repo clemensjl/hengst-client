@@ -12,7 +12,27 @@ pub fn app_info_impl(state: &AppState) -> AppInfo {
         data_dir: state.paths.root().display().to_string(),
         dev_build: crate::dev_build(),
         dev_offline: cfg!(feature = "dev-offline"),
+        installed_memory_mb: installed_memory_mb(),
     }
+}
+
+#[cfg(windows)]
+fn installed_memory_mb() -> Option<u32> {
+    use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    let mut status = MEMORYSTATUSEX {
+        dwLength: std::mem::size_of::<MEMORYSTATUSEX>() as u32,
+        ..Default::default()
+    };
+    // SAFETY: `status` is a writable MEMORYSTATUSEX with `dwLength` set, as the call requires.
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
+        return None;
+    }
+    u32::try_from(status.ullTotalPhys / (1024 * 1024)).ok()
+}
+
+#[cfg(not(windows))]
+fn installed_memory_mb() -> Option<u32> {
+    None
 }
 
 /// Whether `app_quit` may quit now: no game process exists (a start still being prepared is
@@ -59,4 +79,20 @@ pub fn subscribe_events(
         }),
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hengst_core::launch::Endpoints;
+    use hengst_core::paths::Paths;
+
+    #[test]
+    fn app_info_reports_the_installed_memory() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = AppState::new(Paths::new(dir.path()), Endpoints::default());
+        let mb = app_info_impl(&state).installed_memory_mb.unwrap();
+        // Any machine that runs these tests has between 1 GB and 64 TB.
+        assert!((1024..64 * 1024 * 1024).contains(&mb), "{mb}");
+    }
 }

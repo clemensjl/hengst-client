@@ -58,6 +58,7 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
     // The opener plugin is registered, so a denied call proves the ACL, not a missing plugin.
     let app = mock_builder()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
@@ -121,7 +122,16 @@ fn a_command_that_no_permission_names_is_rejected_for_the_main_window() {
 #[test]
 fn plugin_commands_are_not_granted_to_the_main_window() {
     let (app, _dir) = app();
-    for cmd in ["plugin:opener|open_url", "plugin:window|inner_size"] {
+    for cmd in [
+        "plugin:opener|open_url",
+        "plugin:window|inner_size",
+        // The dialog plugin is registered but used from Rust only (the Java choice).
+        "plugin:dialog|open",
+        "plugin:dialog|save",
+        "plugin:dialog|message",
+        "plugin:dialog|ask",
+        "plugin:dialog|confirm",
+    ] {
         let err = call(&app, "main", cmd).unwrap_err();
         assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }

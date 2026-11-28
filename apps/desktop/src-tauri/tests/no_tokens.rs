@@ -16,7 +16,7 @@ use hengst_desktop_lib::commands::play::play_impl;
 use hengst_desktop_lib::dto::accounts::{LoginEvent, LoginMethod};
 use hengst_desktop_lib::dto::log::{LogBatch, LogFilter};
 use hengst_desktop_lib::dto::play::{GameStateDto, PlayEvent};
-use hengst_desktop_lib::dto::settings::SettingsDto;
+use hengst_desktop_lib::dto::settings::{JavaChoice, SettingsDto};
 use hengst_desktop_lib::error::error_dto;
 use hengst_desktop_lib::events::AppEvent;
 use hengst_desktop_lib::play::{force_stop, stop};
@@ -171,7 +171,7 @@ async fn run_mock_play_with_token() -> Vec<String> {
     state
         .settings
         .update(|s| {
-            s.java_override = Some(hengst_testkit::fake_java());
+            s.java_override = Some(hengst_testkit::fake_java_exe());
             Ok(())
         })
         .unwrap();
@@ -394,6 +394,13 @@ async fn no_dto_or_event_contains_a_token() {
     seen.push(serde_json::to_string(&accounts).unwrap());
     seen.push(serde_json::to_string(&app_info_impl(&state)).unwrap());
     seen.push(serde_json::to_string(&SettingsDto::new(state.settings.get(), None)).unwrap());
+    seen.push(
+        serde_json::to_string(&JavaChoice::Chosen {
+            version: "21.0.5".into(),
+            settings: SettingsDto::new(state.settings.get(), None),
+        })
+        .unwrap(),
+    );
     seen.extend(run_mock_login_with_token(LoginMethod::Browser).await);
     seen.extend(run_mock_login_with_token(LoginMethod::DeviceCode).await);
     seen.extend(run_mock_play_with_token().await);

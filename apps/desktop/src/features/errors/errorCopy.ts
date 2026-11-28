@@ -58,6 +58,7 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   recycleBinUnknown: keys("recycleBinUnknown"),
   recycleBinPending: keys("recycleBinPending"),
   instanceRunning: keys("instanceRunning"),
+  javaInvalid: keys("javaInvalid"),
   busy: keys("busy"),
 };
 

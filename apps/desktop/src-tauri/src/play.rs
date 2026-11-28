@@ -468,12 +468,27 @@ impl PlayTask {
             });
         }
         let (account, chosen) = account.map_err(|e| error_dto(&e))?;
-        let opts = instances::launch_options(
+        let mut opts = instances::launch_options(
             &r.instance,
             account,
             r.settings.memory_mb,
             r.settings.java_override.clone(),
         );
+        // The app's own memory value (an instance's comes from its own file, the CLI's business)
+        // reaches the JVM arguments only from the range the settings allow.
+        if r.instance.config.memory_mb.is_none()
+            && !crate::commands::settings::MEMORY_MB.contains(&opts.memory_mb)
+        {
+            return Err(ErrorDto {
+                action: Some(ErrorAction::OpenSettings),
+                ..crate::commands::settings::invalid_input("memoryMb")
+            });
+        }
+        // The path is started: checked again (text before any file-system call, so a stored UNC
+        // path never connects), and the canonical path it resolves to is the one started.
+        if let Some(java) = &opts.java {
+            opts.java = Some(crate::commands::settings::checked_java(java)?);
+        }
         let progress: ProgressSink = {
             let (out, root) = (self.out.clone(), r.paths.root().to_path_buf());
             Arc::new(move |p| {
