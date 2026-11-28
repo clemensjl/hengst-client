@@ -5,7 +5,13 @@ import { byRole } from "./app.ts";
 /** Generous: a preparation against the mock with delayed answers takes a few seconds. */
 export const START = { timeout: 60_000 };
 
-export type ViewName = "Play" | "Instances" | "Log" | "Settings";
+/**
+ * A deliberate click on a button that just turned into another action waits this long: the
+ * button ignores clicks for 600 ms after such a change (DESIGN.md 10.0, `changeGuard.ts`).
+ */
+export const GUARD_WAIT_MS = 800;
+
+export type ViewName ="Play" | "Instances" | "Log" | "Settings";
 
 /** Opens a view from the sidebar (its buttons are named by `aria-label`). */
 export async function openView(name: ViewName | string) {
@@ -24,10 +30,14 @@ export async function waitRunning(timeout = START.timeout) {
   await expect(caption()).toHaveText(expect.stringContaining("Running since"), { wait: timeout });
 }
 
-/** The Play button reads "Play" again: no start, no game. */
+/**
+ * The Play button reads "Play" again: no start, no game. It turned into "Play" from a busy state,
+ * which arms its 600 ms click guard, so this also waits that out: the next click counts.
+ */
 export async function waitReady(timeout = START.timeout) {
   await mainButton("Play", timeout);
   await expect(caption()).not.toHaveText(expect.stringContaining("Running since"));
+  await browser.pause(GUARD_WAIT_MS);
 }
 
 /**

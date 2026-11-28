@@ -33,6 +33,49 @@ function drawnBurstNumbers(): Promise<number[]> {
   });
 }
 
+/** The text without bidi isolates (U+2066 to U+2069). */
+const plainText = (text: string) => text.replace(/[⁦-⁩]/g, "");
+
+/** The one displayed option of the open select whose text, without isolates, starts with `text`. */
+async function option(text: string): Promise<WebdriverIO.Element> {
+  let found: unknown = null;
+  await browser.waitUntil(
+    async () => {
+      found = await browser.execute((wanted: string) => {
+        const hits = [...document.querySelectorAll('[role="option"]')].filter(
+          (el) =>
+            el.getClientRects().length > 0 &&
+            (el.textContent ?? "").replace(/[⁦-⁩]/g, "").trim().startsWith(wanted),
+        );
+        return hits.length === 1 ? hits[0] : null;
+      }, text);
+      return found !== null;
+    },
+    { timeoutMsg: `no single option "${text}"` },
+  );
+  return await $(found as Parameters<typeof $>[0]);
+}
+
+/** The log area's height and scroll position are the same twice, 500 ms apart. */
+async function listSettled() {
+  const position = () =>
+    browser.execute(() => {
+      const a = document.querySelector('[role="region"][aria-label="Log lines"]');
+      return a ? `${a.scrollHeight}:${a.scrollTop}` : "";
+    });
+  let last = await position();
+  await browser.waitUntil(
+    async () => {
+      await browser.pause(500);
+      const now = await position();
+      const still = now === last;
+      last = now;
+      return still;
+    },
+    { timeout: 15_000, timeoutMsg: "the log list never held still" },
+  );
+}
+
 describe("the live log in WebView2", () => {
   after(() => {
     // Whatever failed: no fake game keeps waiting (fake-java also ends itself after 120 s).
@@ -96,6 +139,13 @@ describe("the live log in WebView2", () => {
     await $('[role="menuitemcheckbox"]*=Info').click();
     await browser.keys("Escape");
     await byRole("button", "Levels: 4 of 5");
+    // The closing menu lies over the log area: a click before it is gone lands on the menu.
+    await $('[role="menu"]').waitForExist({ reverse: true });
+    // A new filter starts the list over at the end (it was following); while the list still
+    // measures its rows it keeps moving itself there and overtakes a Home, so wait until the
+    // scroll position holds still.
+    await waitForLogText("after the burst");
+    await listSettled();
     await logArea().click();
     await browser.keys("Home");
     await waitForLogText("warn-line before the burst");
@@ -106,7 +156,12 @@ describe("the live log in WebView2", () => {
     await $('[role="menuitemcheckbox"]*=Info').click();
     await browser.keys("Escape");
     await byRole("button", "Levels: 5 of 5");
+    await $('[role="menu"]').waitForExist({ reverse: true });
     await waitForLogText("info-line before the burst");
+    // Back at the end, following again, for the next test's new lines.
+    await (await byRole("button", "Jump to end")).click();
+    await waitForLogText("after the burst");
+    await expect($("button*=Jump to end")).not.toBeExisting();
   });
 
   it("switches between the current and the previous run", async () => {
@@ -121,15 +176,19 @@ describe("the live log in WebView2", () => {
     await openView("Log");
     // The view follows the newest run.
     await waitForLogText("the second run");
-    // The run switcher is named by its visible value (aria-labelledby).
+    // The run switcher is named by its visible value (aria-labelledby). The instance name in it
+    // is wrapped in bidi isolates (`isolate`), which `plainText` drops.
     const runs = $('[role="combobox"][aria-labelledby="log-run-value"]');
-    await expect(runs).toHaveText(expect.stringContaining("Current run: E2E Game"));
+    await browser.waitUntil(
+      async () => plainText(await runs.getText()).includes("Current run: E2E Game"),
+      { timeoutMsg: "the run switcher does not show the current run" },
+    );
     await runs.click();
-    await $('[role="option"]*=Previous run: E2E Game').click();
+    await (await option("Previous run: E2E Game")).click();
     await waitForLogText("first run released");
     expect(await logText()).not.toContain("the second run");
     await runs.click();
-    await $('[role="option"]*=Current run: E2E Game').click();
+    await (await option("Current run: E2E Game")).click();
     await waitForLogText("the second run");
     touchGameFile("release-2");
     await openView("Play");

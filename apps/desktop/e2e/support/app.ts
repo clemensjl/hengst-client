@@ -437,14 +437,41 @@ export function alive(pid: number): boolean {
   }
 }
 
+/** Counts the visible, unowned top-level windows of class "Tauri Window" of one process. */
+const VISIBLE_APP_WINDOWS = `
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class HengstE2eWindows {
+  delegate bool Visit(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(Visit v, IntPtr l);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  public static int Count(uint want) {
+    int n = 0;
+    EnumWindows((h, l) => {
+      uint pid; GetWindowThreadProcessId(h, out pid);
+      if (pid == want && IsWindowVisible(h) && GetWindow(h, 4) == IntPtr.Zero) {
+        var name = new StringBuilder(256); GetClassName(h, name, 256);
+        if (name.ToString() == "Tauri Window") n++;
+      }
+      return true;
+    }, IntPtr.Zero);
+    return n;
+  }
+}`;
+
 /**
- * The process has a visible top-level window: `MainWindowHandle` counts only visible windows
- * without an owner, so the main window hidden into the tray reads as 0.
+ * The app's own window is visible: a visible, unowned top-level window of class "Tauri Window"
+ * of this process. Not `MainWindowHandle`: a debug build is a console program, and its console
+ * window counts as the process's main window, visible while the app window is hidden in the tray.
  */
 export async function hasVisibleWindow(pid: number): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`bad pid ${pid}`);
-  const out = await runPowerShell(`(Get-Process -Id ${pid} -ErrorAction Stop).MainWindowHandle`);
-  return Number(out.trim()) !== 0;
+  const out = await runPowerShell(
+    `Add-Type -TypeDefinition '${VISIBLE_APP_WINDOWS}'; [HengstE2eWindows]::Count(${pid})`,
+  );
+  return Number(out.trim()) > 0;
 }
 
 /**

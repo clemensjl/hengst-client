@@ -13,7 +13,13 @@ import {
   setScript,
   touchGameFile,
 } from "../support/app.ts";
-import { mainButton, openView, waitReady, waitRunning } from "../support/game.ts";
+import {
+  GUARD_WAIT_MS,
+  mainButton,
+  openView,
+  waitReady,
+  waitRunning,
+} from "../support/game.ts";
 
 // One app session after another on the same data folder, in this order. The game runs in a job
 // of its own that outlives the launcher, and holds the instance's run lock. The test ends only
@@ -83,6 +89,8 @@ describe("a game that outlives the app", () => {
     await openView("Play");
     await (await mainButton("Play")).click();
     await waitRunning();
+    // The change into "Stop" arms the 600 ms click guard (DESIGN.md 10.0).
+    await browser.pause(GUARD_WAIT_MS);
     await (await mainButton("Stop")).click();
     await waitReady(30_000);
 

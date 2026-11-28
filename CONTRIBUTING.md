@@ -75,7 +75,7 @@ The spec files and what they need beyond the default (`setupFor` in `support/app
 - `tray`: the window hidden on launch and on close, the tray's Open, Stop game and Quit, the quit dialog. WebDriver cannot click the tray menu or the close button, so the e2e build reads requests from `e2e-request.txt` in its data folder (`close`, `tray-open`, `tray-stop`, `tray-quit`; `src-tauri/src/e2e_hook.rs`) and calls the same handlers. Not covered: the icon, its tooltip and menu as drawn, and Quit without a game. The last test quits the app.
 - `run-lock`: ends only the app's process (by its PID) while fake-java runs, starts the next app on the same folder and checks that Play and Delete are refused until the game has exited.
 
-The specs find the app's and the game's processes below their own tauri-driver (by PID and executable path, never by name) and read window visibility from `MainWindowHandle`. A fake-java left behind by a failed test ends itself after 120 s.
+The specs find the app's and the game's processes below their own tauri-driver (by PID and executable path, never by name) and read window visibility from the process's visible top-level windows of class "Tauri Window" (not `MainWindowHandle`: a debug build is a console program, and its console window would count as the main window). A deliberate click on a button that just turned into another action waits `GUARD_WAIT_MS` (`support/game.ts`), because the button ignores clicks for 600 ms after such a change. A fake-java left behind by a failed test ends itself after 120 s.
 
 ## Rules
 

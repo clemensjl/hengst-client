@@ -10,6 +10,7 @@ import {
 } from "../support/app.ts";
 import {
   caption,
+  GUARD_WAIT_MS,
   gameLogs,
   leakedPieces,
   logArea,
@@ -61,6 +62,9 @@ describe("playing", () => {
     // WebDriver's `doubleClick` sends both clicks before the cancel is answered, so it would never
     // reach the guard: the second click is sent as soon as the label reads "Play" again.
     const cancel = await mainButton("Cancel", 10_000);
+    // Cancel itself is guarded: the change into "preparing" arms the 600 ms guard, so a click
+    // right away would be ignored as the second click of the double click on Play.
+    await browser.pause(GUARD_WAIT_MS);
     await cancel.click();
     // Polled every 50 ms, so the click comes well inside the 600 ms.
     const again = await mainButton("Play", 15_000, 50);
@@ -110,21 +114,27 @@ describe("playing", () => {
 
     await (await mainButton("Show log")).click();
     await expect($("header h1")).toHaveText("Log");
-    await waitForLogText("fake game started");
-    await waitForLogText("ARG --accessToken");
+    // The view follows the end: fake-java's last line before it waits is "WINDOW READY". The
+    // lines before it may be out of the drawn rows (an 8 KiB line of `variants` fills the view),
+    // so they are found with the log search, which runs over every line the view holds.
+    await waitForLogText("WINDOW READY");
+    const search = await byRole("textbox", "Search log");
+    for (const text of ["fake game started", "ARG --accessToken", "<redacted>"]) {
+      await search.setValue(text);
+      await expect($("#log-search-hits")).toHaveText(expect.stringMatching(/^[1-9][\d,]* match/));
+    }
     // The token was printed by fake-java and replaced by the core: nowhere in the page, not in
     // the drawn rows, attributes, hidden text or the title.
-    await waitForLogText("<redacted>");
     expect(leaks(await documentText())).toEqual([]);
 
-    // The search runs over every line the view holds, drawn or not.
-    const search = await byRole("textbox", "Search log");
     await search.setValue("accessToken");
     await expect($("#log-search-hits")).toHaveText(expect.stringMatching(/^[1-9][\d,]* match/));
-    await search.setValue("test-mc");
-    await expect($("#log-search-hits")).toHaveText("0 matches");
-    await search.setValue("token-a");
-    await expect($("#log-search-hits")).toHaveText("0 matches");
+    // No 8-character piece of a secret in any line the view holds (the core's leak rule; a
+    // shorter piece at a line break may stay, docs/PLAN.md 8: `wrapped` leaves "test-mc").
+    for (const piece of SECRETS.flatMap((s) => leakedPieces(s, s))) {
+      await search.setValue(piece);
+      await expect($("#log-search-hits")).toHaveText("0 matches");
+    }
     await browser.keys("Escape");
 
     // The app's own copy, read back from a recorder in place of the clipboard.
