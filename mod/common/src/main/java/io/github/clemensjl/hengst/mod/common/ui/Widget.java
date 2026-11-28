@@ -40,10 +40,10 @@ public abstract class Widget {
     /** The text, or its longest prefix that fits {@code avail} pixels. */
     final String fitted(Canvas c, String text, int avail) {
         if (text != fitSrc || avail != fitAvail) {
-            String s = text == null ? "" : text;
-            int tw = c.textWidth(s);
-            while (tw > avail && !s.isEmpty()) {
-                s = s.substring(0, s.length() - 1);
+            String full = text == null ? "" : text;
+            int tw = c.textWidth(full);
+            String s = TextFit.prefix(c, full, avail, tw);
+            if (s != full) {
                 tw = c.textWidth(s);
             }
             fitSrc = text;

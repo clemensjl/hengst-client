@@ -4,10 +4,12 @@ import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
 import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
+import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.GameKey;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.InputView;
+import io.github.clemensjl.hengst.mod.common.ui.TextFit;
 import java.util.Arrays;
 import java.util.EnumSet;
 import java.util.List;
@@ -39,12 +41,27 @@ public final class KeystrokesModule extends HudModule {
     private final String[] shown = {"", "", "", "", "LMB", "RMB"};
     private final int[] labelWidths = {-1, -1, -1, -1, -1, -1};
     private int refreshIn;
-    // The options, read in tick (boxed by the config) so height and render read primitives.
+    // The options, read in tick (typed reads, no boxing) so height and render read primitives.
     private boolean showMouse = true;
     private boolean showSpace = true;
 
     public KeystrokesModule() {
         super("keystrokes", 3, EnumSet.of(GameVersion.V1_8_9, GameVersion.V1_21_11, GameVersion.V26_3));
+    }
+
+    @Override
+    public Anchor defaultAnchor() {
+        return Anchor.BOTTOM_LEFT;
+    }
+
+    @Override
+    public int defaultOffsetX() {
+        return 2;
+    }
+
+    @Override
+    public int defaultOffsetY() {
+        return -2;
     }
 
     @Override
@@ -54,8 +71,8 @@ public final class KeystrokesModule extends HudModule {
 
     @Override
     public void tick(HudContext ctx, ModuleConfig cfg) {
-        showMouse = (Boolean) cfg.option(SHOW_MOUSE);
-        showSpace = (Boolean) cfg.option(SHOW_SPACE);
+        showMouse = cfg.bool(SHOW_MOUSE);
+        showSpace = cfg.bool(SHOW_SPACE);
         if (--refreshIn > 0) {
             return;
         }
@@ -71,6 +88,12 @@ public final class KeystrokesModule extends HudModule {
                 labelWidths[i] = -1;
             }
         }
+    }
+
+    @Override
+    public void onLanguageChanged() {
+        Arrays.fill(labelWidths, -1);
+        refreshIn = 0;
     }
 
     @Override
@@ -123,10 +146,10 @@ public final class KeystrokesModule extends HudModule {
 
     /** Runs once per label change (needs the canvas for measuring); allocates only when it has to cut. */
     private void fit(Canvas c, int slot, int cellWidth) {
-        String text = labels[slot];
-        int tw = c.textWidth(text);
-        while (tw > cellWidth && !text.isEmpty()) {
-            text = text.substring(0, text.length() - 1);
+        String full = labels[slot];
+        int tw = c.textWidth(full);
+        String text = TextFit.prefix(c, full, cellWidth, tw);
+        if (text != full) {
             tw = c.textWidth(text);
         }
         shown[slot] = text;

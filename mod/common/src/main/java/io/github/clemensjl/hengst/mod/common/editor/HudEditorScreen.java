@@ -8,11 +8,11 @@ import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
-import io.github.clemensjl.hengst.mod.common.ui.TextWrap;
+import io.github.clemensjl.hengst.mod.common.ui.TextFit;
 
 /**
  * The HUD editor screen. Drawn by common; the adapters only forward mouse and key events. It does not close itself:
- * {@code onClose} (see {@link HudEditorClose}) saves, rebuilds the renderer and closes the game screen.
+ * {@code onClose} (see {@link io.github.clemensjl.hengst.mod.common.ui.ScreenClose}) saves, rebuilds the renderer and closes the game screen.
  */
 public final class HudEditorScreen implements UiScreen {
     private static final int DIM = 0x80000000;
@@ -86,7 +86,7 @@ public final class HudEditorScreen implements UiScreen {
     /** The hint block centred on the screen over a padded dark box. Purely visual: it takes no part in hit testing. */
     private void drawHint(Canvas canvas, int sw, int sh) {
         if (hintForWidth != sw) {
-            hintLines = TextWrap.wrap(canvas, hint, sw - 2 * HINT_PAD);
+            hintLines = TextFit.wrap(canvas, hint, sw - 2 * HINT_PAD);
             hintForWidth = sw;
             int widest = 0;
             for (int k = 0; k < hintLines.length; k++) {

@@ -10,7 +10,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.function.Consumer;
 
-/** Reads and writes {@code settings.json}. Unknown keys are not preserved. Not thread-safe: client thread only (the batched save runs there too). */
+/** Reads and writes {@code settings.json}. Unknown keys are preserved. Not thread-safe: client thread only (the batched save runs there too). */
 public final class SettingsStore {
     private final Path file;
     private final Clock clock;
@@ -32,6 +32,11 @@ public final class SettingsStore {
             if (ProfileStore.isValidName(name)) {
                 s.setActiveProfile(name);
             }
+            for (Map.Entry<String, Object> e : l.json.entrySet()) {
+                if (!"schema".equals(e.getKey()) && !"activeProfile".equals(e.getKey())) {
+                    s.extras.put(e.getKey(), ModuleConfig.deepCopy(e.getValue()));
+                }
+            }
         }
         return s;
     }
@@ -47,6 +52,7 @@ public final class SettingsStore {
         Map<String, Object> json = new LinkedHashMap<String, Object>();
         json.put("schema", AtomicFiles.SCHEMA);
         json.put("activeProfile", s.activeProfile());
+        json.putAll(s.extras);
         Path dir = file.toAbsolutePath().getParent();
         if (dir != null) {
             Files.createDirectories(dir);

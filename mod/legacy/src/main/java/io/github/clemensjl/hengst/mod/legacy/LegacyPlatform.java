@@ -11,6 +11,8 @@ import net.fabricmc.loader.api.FabricLoader;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.entity.player.ClientPlayerEntity;
 import net.minecraft.client.gui.screen.Screen;
+import net.minecraft.client.network.ClientPlayNetworkHandler;
+import net.minecraft.client.network.PlayerListEntry;
 import net.minecraft.client.network.ServerInfo;
 import net.minecraft.client.option.GameOptions;
 import net.minecraft.client.option.KeyBinding;
@@ -142,6 +144,39 @@ public final class LegacyPlatform implements Platform {
             }
             ServerInfo server = mc.getCurrentServerEntry();
             return server == null ? null : server.address;
+        }
+
+        /**
+         * The own entry of the server's player list: getPlayerListEntry(UUID) is a HashMap lookup, getUuid and
+         * getLatency are field reads, so nothing is allocated. -1 in single player (also when the world is opened to
+         * LAN), before the connection exists and until the server has sent the own entry.
+         */
+        @Override
+        public int pingMillis() {
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (mc.isInSingleplayer()) {
+                return -1;
+            }
+            ClientPlayerEntity p = mc.player;
+            ClientPlayNetworkHandler handler = mc.getNetworkHandler();
+            if (p == null || handler == null) {
+                return -1;
+            }
+            PlayerListEntry entry = handler.getPlayerListEntry(p.getUuid());
+            return entry == null ? -1 : entry.getLatency();
+        }
+
+        /** ClientPlayNetworkHandler.onPlayerRespawn creates a new ClientWorld when the dimension changes. */
+        @Override
+        public Object worldIdentity() {
+            return MinecraftClient.getInstance().world;
+        }
+
+        @Override
+        public boolean reducedDebugInfo() {
+            // As vanilla's DebugHud.hasReducedDebugInfo: the server's gamerule (sent to the player) or the option.
+            MinecraftClient mc = MinecraftClient.getInstance();
+            return mc.player != null && (mc.player.getReducedDebugInfo() || mc.options.reducedDebugInfo);
         }
     }
 

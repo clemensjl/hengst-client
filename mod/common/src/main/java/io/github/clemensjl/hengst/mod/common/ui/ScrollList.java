@@ -7,10 +7,16 @@ import java.util.List;
 /**
  * A vertical list of equally tall rows. Rows not fully inside the list are neither drawn nor clickable. The list
  * scrolls by whole rows (one per wheel notch), so the top row always starts at the list top and no empty band
- * appears there; only the rest below the last whole row stays empty.
+ * appears there; only the rest below the last whole row stays empty. A list that does not fit shows a scroll
+ * indicator (display only) in a 2 px gutter on its right edge; its rows are then 4 px narrower.
  */
 public final class ScrollList {
     private static final int GAP = 2;
+    private static final int GUTTER = 2;
+    private static final int GUTTER_SPACE = 4;
+    private static final int TRACK = 0x40FFFFFF;
+    private static final int THUMB = 0xC0FFFFFF;
+    private static final int MIN_THUMB = 8;
 
     private int x;
     private int y;
@@ -41,6 +47,11 @@ public final class ScrollList {
         clamp();
     }
 
+    /** The y of the bottom edge; the notice text starts at or below it. */
+    int bottom() {
+        return y + h;
+    }
+
     public int offset() {
         return offset;
     }
@@ -54,6 +65,11 @@ public final class ScrollList {
     /** Scrolls back to the top. */
     public void reset() {
         offset = 0;
+    }
+
+    /** True if the rows together are taller than the list; then a scroll indicator is drawn. */
+    public boolean overflows() {
+        return widgets.size() * rowHeight > h;
     }
 
     int height() {
@@ -83,7 +99,7 @@ public final class ScrollList {
         int top = y + i * rowHeight - offset;
         wd.x = x;
         wd.y = top;
-        wd.w = w;
+        wd.w = overflows() ? w - GUTTER_SPACE : w;
         wd.h = rowHeight - GAP;
         return top >= y && top + rowHeight <= y + h;
     }
@@ -94,6 +110,19 @@ public final class ScrollList {
                 widgets.get(i).render(c, mx, my);
             }
         }
+        if (overflows()) {
+            renderIndicator(c);
+        }
+    }
+
+    private void renderIndicator(Canvas c) {
+        int rows = widgets.size();
+        int visible = h / rowHeight;
+        int maxOffset = Math.max(0, (rows - visible) * rowHeight);
+        int th = Math.min(h, Math.max(MIN_THUMB, h * visible / rows));
+        int ty = maxOffset == 0 ? y : y + (h - th) * offset / maxOffset;
+        c.fill(x + w - GUTTER, y, x + w, y + h, TRACK);
+        c.fill(x + w - GUTTER, ty, x + w, ty + th, THUMB);
     }
 
     public boolean mouseClicked(int mx, int my, int button) {

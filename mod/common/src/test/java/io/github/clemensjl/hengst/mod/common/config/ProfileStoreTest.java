@@ -4,6 +4,8 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.junit.jupiter.api.Assertions.*;
 
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
+import io.github.clemensjl.hengst.mod.common.json.Json;
+import io.github.clemensjl.hengst.mod.common.json.JsonObjects;
 import io.github.clemensjl.hengst.mod.common.layout.Anchor;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -12,7 +14,11 @@ import java.time.Instant;
 import java.time.ZoneOffset;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -245,5 +251,177 @@ class ProfileStoreTest {
         assertFalse(ProfileStore.isValidName(" a")); assertFalse(ProfileStore.isValidName("a ")); assertTrue(ProfileStore.isValidName("a b"));
         assertFalse(ProfileStore.isValidName(null));
         for (String bad : new String[] {"a/b", "a\\b", "..", ".a", "a.", "a\tb", "a\nb", "a\u0000b", "a:b", "ä", "a*b", "a\u007fb"}) assertFalse(ProfileStore.isValidName(bad), bad);
+    }
+
+    @Test void unknown_keys_survive_at_all_three_levels() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"layoutVersion\":3,\"modules\":{\"fps\":{\"enabled\":true,"
+                + "\"zIndex\":7,\"options\":{\"future_opt\":[1,2]}}},\"servers\":{\"a.net\":{\"deny\":[\"x\"]}}}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps").setOffsetX(5);
+        store().save("default", p);
+        Map<String, Object> back = JsonObjects.object(Json.parse(read("default.json")));
+        assertEquals(Arrays.asList("schema", "modules", "layoutVersion", "servers"), new ArrayList<>(back.keySet()));
+        assertEquals(3L, back.get("layoutVersion"));
+        assertEquals(Collections.singletonMap("a.net", Collections.singletonMap("deny", Arrays.asList("x"))), back.get("servers"));
+        Map<String, Object> fps = JsonObjects.object(JsonObjects.object(back.get("modules")).get("fps"));
+        assertEquals(7L, fps.get("zIndex"));
+        assertEquals(5L, fps.get("x"));
+        assertEquals(Arrays.asList(1L, 2L), JsonObjects.object(fps.get("options")).get("future_opt"));
+    }
+
+    @Test void a_profile_copy_keeps_unknown_keys() throws Exception {
+        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"extra\":true,\"modules\":{\"fps\":{\"zIndex\":7}}}".getBytes(UTF_8));
+        String name = store().createCopy("default");
+        String json = read(name + ".json");
+        assertTrue(json.contains("\"extra\": true"));
+        assertTrue(json.contains("\"zIndex\": 7"));
+    }
+    private static final String NESTED = "{\"m\":{\"k\":1},\"l\":[1,[2]],\"lm\":[{\"k\":1}]}";
+
+    @SuppressWarnings("unchecked")
+    private static void mutateNested(Object unknown) {
+        Map<String, Object> m = (Map<String, Object>) unknown;
+        ((Map<String, Object>) m.get("m")).put("k", 2L);
+        ((List<Object>) m.get("l")).add("added");
+        ((List<Object>) ((List<Object>) m.get("l")).get(1)).add(3L);
+        ((Map<String, Object>) ((List<Object>) m.get("lm")).get(0)).put("k", 2L);
+    }
+
+    private Profile loadedWithNestedUnknowns() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"extra\":" + NESTED + ",\"modules\":{\"fps\":{\"zIndex\":" + NESTED + "}}}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps");
+        return p;
+    }
+
+    @Test void a_profile_copy_is_deep_for_unknown_data_at_root_and_entry_level_in_both_directions() throws Exception {
+        Profile a = loadedWithNestedUnknowns();
+        Profile b = a.copy();
+        String before = Json.write(a.toJson());
+        assertEquals(before, Json.write(b.toJson()));
+        // the original is mutated: the copy stays as it was
+        mutateNested(a.extras.get("extra"));
+        mutateNested(a.module("fps").extras.get("zIndex"));
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        // the copy is mutated: a fresh original stays as it was
+        Profile c = loadedWithNestedUnknowns();
+        Profile d = c.copy();
+        mutateNested(d.extras.get("extra"));
+        mutateNested(d.module("fps").extras.get("zIndex"));
+        assertNotEquals(before, Json.write(d.toJson()));
+        assertEquals(before, Json.write(c.toJson()));
+    }
+
+    private static Object field(Object target, String name) throws Exception {
+        java.lang.reflect.Field f = target.getClass().getDeclaredField(name);
+        f.setAccessible(true);
+        return f.get(target);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> rawEntry(Profile p, String id) throws Exception {
+        return (Map<String, Object>) ((Map<String, Object>) field(p, "entries")).get(id);
+    }
+
+    private Profile loadedWithRawEntries() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"modules\":{\"fps\":{\"zIndex\":" + NESTED + ",\"options\":{\"o\":" + NESTED + "}},"
+                + "\"waypoints\":{\"zIndex\":" + NESTED + ",\"options\":{\"o\":" + NESTED + "}}}}").getBytes(UTF_8));
+        return store().load("default");   // nothing accessed: the entries are raw
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void mutateRaw(Map<String, Object> entry) {
+        mutateNested(entry.get("zIndex"));
+        mutateNested(((Map<String, Object>) entry.get("options")).get("o"));
+    }
+
+    @Test void copying_entries_that_were_not_accessed_is_deep_including_unknown_modules() throws Exception {
+        Profile a = loadedWithRawEntries();
+        Profile b = a.copy();
+        String before = Json.write(a.toJson());
+        for (String id : new String[] {"fps", "waypoints"}) {
+            mutateRaw(rawEntry(a, id));
+        }
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        Profile c = loadedWithRawEntries();
+        Profile d = c.copy();
+        for (String id : new String[] {"fps", "waypoints"}) {
+            mutateRaw(rawEntry(d, id));
+        }
+        assertNotEquals(before, Json.write(d.toJson()));
+        assertEquals(before, Json.write(c.toJson()));
+    }
+
+    @Test void copying_option_values_that_are_maps_or_lists_is_deep() throws Exception {
+        Object value = Json.parse(NESTED);
+        ModuleConfig a = new Profile().module("fps");
+        a.setOption("o", value);
+        ModuleConfig b = a.copy();
+        String before = Json.write(a.toJson());
+        mutateNested(value);                                   // the original's stored object
+        assertNotEquals(before, Json.write(a.toJson()));
+        assertEquals(before, Json.write(b.toJson()));
+        ModuleConfig c = new Profile().module("fps");
+        c.setOption("o", Json.parse(NESTED));
+        ModuleConfig d = c.copy();
+        mutateNested(JsonObjects.object(JsonObjects.object(d.toJson()).get("options")).get("o"));   // the copy's stored object
+        assertEquals(before, Json.write(c.toJson()));
+        assertNotEquals(before, Json.write(d.toJson()));
+    }
+
+    @Test void a_module_copy_is_deep_for_unknown_entry_keys() throws Exception {
+        ModuleConfig a = loadedWithNestedUnknowns().module("fps");
+        ModuleConfig b = a.copy();
+        String before = Json.write(a.toJson());
+        mutateNested(a.extras.get("zIndex"));
+        assertEquals(before, Json.write(b.toJson()));
+        String afterA = Json.write(a.toJson());
+        mutateNested(b.extras.get("zIndex"));
+        assertNotEquals(before, Json.write(b.toJson()));
+        assertEquals(afterA, Json.write(a.toJson()));
+    }
+
+    @Test void the_writer_never_emits_null_or_non_finite_option_values() throws Exception {
+        Profile p = new Profile();
+        ModuleConfig fps = p.module("fps");
+        fps.setOption("keep", 1L);
+        fps.setOption("gone", "x");
+        fps.setOption("gone", null);
+        fps.setOption("nan_f", Float.NaN);
+        fps.setOption("inf_f", Float.POSITIVE_INFINITY);
+        fps.setOption("nan_d", Double.NaN);
+        fps.setOption("ninf_d", Double.NEGATIVE_INFINITY);
+        store().save("default", p);
+        Map<String, Object> options = JsonObjects.object(JsonObjects.object(JsonObjects.object(
+                JsonObjects.object(Json.parse(read("default.json"))).get("modules")).get("fps")).get("options"));
+        assertEquals(Collections.singletonMap("keep", 1L), options);
+    }
+
+    @Test void a_null_option_value_is_dropped_on_read_and_not_written_back() throws Exception {
+        Files.write(dir.resolve("default.json"), "{\"schema\":1,\"modules\":{\"fps\":{\"options\":{\"a\":null,\"b\":2}}}}".getBytes(UTF_8));
+        Profile p = store().load("default");
+        p.module("fps");
+        store().save("default", p);
+        assertFalse(read("default.json").contains("\"a\""));
+        assertTrue(read("default.json").contains("\"b\": 2"));
+    }
+
+    @Test void number_forms_in_unknown_data_after_a_round_trip() throws Exception {
+        Files.write(dir.resolve("default.json"), ("{\"schema\":1,\"modules\":{},\"max\":9223372036854775807,\"min\":-9223372036854775808,"
+                + "\"big\":9223372036854775808,\"huge\":12345678901234567890123,\"int\":1,\"dec\":1.0,\"exp\":1e2}").getBytes(UTF_8));
+        Profile p = store().load("default");
+        store().save("default", p);
+        Map<String, Object> back = JsonObjects.object(Json.parse(read("default.json")));
+        assertEquals(Long.MAX_VALUE, back.get("max"));                       // exact: still a long
+        assertEquals(Long.MIN_VALUE, back.get("min"));
+        assertEquals(Long.valueOf(1L), back.get("int"));                      // 1 stays an integer
+        assertEquals(Double.valueOf(1.0), back.get("dec"));                   // 1.0 stays a decimal, not 1
+        assertEquals(Double.valueOf(100.0), back.get("exp"));                 // exponent form becomes 100.0
+        assertEquals(Double.valueOf(9.223372036854775808E18), back.get("big")); // beyond long: a double (exact here, 2^63)
+        assertEquals(Double.valueOf(1.2345678901234568E22), back.get("huge")); // beyond long: a double, digits beyond 17 are lost
+        assertTrue(read("default.json").contains("\"dec\": 1.0"));
+        assertTrue(read("default.json").contains("\"int\": 1,") || read("default.json").contains("\"int\": 1\n"));
     }
 }

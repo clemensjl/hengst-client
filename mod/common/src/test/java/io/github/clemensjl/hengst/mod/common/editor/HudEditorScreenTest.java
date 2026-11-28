@@ -15,6 +15,7 @@ import io.github.clemensjl.hengst.mod.common.hud.HudContext;
 import io.github.clemensjl.hengst.mod.common.hud.HudRenderer;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
+import io.github.clemensjl.hengst.mod.common.ui.ScreenClose;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeCanvas;
 import io.github.clemensjl.hengst.mod.common.testutil.FakePlatform;
 import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
@@ -26,6 +27,7 @@ import java.time.Clock;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class HudEditorScreenTest {
     @TempDir Path dir;
@@ -43,7 +45,7 @@ class HudEditorScreenTest {
     void setUp() {
         FakeTime t = new FakeTime();
         platform = new FakePlatform(dir);
-        ctx = new HudContext(platform, t, new FrameCounter(t), new CpsCounter(t));
+        ctx = TestContexts.context(platform, t, new FrameCounter(t), new CpsCounter(t));
         FeatureRegistry reg = new FeatureRegistry();
         reg.register(new FixedSizeModule("a", 1, 40, 10));
         reg.register(new FixedSizeModule("b", 2, 40, 10));
@@ -52,7 +54,7 @@ class HudEditorScreenTest {
         profile.module("b").setEnabled(true);
         profile.module("b").setOffsetX(250);
         profile.module("b").setOffsetY(100);
-        renderer = new HudRenderer(reg, GameVersion.V1_8_9);
+        renderer = TestContexts.renderer(reg, GameVersion.V1_8_9);
         renderer.rebuild(profile);
         configs = renderer.activeConfigs();
         model = new HudEditorModel(renderer.activeModules(), configs);
@@ -68,7 +70,13 @@ class HudEditorScreenTest {
     }
 
     private HudEditorScreen closingScreen() {
-        return screen(new HudEditorClose(model, store, ProfileStore.DEFAULT, profile, renderer, platform));
+        return screen(editorClose(ProfileStore.DEFAULT, profile));
+    }
+
+    /** The close the core builds for the editor, with the model's own save step. */
+    private Runnable editorClose(String profileName, Profile p) {
+        return new ScreenClose(model.saver(store, profileName, p), () -> renderer.rebuild(p), platform,
+                "the HUD editor (profile " + profileName + ")");
     }
 
     @Test
@@ -147,7 +155,7 @@ class HudEditorScreenTest {
         assertEquals(offsetX, profile.module("a").offsetX());
         // the next attempt, with the directory fixed, saves the kept layout
         Files.delete(dir.resolve("profiles"));
-        new HudEditorClose(model, store, ProfileStore.DEFAULT, profile, renderer, platform).run();
+        editorClose(ProfileStore.DEFAULT, profile).run();
         assertTrue(Files.exists(defaultFile()));
         assertFalse(model.dirty());
     }
@@ -214,7 +222,7 @@ class HudEditorScreenTest {
         reg.register(new FixedSizeModule("fps", 1, 0, 0));
         Profile p = new Profile();
         p.module("fps").setEnabled(true);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         HudEditorModel m = new HudEditorModel(r.activeModules(), r.activeConfigs());
         HudEditorScreen screen = new HudEditorScreen(m, ctx, I18n.load("en_us"), () -> {});
@@ -423,7 +431,7 @@ class HudEditorScreenTest {
         model.press(5, 5);
         model.drag(100, 100);
         model.release();
-        new HudEditorClose(model, store, "bad/name", profile, renderer, platform).run();
+        editorClose("bad/name", profile).run();
         assertEquals(1, platform.closeCount);
         assertEquals(1, platform.warnings.size());
         assertTrue(model.dirty());
@@ -431,7 +439,7 @@ class HudEditorScreenTest {
 
     @Test
     void close_still_closes_when_rebuild_throws() {
-        new HudEditorClose(model, store, ProfileStore.DEFAULT, null, renderer, platform).run();
+        editorClose(ProfileStore.DEFAULT, null).run();
         assertEquals(1, platform.closeCount);
         assertEquals(1, platform.warnings.size());
     }

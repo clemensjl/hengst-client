@@ -1,5 +1,6 @@
 package io.github.clemensjl.hengst.mod.common.feature;
 
+import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import java.util.Collections;
 import java.util.EnumSet;
@@ -37,4 +38,36 @@ public abstract class Feature {
     public List<OptionSpec> options() {
         return Collections.emptyList();
     }
+
+    /**
+     * A translation key of a short hint the settings show, muted and wrapped, above the options of this feature
+     * (for example how to bind its keys); null for none.
+     */
+    public String hintKey() {
+        return null;
+    }
+
+    /** The key bindings of this feature; the index in this list is the {@code key} of {@link #onKey}. */
+    public List<KeySpec> keys() {
+        return Collections.emptyList();
+    }
+
+    /**
+     * A key of {@link #keys()} changed. Called on the client thread, only while the feature is on, in a world without an
+     * open screen. {@code down} is true for a press; a release arrives only for {@link KeySpec.Mode#HOLD} keys whose
+     * press was delivered (also after the feature was switched off, or when a screen opened or the world was left).
+     * Allocation free in the healthy case. An exception is logged once and stops nothing.
+     */
+    public void onKey(int key, boolean down, long nowNanos) {}
+
+    /**
+     * Called by the core, once per pass and with this feature's own configuration, for every feature supported on
+     * this version: at start, after the settings and the HUD editor close, on a profile switch and when the server
+     * changes (join, leave, switch). Each pass also rebuilds the HUD and rewrites {@link FeatureState}. Features
+     * without a HUD copy their options into primitive fields here; HUD modules keep reading in {@code tick}. An
+     * exception or linkage error is logged once and stops nothing, but the feature is off in {@link FeatureState}
+     * until a pass in which this method returns normally. During the call {@link FeatureState} still shows the values
+     * from before the change: do not read it here.
+     */
+    public void onConfigChanged(ModuleConfig cfg) {}
 }

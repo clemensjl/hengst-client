@@ -1,5 +1,6 @@
 package io.github.clemensjl.hengst.mod.modern;
 
+import io.github.clemensjl.hengst.mod.common.platform.ScrollAccumulator;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 //? if >=26.1 {
 import net.minecraft.client.gui.GuiGraphicsExtractor;
@@ -18,7 +19,7 @@ import net.minecraft.network.chat.Component;
 public final class ModernScreenHost extends Screen {
     private final UiScreen ui;
     private final ModernCanvas canvas = new ModernCanvas();
-    private final ModernInput.ScrollNotches scroll = new ModernInput.ScrollNotches();
+    private final ScrollAccumulator scroll = new ScrollAccumulator(1.0);
     private boolean removed;
 
     public ModernScreenHost(UiScreen ui) {

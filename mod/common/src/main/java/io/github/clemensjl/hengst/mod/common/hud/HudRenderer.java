@@ -3,11 +3,11 @@ package io.github.clemensjl.hengst.mod.common.hud;
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
 import io.github.clemensjl.hengst.mod.common.config.Profile;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
+import io.github.clemensjl.hengst.mod.common.feature.FeatureGate;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureRegistry;
 import io.github.clemensjl.hengst.mod.common.layout.LayoutMath;
 import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
-import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.GameView;
 import java.util.Arrays;
 import java.util.List;
@@ -21,29 +21,30 @@ public final class HudRenderer {
     private static final ModuleConfig[] NO_CONFIGS = new ModuleConfig[0];
 
     private final FeatureRegistry registry;
-    private final GameVersion version;
+    private final FeatureGate gate;
     private final MutableRect rect = new MutableRect();
     private HudModule[] modules = NO_MODULES;
     private ModuleConfig[] configs = NO_CONFIGS;
     // A module that threw is skipped until the next rebuild; parallel to modules.
     private boolean[] failed = new boolean[0];
     private boolean suppressed;
+    private long[] renderTimes;
 
-    public HudRenderer(FeatureRegistry registry, GameVersion version) {
+    public HudRenderer(FeatureRegistry registry, FeatureGate gate) {
         this.registry = registry;
-        this.version = version;
+        this.gate = gate;
     }
 
-    /** Collects the enabled, supported modules in number order. Allocates; call only on configuration changes. */
+    /** Collects the modules the gate lets run, in number order. Allocates; call only on configuration changes. */
     public void rebuild(Profile profile) {
-        List<Feature> supported = registry.supportedOn(version);
+        List<Feature> supported = registry.supportedOn(gate.version());
         HudModule[] m = new HudModule[supported.size()];
         ModuleConfig[] c = new ModuleConfig[supported.size()];
         int n = 0;
         for (Feature f : supported) {
             if (f instanceof HudModule) {
                 ModuleConfig cfg = profile.module(f.id());
-                if (cfg.enabled()) {
+                if (gate.active(f, cfg)) {
                     m[n] = (HudModule) f;
                     c[n] = cfg;
                     n++;
@@ -58,6 +59,17 @@ public final class HudRenderer {
     /** Set by the owner while one of the mod's own screens (editor, settings) is open. */
     public void setSuppressed(boolean suppressed) {
         this.suppressed = suppressed;
+    }
+
+    /**
+     * Test hook for the cost measurement (unit tests and the in-game tests; null, the default, in the shipped mod). While
+     * an array is set, {@link #render} writes into it, per active module (index as in {@link #activeModules()}), the
+     * nanoseconds that frame spent on the module's size, placement, transform and render, read with
+     * {@code ctx.time().nanoTime()}; a skipped or failed module gets 0. An array shorter than the active list is left
+     * alone. Without an array the frame costs one null check per module on a local.
+     */
+    public void setRenderTimes(long[] lastFrameNanos) {
+        renderTimes = lastFrameNanos;
     }
 
     public int activeCount() {
@@ -102,13 +114,21 @@ public final class HudRenderer {
         ModuleConfig[] c = configs;
         boolean[] bad = failed;
         MutableRect r = rect;
+        long[] times = renderTimes;
+        if (times != null && times.length < m.length) {
+            times = null;
+        }
         for (int i = 0; i < m.length; i++) {
+            if (times != null) {
+                times[i] = 0;
+            }
             if (bad[i]) {
                 continue;
             }
             HudModule module = m[i];
             ModuleConfig cfg = c[i];
             try {
+                long start = times != null ? ctx.time().nanoTime() : 0;
                 float scale = cfg.scale();
                 int w = Math.round(module.width(canvas, cfg) * scale);
                 int h = Math.round(module.height(canvas, cfg) * scale);
@@ -121,6 +141,9 @@ public final class HudRenderer {
                     module.render(canvas, cfg, ctx);
                 } finally {
                     canvas.popTransform();
+                }
+                if (times != null) {
+                    times[i] = ctx.time().nanoTime() - start;
                 }
             } catch (RuntimeException e) {
                 fail(bad, i, module, e, ctx);

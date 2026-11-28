@@ -6,12 +6,14 @@ import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.feature.Feature;
 import io.github.clemensjl.hengst.mod.common.feature.FeatureGroup;
 import io.github.clemensjl.hengst.mod.common.feature.OptionSpec;
+import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
 import io.github.clemensjl.hengst.mod.common.platform.UiKey;
 import io.github.clemensjl.hengst.mod.common.platform.UiScreen;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Set;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
@@ -22,7 +24,7 @@ import java.util.function.Supplier;
 /**
  * The settings screen: feature list with switches on the left, the options of the selected feature on the right,
  * profile controls on top. Drawn by common; the adapters only forward input. It does not close itself:
- * {@code onClose} (see {@link SettingsClose}) saves, rebuilds the renderer and closes the game screen.
+ * {@code onClose} (see {@link ScreenClose}) saves, rebuilds the renderer and closes the game screen.
  * Labels, layout and fitted texts are built on open, on profile or option changes and on resize, not per frame.
  */
 public final class SettingsScreen implements UiScreen {
@@ -37,6 +39,7 @@ public final class SettingsScreen implements UiScreen {
     private static final int DIM = 0xC0101010;
     private static final int WARNING = 0xFFFF5555;
     private static final int NOTICE = 0xFFAAAAAA;
+    private static final int GROUP_TEXT = 0xFFAAAAAA;
     private static final String[] NO_LINES = new String[0];
 
     private static final String[] COLOR_KEYS = {"white", "yellow", "lime", "aqua", "red", "orange", "gray", "black"};
@@ -69,6 +72,12 @@ public final class SettingsScreen implements UiScreen {
     private int lineHeight;
     private int noticeY;
     private int warnY;
+    // The selected feature's hint above its options: wrapped to the option panel, rebuilt on selection and layout.
+    private String[] hintLines = NO_LINES;
+    private boolean hintDirty = true;
+    private int optX;
+    private int optW;
+    private int listH;
 
     public SettingsScreen(SettingsModel model, I18n i18n, Runnable onClose) {
         this.model = model;
@@ -87,8 +96,18 @@ public final class SettingsScreen implements UiScreen {
             }
         });
         List<Widget> rows = new ArrayList<Widget>();
-        for (Feature f : model.features()) {
-            rows.add(new FeatureRow(f));
+        for (FeatureGroup group : FeatureGroup.values()) {
+            boolean headed = false;
+            for (Feature f : model.features()) {
+                if (f.group() != group) {
+                    continue;
+                }
+                if (!headed) {
+                    rows.add(new GroupRow(i18n.get("hengst.group." + group.name().toLowerCase(Locale.ROOT))));
+                    headed = true;
+                }
+                rows.add(new FeatureRow(f));
+            }
         }
         featureList.setWidgets(rows, ROW);
         refresh();
@@ -170,12 +189,13 @@ public final class SettingsScreen implements UiScreen {
     }
 
     private void buildOptions() {
+        hintDirty = true;
         List<Widget> out = new ArrayList<Widget>();
         final Feature f = model.selected();
         if (f != null) {
             final String id = f.id();
-            // Background, shadow and colour style the HUD text; a feature that is not on the HUD has no use for them.
-            if (f.group() == FeatureGroup.HUD) {
+            // Background, shadow and colour style the HUD text; a feature that is not a HUD module has no use for them.
+            if (f.group() == FeatureGroup.HUD || f instanceof HudModule) {
                 out.add(new ToggleWidget(i18n.get("hengst.option.background"), new BooleanSupplier() {
                     @Override
                     public boolean getAsBoolean() {
@@ -323,8 +343,8 @@ public final class SettingsScreen implements UiScreen {
         int textW = sw - 2 * MARGIN;
         lineHeight = c.fontHeight() + 1;
         shownFailure = model.failureKey();
-        noticeLines = TextWrap.wrap(c, notice, textW);
-        warnLines = shownFailure == null ? NO_LINES : TextWrap.wrap(c, i18n.get(shownFailure), textW);
+        noticeLines = TextFit.wrap(c, notice, textW);
+        warnLines = shownFailure == null ? NO_LINES : TextFit.wrap(c, i18n.get(shownFailure), textW);
         done.w = Math.min(100, sw - 2 * MARGIN);
         done.h = DONE_H;
         done.x = sw - MARGIN - done.w;
@@ -332,11 +352,24 @@ public final class SettingsScreen implements UiScreen {
         // Bottom up: Done button, the failure sentence above it, the legal notice above that, then the lists.
         warnY = done.y - 2 - warnLines.length * lineHeight;
         noticeY = warnY - noticeLines.length * lineHeight;
-        int listH = Math.max(ROW, noticeY - GAP - LIST_Y);
+        listH = Math.max(ROW, noticeY - GAP - LIST_Y);
         featureList.setBounds(MARGIN, LIST_Y, leftW, listH);
         int rightX = MARGIN + leftW + MARGIN;
-        optionList.setBounds(rightX, LIST_Y, sw - MARGIN - rightX, listH);
+        optX = rightX;
+        optW = sw - MARGIN - rightX;
         positionHeader();
+        layoutHint(c);
+    }
+
+    /** Wraps the selected feature's hint and moves the option list down by its height. */
+    private void layoutHint(Canvas c) {
+        hintDirty = false;
+        Feature f = model.selected();
+        String key = f == null ? null : f.hintKey();
+        hintLines = key == null ? NO_LINES : TextFit.wrap(c, i18n.get(key), optW);
+        int hintH = hintLines.length == 0 ? 0 : hintLines.length * lineHeight + GAP;
+        int h = Math.max(ROW, listH - hintH);
+        optionList.setBounds(optX, LIST_Y + hintH, optW, h);
     }
 
     private void positionHeader() {
@@ -362,6 +395,8 @@ public final class SettingsScreen implements UiScreen {
     public void render(Canvas c, int mx, int my, float partialTick) {
         if (c.width() != sw || c.height() != sh || model.failureKey() != shownFailure) {
             layout(c);
+        } else if (hintDirty) {
+            layoutHint(c);
         }
         c.fill(0, 0, sw, sh, DIM);
         for (int i = 0; i < header.size(); i++) {
@@ -369,6 +404,9 @@ public final class SettingsScreen implements UiScreen {
         }
         featureList.render(c, mx, my);
         optionList.render(c, mx, my);
+        for (int k = 0; k < hintLines.length; k++) {
+            c.text(hintLines[k], optX, LIST_Y + k * lineHeight, NOTICE, true);
+        }
         for (int k = 0; k < noticeLines.length; k++) {
             c.text(noticeLines[k], MARGIN, noticeY + k * lineHeight, NOTICE, true);
         }
@@ -457,6 +495,20 @@ public final class SettingsScreen implements UiScreen {
 
     Widget doneButton() {
         return done;
+    }
+
+    /** A group heading in the feature list: text only, no fill, not clickable. */
+    private static final class GroupRow extends Widget {
+        private final String name;
+
+        GroupRow(String name) {
+            this.name = name;
+        }
+
+        @Override
+        public void render(Canvas c, int mx, int my) {
+            c.text(fitted(c, name, w - 6), x + 4, y + (h - c.fontHeight()) / 2, GROUP_TEXT, true);
+        }
     }
 
     /** One list row: the switch on the left 20 px, the rest selects the feature. */

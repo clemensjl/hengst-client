@@ -1,20 +1,34 @@
 package io.github.clemensjl.hengst.mod.legacy;
 
 import com.mojang.blaze3d.platform.GlStateManager;
+import io.github.clemensjl.hengst.mod.common.AdapterGuard;
+import io.github.clemensjl.hengst.mod.common.FeatureCatalog;
 import io.github.clemensjl.hengst.mod.common.HengstCore;
+import io.github.clemensjl.hengst.mod.common.feature.DefaultKey;
+import io.github.clemensjl.hengst.mod.common.feature.KeySpec;
+import io.github.clemensjl.hengst.mod.common.platform.GameVersion;
 import io.github.clemensjl.hengst.mod.common.platform.Platform;
 import io.github.clemensjl.hengst.mod.common.platform.TimeSource;
+import java.util.List;
 import java.util.function.Supplier;
+import java.util.function.ToIntFunction;
+import java.util.function.UnaryOperator;
 import net.fabricmc.api.ClientModInitializer;
 import net.legacyfabric.fabric.api.client.event.lifecycle.v1.ClientLifecycleEvents;
 import net.legacyfabric.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.MinecraftClient;
+import net.minecraft.client.option.KeyBinding;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 /**
  * Client entrypoint: starts the core and wires the game's hooks to it. If the core fails to start, the mod stays
  * inert: {@link #ENABLED} remains false and every hook returns at once.
+ *
+ * <p>A common jar that is missing or damaged as a whole is not caught: this class refers to common types
+ * ({@link #GUARD} is an {@link AdapterGuard}), so its class initialization fails before any of its code runs, and
+ * Fabric treats a failing entrypoint as fatal. Do not try to catch that; common ships inside the mod jar, so it needs a
+ * damaged jar.
  */
 public final class HengstLegacyMod implements ClientModInitializer {
     private static final Logger LOGGER = LogManager.getLogger("hengst");
@@ -26,10 +40,18 @@ public final class HengstLegacyMod implements ClientModInitializer {
     static final int SITE_STOP = 2;
     static final int SITE_FRAME = 3;
     static final int SITE_MOUSE = 4;
-    private static final String[] SITE_NAMES = {"HUD", "client tick", "client stop", "frame", "mouse button"};
-    private static final int MAX_KINDS = 4;
-    private static final Class<?>[][] LOGGED_KINDS = new Class<?>[SITE_NAMES.length][MAX_KINDS];
-    private static final int[] LOGGED_COUNT = new int[SITE_NAMES.length];
+    static final AdapterGuard GUARD = new AdapterGuard(
+            new String[] {"HUD", "client tick", "client stop", "frame", "mouse button"}, new AdapterGuard.Log() {
+                @Override
+                public void info(String message) {
+                    LOGGER.info(message);
+                }
+
+                @Override
+                public void error(String message, Throwable error) {
+                    LOGGER.error(message, error);
+                }
+            });
 
     /** Set once, as the last step of a successful start. Read first by every hook and mixin. */
     public static boolean ENABLED;
@@ -41,36 +63,59 @@ public final class HengstLegacyMod implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        LegacyKeys.register();
-        core = startCore(LegacyPlatform::new);
+        core = start(() -> FeatureCatalog.keys(GameVersion.V1_8_9), LegacyKeys::code, LegacyPlatform::new);
         if (core == null) {
             return;
         }
         // HUD: InGameHudMixin, not Legacy Fabric API's HudRenderCallback (that one fires after the chat and the
         // player list, see the mixin).
-        ClientTickEvents.END_CLIENT_TICK.register(HengstLegacyMod::onEndTick);
-        // Legacy Fabric API injects this at the HEAD of MinecraftClient.stop(), which run() calls on the client
-        // thread when the game loop ends (window closed, quit button), before Display.destroy and System.exit.
-        ClientLifecycleEvents.CLIENT_STOPPING.register(HengstLegacyMod::onStopping);
+        boolean hooked = registerHooks(() -> {
+            ClientTickEvents.END_CLIENT_TICK.register(HengstLegacyMod::onEndTick);
+            // Legacy Fabric API injects this at the HEAD of MinecraftClient.stop(), which run() calls on the client
+            // thread when the game loop ends (window closed, quit button), before Display.destroy and System.exit.
+            ClientLifecycleEvents.CLIENT_STOPPING.register(HengstLegacyMod::onStopping);
+        });
+        if (!hooked) {
+            return;
+        }
         ENABLED = true;
     }
 
     /**
-     * Creates the platform, logs the load line and starts the core; null after logging why. Caught: runtime
-     * exceptions and linkage errors raised while the platform and the core are created (a common class that fails
-     * its static initializer or references something missing). Not caught: VM errors. A common jar that is missing
-     * as a whole cannot be caught here: this class itself refers to common types, so the game reports the
-     * entrypoint as failed before this method runs (common ships inside the mod jar, so that needs a damaged jar).
+     * Runs the listener registration; false, logged once, if it fails (a renamed or missing member of the API mod shows
+     * as a LinkageError here). The mod then stays inert: listeners registered before the failure check {@link #ENABLED}
+     * first and return.
      */
-    static HengstCore startCore(Supplier<? extends Platform> platformFactory) {
+    static boolean registerHooks(Runnable hooks) {
         try {
-            Platform platform = platformFactory.get();
-            LOGGER.info("[hengst] loaded on {}", platform.version().id());
-            return HengstCore.start(platform, TimeSource.SYSTEM);
+            hooks.run();
+            return true;
         } catch (RuntimeException | LinkageError e) {
-            LOGGER.error("[hengst] core failed to start; the mod stays inactive and its key bindings do nothing", e);
+            LOGGER.error("[hengst] registering the game hooks failed; the mod stays inactive", e);
+            return false;
+        }
+    }
+
+    /**
+     * Registers the key bindings, then starts the core; null if either fails, and the mod stays inert (no listeners,
+     * {@link #ENABLED} false). The registration runs common code (every feature's constructor and keys) and the API
+     * mod's helper, which throws on a duplicate binding name: caught like the core start, logged once.
+     */
+    static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
+            Supplier<? extends Platform> platform) {
+        return start(keys, codes, LegacyKeys.REGISTRAR, platform);
+    }
+
+    /** {@link #start(Supplier, ToIntFunction, Supplier)} with the API mod's key helper replaceable, for the tests. */
+    static HengstCore start(Supplier<List<KeySpec>> keys, ToIntFunction<DefaultKey> codes,
+            UnaryOperator<KeyBinding> registrar, Supplier<? extends Platform> platform) {
+        try {
+            LegacyKeys.register(keys.get(), codes, registrar);
+        } catch (RuntimeException | LinkageError e) {
+            LOGGER.error("[hengst] key bindings failed to register; the mod stays inactive", e);
             return null;
         }
+        return GUARD.start(platform, TimeSource.SYSTEM);
     }
 
     /**
@@ -92,7 +137,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
             core.onHudRender(HUD_CANVAS, tickDelta);
             GlStateManager.enableDepthTest();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(SITE_HUD, e);
+            onHookFailure(SITE_HUD, e);
         }
     }
 
@@ -104,7 +149,14 @@ public final class HengstLegacyMod implements ClientModInitializer {
             LegacyKeys.dispatch(client);
             core.onClientTick();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(SITE_TICK, e);
+            onHookFailure(SITE_TICK, e);
+        }
+    }
+
+    /** Every hook's catch: a linkage error switches the mod off (see {@link AdapterGuard#hookFailed}). Cold path. */
+    static void onHookFailure(int site, Throwable e) {
+        if (GUARD.hookFailed(site, e)) {
+            ENABLED = false;
         }
     }
 
@@ -123,7 +175,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
         try {
             core.shutdown();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(SITE_STOP, e);
+            onHookFailure(SITE_STOP, e);
         }
     }
 
@@ -132,7 +184,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
         try {
             core.onFrame();
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(SITE_FRAME, e);
+            onHookFailure(SITE_FRAME, e);
         }
     }
 
@@ -147,7 +199,7 @@ public final class HengstLegacyMod implements ClientModInitializer {
                 core.onMouseButton(button, pressed);
             }
         } catch (RuntimeException | LinkageError e) {
-            hookFailed(SITE_MOUSE, e);
+            onHookFailure(SITE_MOUSE, e);
         }
     }
 
@@ -157,34 +209,5 @@ public final class HengstLegacyMod implements ClientModInitializer {
         if (lwjglButton != LegacyInput.OTHER_BUTTON) {
             onMouseButton(lwjglButton, pressed);
         }
-    }
-
-    /**
-     * Cold path; nothing thrown by the mod reaches the game. A linkage error (the game or Legacy Fabric API does not
-     * have what the adapter was built against) would repeat on every call: the mod disables itself and logs once.
-     * Other failures are logged once per site and exception class (the first four classes of a site).
-     */
-    static void hookFailed(int site, Throwable e) {
-        if (e instanceof LinkageError) {
-            if (ENABLED) {
-                ENABLED = false;
-                LOGGER.error("[hengst] the {} hook does not match this game; the mod is disabled", SITE_NAMES[site], e);
-            }
-            return;
-        }
-        Class<?> kind = e.getClass();
-        int n = LOGGED_COUNT[site];
-        for (int i = 0; i < n; i++) {
-            if (LOGGED_KINDS[site][i] == kind) {
-                return;
-            }
-        }
-        if (n == MAX_KINDS) {
-            return;
-        }
-        LOGGED_KINDS[site][n] = kind;
-        LOGGED_COUNT[site] = n + 1;
-        LOGGER.error("[hengst] the {} hook failed; further {} there are not logged", SITE_NAMES[site],
-                kind.getSimpleName(), e);
     }
 }

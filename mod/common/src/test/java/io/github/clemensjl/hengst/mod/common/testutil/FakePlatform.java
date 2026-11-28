@@ -25,6 +25,11 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public double playerZ;
     public float playerYaw;
     public String serverAddress;
+    public int pingMillis = -1;
+    public Object worldIdentity;
+    public boolean reducedDebugInfo;
+    public long memoryUsed;
+    public long memoryMax;
     public String languageCode = "en_us";
     public Set<GameKey> down = EnumSet.noneOf(GameKey.class);
     public Map<GameKey, String> labels = new EnumMap<GameKey, String>(GameKey.class);
@@ -35,6 +40,10 @@ public final class FakePlatform implements Platform, GameView, InputView {
     public Path configDir;
     /** If set, {@link #screenOpen()} throws it (a platform call that fails). */
     public RuntimeException screenOpenFailure;
+    /** If set, {@link #languageCode()} throws it. */
+    public RuntimeException languageCodeFailure;
+    /** If set, {@link #serverAddress()} throws it. */
+    public RuntimeException serverAddressFailure;
 
     public FakePlatform(Path configDir) {
         this.configDir = configDir;
@@ -62,6 +71,9 @@ public final class FakePlatform implements Platform, GameView, InputView {
 
     @Override
     public String languageCode() {
+        if (languageCodeFailure != null) {
+            throw languageCodeFailure;
+        }
         return languageCode;
     }
 
@@ -144,7 +156,35 @@ public final class FakePlatform implements Platform, GameView, InputView {
 
     @Override
     public String serverAddress() {
+        if (serverAddressFailure != null) {
+            throw serverAddressFailure;
+        }
         return serverAddress;
+    }
+
+    @Override
+    public int pingMillis() {
+        return pingMillis;
+    }
+
+    @Override
+    public Object worldIdentity() {
+        return worldIdentity;
+    }
+
+    @Override
+    public boolean reducedDebugInfo() {
+        return reducedDebugInfo;
+    }
+
+    @Override
+    public long memoryUsedBytes() {
+        return memoryUsed;
+    }
+
+    @Override
+    public long memoryMaxBytes() {
+        return memoryMax;
     }
 
     @Override

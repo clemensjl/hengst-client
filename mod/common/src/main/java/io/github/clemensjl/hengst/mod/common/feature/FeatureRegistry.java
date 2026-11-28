@@ -43,19 +43,25 @@ public final class FeatureRegistry {
         return byId.get(id);
     }
 
-    public List<Feature> supportedOn(GameVersion v) {
-        List<Feature> out = new ArrayList<Feature>();
-        for (Feature f : byId.values()) {
-            if (f.supports(v)) {
-                out.add(f);
-            }
-        }
+    /** Every registered feature in number order, unmodifiable. Cold path: builds a new list. */
+    public List<Feature> all() {
+        List<Feature> out = new ArrayList<Feature>(byId.values());
         Collections.sort(out, new Comparator<Feature>() {
             @Override
             public int compare(Feature a, Feature b) {
                 return Integer.compare(a.number(), b.number());
             }
         });
+        return Collections.unmodifiableList(out);
+    }
+
+    public List<Feature> supportedOn(GameVersion v) {
+        List<Feature> out = new ArrayList<Feature>();
+        for (Feature f : all()) {
+            if (f.supports(v)) {
+                out.add(f);
+            }
+        }
         return Collections.unmodifiableList(out);
     }
 }

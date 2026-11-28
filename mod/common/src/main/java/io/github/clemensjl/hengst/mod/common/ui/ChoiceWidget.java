@@ -39,26 +39,10 @@ public class ChoiceWidget extends Widget {
             // Too narrow: drop the label part first, then shorten the value in the middle. The end of the value,
             // which tells similar values apart, is never the part that gets cut.
             String full = label.contains("%s") ? label.replace("%s", v) : label + ": " + v;
-            display = c.textWidth(full) <= avail ? full : middleCut(c, v, avail);
+            display = c.textWidth(full) <= avail ? full : TextFit.middle(c, v, avail);
             displayWidth = c.textWidth(display);
         }
         c.text(display, x + (w - displayWidth) / 2, y + (h - c.fontHeight()) / 2, TEXT, true);
-    }
-
-    /** The text, or its start and end joined by ".." so that it fits. */
-    static String middleCut(Canvas c, String text, int avail) {
-        if (c.textWidth(text) <= avail) {
-            return text;
-        }
-        for (int keep = text.length() - 1; keep > 0; keep--) {
-            int tail = keep / 2;
-            int head = keep - tail;
-            String s = text.substring(0, head) + ".." + text.substring(text.length() - tail);
-            if (c.textWidth(s) <= avail) {
-                return s;
-            }
-        }
-        return "..";
     }
 
     @Override

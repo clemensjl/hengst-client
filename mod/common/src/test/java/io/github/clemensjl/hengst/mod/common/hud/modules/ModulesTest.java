@@ -20,6 +20,7 @@ import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 class ModulesTest {
     @TempDir Path dir;
@@ -33,7 +34,7 @@ class ModulesTest {
         platform = new FakePlatform(dir);
         time = new FakeTime();
         cfg = ModuleConfig.defaults();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private String coords(double x, double y, double z, int decimals) {
@@ -55,6 +56,13 @@ class ModulesTest {
         assertIdentity(new CpsModule(), "cps", 2);
         assertIdentity(new KeystrokesModule(), "keystrokes", 3);
         assertIdentity(new CoordinatesModule(), "coordinates", 6);
+        assertIdentity(new DirectionModule(), "direction", 7);
+        assertIdentity(new SpeedModule(), "speed", 15);
+        assertIdentity(new PingModule(), "ping", 8);
+        assertIdentity(new ClockModule(), "clock", 9);
+        assertIdentity(new ServerAddressModule(), "server_address", 10);
+        assertIdentity(new MemoryModule(), "memory", 11);
+        assertIdentity(new StopwatchModule(), "stopwatch", 21);
     }
 
     private static void assertIdentity(io.github.clemensjl.hengst.mod.common.feature.Feature f, String id, int nr) {
@@ -88,6 +96,27 @@ class ModulesTest {
         assertEquals(0, d.defaultValue());
         assertEquals(0f, d.min());
         assertEquals(2f, d.max());
+
+        List<OptionSpec> direction = new DirectionModule().options();
+        assertEquals(1, direction.size());
+        OptionSpec style = direction.get(0);
+        assertEquals("style", style.key());
+        assertEquals(OptionSpec.Kind.CHOICE, style.kind());
+        assertEquals("cardinal_degrees", style.defaultValue());
+        assertEquals("cardinal", style.value(0));
+        assertEquals("cardinal_degrees", style.value(1));
+        assertEquals("degrees", style.value(2));
+
+        List<OptionSpec> speed = new SpeedModule().options();
+        assertEquals(2, speed.size());
+        assertEquals("include_vertical", speed.get(0).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, speed.get(0).kind());
+        assertEquals(Boolean.FALSE, speed.get(0).defaultValue());
+        assertEquals("decimals", speed.get(1).key());
+        assertEquals(OptionSpec.Kind.INT_RANGE, speed.get(1).kind());
+        assertEquals(1, speed.get(1).defaultValue());
+        assertEquals(0f, speed.get(1).min());
+        assertEquals(2f, speed.get(1).max());
 
         assertTrue(new FpsModule().options().isEmpty());
     }
@@ -155,6 +184,21 @@ class ModulesTest {
     }
 
     // coordinates
+
+    @Test
+    void coordinates_are_empty_while_the_server_asks_for_reduced_debug_info() {
+        platform.inWorld = true;
+        platform.playerX = 3.0;
+        CoordinatesModule coords = new CoordinatesModule();
+        coords.tick(ctx, cfg);
+        assertEquals("X 3  Y 0  Z 0", coords.text());
+        platform.reducedDebugInfo = true;
+        coords.tick(ctx, cfg);
+        assertEquals("", coords.text());
+        platform.reducedDebugInfo = false;
+        coords.tick(ctx, cfg);
+        assertEquals("X 3  Y 0  Z 0", coords.text());
+    }
 
     @Test
     void coordinates_floor_and_reuse_text() {
@@ -534,5 +578,123 @@ class ModulesTest {
         k.render(c, cfg, ctx);
         k.render(c, cfg, ctx);
         assertEquals(6, measured[0]);
+    }
+
+    @Test
+    void clock_and_memory_options_defaults_and_places() {
+        List<OptionSpec> clock = new ClockModule().options();
+        assertEquals(2, clock.size());
+        assertEquals("format", clock.get(0).key());
+        assertEquals(OptionSpec.Kind.CHOICE, clock.get(0).kind());
+        assertEquals("24h", clock.get(0).defaultValue());
+        assertEquals("seconds", clock.get(1).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, clock.get(1).kind());
+        assertEquals(Boolean.FALSE, clock.get(1).defaultValue());
+        List<OptionSpec> memory = new MemoryModule().options();
+        assertEquals(1, memory.size());
+        assertEquals("style", memory.get(0).key());
+        assertEquals("both", memory.get(0).defaultValue());
+        for (io.github.clemensjl.hengst.mod.common.hud.HudModule m : new io.github.clemensjl.hengst.mod.common.hud.HudModule[] {new ClockModule(), new MemoryModule()}) {
+            assertEquals(io.github.clemensjl.hengst.mod.common.layout.Anchor.TOP_RIGHT, m.defaultAnchor());
+            assertEquals(-2, m.defaultOffsetX());
+        }
+        assertEquals(66, new ClockModule().defaultOffsetY());
+        assertEquals(94, new MemoryModule().defaultOffsetY());
+    }
+
+    @Test
+    void ping_and_server_address_options_defaults_and_places() {
+        assertTrue(new PingModule().options().isEmpty());
+        List<OptionSpec> sa = new ServerAddressModule().options();
+        assertEquals(1, sa.size());
+        assertEquals("show_port", sa.get(0).key());
+        assertEquals(OptionSpec.Kind.TOGGLE, sa.get(0).kind());
+        assertEquals(Boolean.FALSE, sa.get(0).defaultValue());
+        for (io.github.clemensjl.hengst.mod.common.hud.HudModule m : new io.github.clemensjl.hengst.mod.common.hud.HudModule[] {new PingModule(), new ServerAddressModule()}) {
+            assertEquals(io.github.clemensjl.hengst.mod.common.layout.Anchor.TOP_RIGHT, m.defaultAnchor());
+            assertEquals(-2, m.defaultOffsetX());
+        }
+        assertEquals(52, new PingModule().defaultOffsetY());
+        assertEquals(80, new ServerAddressModule().defaultOffsetY());
+    }
+
+    @Test
+    void default_places_of_the_eleven_modules_do_not_overlap_at_320_by_240() {
+        assertDefaultPlacesApart("en_us");
+        assertDefaultPlacesApart("de_de");
+    }
+
+    /** Worst-case texts: direction "NW 337°" (the longest course text), speed "100.00 m/s", coordinates with 2 decimals. */
+    private void assertDefaultPlacesApart(String language) {
+        platform.inWorld = true;
+        platform.worldIdentity = new Object();
+        platform.playerYaw = 157f; // course 337: "NW 337°"
+        platform.down.add(GameKey.FORWARD);
+        platform.playerX = 12345.6789;
+        platform.playerY = 120.5;
+        platform.playerZ = -12345.6789;
+        platform.serverAddress = "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW"; // 60 chars, shown as 19 W, .., 19 W
+        platform.pingMillis = 12345; // shown as "9999 ms"
+        platform.memoryUsed = 16384L << 20; // worst case: "RAM 100% 16384/16384 MB"
+        platform.memoryMax = 16384L << 20;
+        io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock wall =
+                new io.github.clemensjl.hengst.mod.common.testutil.FakeWallClock();
+        wall.utcMillis = java.time.Instant.parse("2026-11-21T23:58:58Z").toEpochMilli(); // "11:58:58 PM"
+        HudContext wallCtx = TestContexts.context(platform, time, wall, new FrameCounter(time), new CpsCounter(time));
+        wallCtx.setI18n(io.github.clemensjl.hengst.mod.common.I18n.load(language));
+        io.github.clemensjl.hengst.mod.common.hud.HudModule[] all = {new FpsModule(), new CpsModule(),
+            new CoordinatesModule(), new DirectionModule(), new SpeedModule(), new KeystrokesModule(),
+            new ClockModule(), new MemoryModule(), new PingModule(), new ServerAddressModule(), new StopwatchModule()};
+        FakeCanvas canvas = new FakeCanvas();
+        io.github.clemensjl.hengst.mod.common.layout.MutableRect[] rects =
+                new io.github.clemensjl.hengst.mod.common.layout.MutableRect[all.length];
+        for (int i = 0; i < all.length; i++) {
+            ModuleConfig c = ModuleConfig.defaults();
+            c.setAnchor(all[i].defaultAnchor());
+            c.setOffsetX(all[i].defaultOffsetX());
+            c.setOffsetY(all[i].defaultOffsetY());
+            c.setOption("decimals", 2);
+            c.setOption("seconds", true);
+            c.setOption("format", "12h");
+            c.setOption("show_port", true);
+            if (all[i] instanceof StopwatchModule) { // the longest text a stopwatch shows in practice: 123 hours
+                ((StopwatchModule) all[i]).onKey(0, true, time.now);
+                time.advanceMillis(123 * 3_600_000L + 45 * 60_000L + 6_700L);
+            }
+            all[i].tick(wallCtx, c);
+            if (all[i] instanceof StopwatchModule) {
+                assertEquals("123:45:06.7", ((StopwatchModule) all[i]).text());
+            }
+            if (all[i] instanceof SpeedModule) {
+                platform.playerX += 5; // the largest counted step: 100 m/s
+                all[i].tick(wallCtx, c);
+                assertEquals("100.00 m/s", ((SpeedModule) all[i]).text());
+            }
+            if (all[i] instanceof PingModule) {
+                assertEquals("9999 ms", ((PingModule) all[i]).text());
+            }
+            if (all[i] instanceof ServerAddressModule) {
+                assertEquals(40, ((ServerAddressModule) all[i]).text().length());
+            }
+            if (all[i] instanceof DirectionModule) {
+                assertEquals("NW 337°", ((DirectionModule) all[i]).text());
+            }
+            rects[i] = new io.github.clemensjl.hengst.mod.common.layout.MutableRect();
+            io.github.clemensjl.hengst.mod.common.layout.LayoutMath.resolve(c, all[i].width(canvas, c),
+                    all[i].height(canvas, c), canvas.width(), canvas.height(), rects[i]);
+            assertTrue(rects[i].w > 0 && rects[i].h > 0, all[i].id() + " has a size");
+            if (all[i] instanceof io.github.clemensjl.hengst.mod.common.hud.TextHudModule) { // the fit must not cut a worst-case text here
+                String shown = ((io.github.clemensjl.hengst.mod.common.hud.TextHudModule) all[i]).text();
+                assertEquals(canvas.textWidth(shown) + 4, rects[i].w, all[i].id() + " is shown whole: " + shown);
+            }
+        }
+        for (int i = 0; i < all.length; i++) {
+            for (int j = i + 1; j < all.length; j++) {
+                io.github.clemensjl.hengst.mod.common.layout.MutableRect a = rects[i];
+                io.github.clemensjl.hengst.mod.common.layout.MutableRect b = rects[j];
+                boolean apart = a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y;
+                assertTrue(apart, all[i].id() + " overlaps " + all[j].id());
+            }
+        }
     }
 }

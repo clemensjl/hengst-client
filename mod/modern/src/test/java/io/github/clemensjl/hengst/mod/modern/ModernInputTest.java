@@ -64,69 +64,6 @@ class ModernInputTest {
     }
 
     @Test
-    void oneWheelNotchAtDefaultSensitivityIsOneNotch() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        assertEquals(1, s.add(1.0));
-        assertEquals(-1, s.add(-1.0));
-        assertEquals(0, s.add(0.0));
-    }
-
-    @Test
-    void tenTouchpadEventsOfOneTenthAreOneNotch() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        int total = 0;
-        for (int i = 0; i < 9; i++) {
-            total += s.add(0.1);
-        }
-        assertEquals(0, total);
-        assertEquals(1, s.add(0.1));
-        assertEquals(0, s.add(0.05));
-    }
-
-    @Test
-    void lowestSensitivityStillReachesANotch() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        int total = 0;
-        int events = 0;
-        while (total == 0 && events < 1000) {
-            total += s.add(-0.01);
-            events++;
-        }
-        assertEquals(-1, total);
-        assertEquals(100, events, 1.0);
-    }
-
-    @Test
-    void largeAmountsGiveSeveralNotchesAndKeepTheRemainder() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        assertEquals(3, s.add(3.5));
-        assertEquals(1, s.add(0.5));
-        assertEquals(0, s.add(-0.5));
-        assertEquals(-1, s.add(-0.5));
-    }
-
-    @Test
-    void oneEventEmitsAtMostOneHundredNotches() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        assertEquals(100, s.add(500.25));
-        assertEquals(0, s.add(0.0));
-        assertEquals(-100, s.add(-1e5));
-        assertEquals(0, s.add(0.0));
-        assertEquals(1, s.add(1.0));
-    }
-
-    @Test
-    void resetDropsTheRemainderAndBadValuesAreIgnored() {
-        ModernInput.ScrollNotches s = new ModernInput.ScrollNotches();
-        assertEquals(0, s.add(0.9));
-        s.reset();
-        assertEquals(0, s.add(0.9));
-        assertEquals(0, s.add(Double.NaN));
-        assertEquals(0, s.add(Double.POSITIVE_INFINITY));
-        assertEquals(1, s.add(0.1));
-    }
-
-    @Test
     void guiPixelFloorsTowardsNegativeInfinity() {
         assertEquals(10, ModernInput.guiPixel(10.0));
         assertEquals(10, ModernInput.guiPixel(10.99));

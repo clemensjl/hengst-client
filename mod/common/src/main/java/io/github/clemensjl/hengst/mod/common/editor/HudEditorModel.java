@@ -1,10 +1,13 @@
 package io.github.clemensjl.hengst.mod.common.editor;
 
 import io.github.clemensjl.hengst.mod.common.config.ModuleConfig;
+import io.github.clemensjl.hengst.mod.common.config.Profile;
+import io.github.clemensjl.hengst.mod.common.config.ProfileStore;
 import io.github.clemensjl.hengst.mod.common.hud.HudModule;
 import io.github.clemensjl.hengst.mod.common.layout.LayoutMath;
 import io.github.clemensjl.hengst.mod.common.layout.MutableRect;
 import io.github.clemensjl.hengst.mod.common.platform.Canvas;
+import io.github.clemensjl.hengst.mod.common.ui.ScreenClose;
 import java.util.function.Consumer;
 
 /**
@@ -188,6 +191,16 @@ public final class HudEditorModel {
 
     public boolean dirty() {
         return dirty;
+    }
+
+    /** The save step of the editor's close: writes the profile only if the layout changed, then marks it saved. */
+    public ScreenClose.Save saver(ProfileStore store, String profileName, Profile profile) {
+        return () -> {
+            if (dirty) {
+                store.save(profileName, profile);
+                markSaved();
+            }
+        };
     }
 
     /** Called after the layout was written to disk. */

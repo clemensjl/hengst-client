@@ -20,8 +20,10 @@ import io.github.clemensjl.hengst.mod.common.testutil.FakeTime;
 import java.lang.management.ManagementFactory;
 import java.nio.file.Path;
 import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import io.github.clemensjl.hengst.mod.common.testutil.TestContexts;
 
 /** The four real modules through the real renderer: nothing is allocated unless a displayed value changed. */
 class ModulesAllocationTest {
@@ -43,7 +45,7 @@ class ModulesAllocationTest {
         platform.down.add(GameKey.FORWARD);
         platform.down.add(GameKey.ATTACK);
         time = new FakeTime();
-        ctx = new HudContext(platform, time, new FrameCounter(time), new CpsCounter(time));
+        ctx = TestContexts.context(platform, time, new FrameCounter(time), new CpsCounter(time));
     }
 
     private static long allocated() {
@@ -65,7 +67,7 @@ class ModulesAllocationTest {
             c.setScale(1.5f);
         }
         p.module("coordinates").setOption("decimals", 2);
-        HudRenderer r = new HudRenderer(reg, GameVersion.V1_8_9);
+        HudRenderer r = TestContexts.renderer(reg, GameVersion.V1_8_9);
         r.rebuild(p);
         return r;
     }
@@ -214,5 +216,22 @@ class ModulesAllocationTest {
         assertTrue(fpsBytes > 0 && fpsBytes <= MAX_BYTES_PER_CHANGE, "fps " + fpsBytes);
         assertTrue(cpsBytes > 0 && cpsBytes <= MAX_BYTES_PER_CHANGE, "cps " + cpsBytes);
         assertTrue(coordBytes > 0 && coordBytes <= MAX_BYTES_PER_CHANGE, "coordinates " + coordBytes);
+    }
+
+    @Tag("interpreted")
+    @Test
+    void keystrokes_with_a_too_wide_label_allocates_nothing_after_its_first_frame() {
+        platform.labels.put(GameKey.FORWARD, "Button 4");
+        KeystrokesModule keys = new KeystrokesModule();
+        ModuleConfig cfg = ModuleConfig.defaults();
+        CountingCanvas canvas = new CountingCanvas();
+        keys.tick(ctx, cfg);
+        keys.render(canvas, cfg, ctx);
+        long before = allocated();
+        for (int i = 0; i < 1000; i++) {
+            keys.render(canvas, cfg, ctx);
+        }
+        long used = allocated() - before;
+        assertEquals(0, used, "allocated " + used + " bytes");
     }
 }

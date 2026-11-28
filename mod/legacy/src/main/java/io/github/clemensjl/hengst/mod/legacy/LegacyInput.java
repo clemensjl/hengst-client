@@ -91,33 +91,4 @@ final class LegacyInput {
     static int guiSize(int size, int scale) {
         return (size + scale - 1) / scale;
     }
-
-    /**
-     * Turns LWJGL wheel deltas ({@code Mouse.getEventDWheel()}, 120 per notch on Windows, smaller steps on some
-     * touchpads) into whole notches, positive when the wheel is rolled away from the user (the sign LWJGL delivers).
-     * One instance per open screen.
-     */
-    static final class ScrollNotches {
-        static final int WHEEL_DELTA = 120;
-        /** At most this many notches per event; the rest of a garbage delta is dropped. */
-        static final int MAX_NOTCHES = 100;
-        private long remainder;
-
-        /** Adds one wheel event and returns the signed number of whole notches it completes (often 0). */
-        int add(int delta) {
-            remainder += delta;
-            long notches = remainder / WHEEL_DELTA;
-            remainder -= notches * WHEEL_DELTA;
-            if (notches > MAX_NOTCHES || notches < -MAX_NOTCHES) {
-                remainder = 0;
-                return notches > 0 ? MAX_NOTCHES : -MAX_NOTCHES;
-            }
-            return (int) notches;
-        }
-
-        /** Forgets a partial notch, for example when the screen closes. */
-        void reset() {
-            remainder = 0;
-        }
-    }
 }
