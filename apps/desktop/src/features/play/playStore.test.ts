@@ -116,6 +116,32 @@ describe("the page's own start", () => {
     expect(useApp.getState().launchError).toBeNull();
   });
 
+  it("a changed Java setting clears a start refused for its Java, and only that error", async () => {
+    const b = await started();
+    const javaInvalid = { code: "javaInvalid" as const, params: {}, action: null, detail: "d" };
+    b.playFails = javaInvalid;
+    await useApp.getState().startGame("survival");
+    expect(useApp.getState().launchError?.error.code).toBe("javaInvalid");
+    // Another setting leaves it: the stored Java is still the one that was refused.
+    await useApp.getState().updateSettings({ memoryMb: 3072 });
+    expect(useApp.getState().launchError?.error.code).toBe("javaInvalid");
+    // Reset (or a new path) answers what the panel asked for, so it goes.
+    await useApp.getState().updateSettings({ javaOverride: { op: "clear" } });
+    expect(useApp.getState().launchError).toBeNull();
+
+    // A Java chosen through the dialog does the same.
+    await useApp.getState().startGame("survival");
+    expect(useApp.getState().launchError?.error.code).toBe("javaInvalid");
+    await useApp.getState().chooseJava(() => {});
+    expect(useApp.getState().launchError).toBeNull();
+
+    // Any other start error stays until the next start.
+    b.playFails = { code: "busy", params: {}, action: null, detail: "d" };
+    await useApp.getState().startGame("survival");
+    await useApp.getState().updateSettings({ javaOverride: { op: "clear" } });
+    expect(useApp.getState().launchError?.error.code).toBe("busy");
+  });
+
   it("a refused play call is the start's error", async () => {
     const b = await started();
     b.playFails = { code: "busy", params: {}, action: null, detail: "d" };

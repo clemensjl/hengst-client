@@ -104,6 +104,11 @@ export function playBackend(
       case "open_location":
         if (b.openFails) throw b.openFails;
         return;
+      // Only what the store reads of the saved settings.
+      case "settings_update":
+        return { notice: null };
+      case "java_choose":
+        return { kind: "chosen", version: "21.0.7", settings: { notice: null } };
       default:
         return;
     }

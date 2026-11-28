@@ -112,7 +112,10 @@ interface AppState {
   activeInstance: string | null;
   game: Resource<GameStateDto>;
   launch: Launch | null;
-  /** The last start of this page failed (until the next start); `installLog` if one was reported. */
+  /**
+   * The last start of this page failed (until the next start, or for `javaInvalid` until the Java
+   * setting is saved); `installLog` if one was reported.
+   */
   launchError: { error: ErrorDto; installLog: string | null } | null;
   /** `game_stop` reached no window for this run: nothing was asked to close. */
   stopNoWindow: number | null;
@@ -227,6 +230,16 @@ function applyGame(state: GameStateDto) {
   });
 }
 
+/**
+ * A start refused for the stored Java asks to choose Java again or reset it; once the Java setting
+ * was saved, that panel is answered and goes (any other start error stays until the next start).
+ */
+function clearJavaRefusal() {
+  if (useApp.getState().launchError?.error.code === "javaInvalid") {
+    useApp.setState({ launchError: null });
+  }
+}
+
 /** One event of the page's start `token`; events of an earlier start are ignored. */
 function onPlayEvent(token: number, e: PlayEvent) {
   const s = useApp.getState();
@@ -311,6 +324,7 @@ export const useApp = create<AppState>()((set, get) => ({
     const current = latest("settings");
     const data = await api.settingsUpdate(change);
     if (current()) set({ settings: { status: "ready", data } });
+    if ("javaOverride" in change) clearJavaRefusal();
     // An update that found the file damaged resets it and says so in its own answer: the follow-up
     // reload (which may fail) is not needed to learn it. The id keeps a second delivery to one toast.
     if (data.notice === "reset") toast(i18n.t("settings.resetNotice"), { id: "settings-reset" });
@@ -325,6 +339,7 @@ export const useApp = create<AppState>()((set, get) => ({
       // Counts as an update of the settings: an older answer that is still on its way loses.
       const current = latest("settings");
       if (current()) set({ settings: { status: "ready", data: answer.settings } });
+      clearJavaRefusal();
     }
     return answer;
   },
