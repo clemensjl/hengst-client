@@ -78,6 +78,49 @@ async function abortRun(reason: string, withSession: boolean): Promise<never> {
   process.exit(1);
 }
 
+/**
+ * The data-folder guard: the app's own page is loaded and the app reports our temp folder as its
+ * data folder, behind our running driver. Anything else, including a failed check, stops the run
+ * before a single click.
+ */
+async function checkGuard(): Promise<void> {
+  let failure: string | null;
+  try {
+    // The app's own page must be loaded: from any other page (a blank first document, or the
+    // error page of a build that wants the dev server, i.e. not an e2e build) the IPC call fails
+    // with "Origin header is not a valid URL", which says nothing about the cause.
+    const loaded = () =>
+      browser.execute(
+        () => location.origin === "http://tauri.localhost" && document.readyState === "complete",
+      );
+    await browser.waitUntil(loaded, { timeout: 20_000 }).catch(async () => {
+      const href = await browser.execute(() => location.href).catch(() => "unknown");
+      throw new Error(
+        `the app page did not load (the web view shows ${href}; is this an e2e build?)`,
+      );
+    });
+    const info = await browser.execute(async () => {
+      const internals = (
+        window as unknown as {
+          __TAURI_INTERNALS__: {
+            invoke: (cmd: string) => Promise<{ dataDir: string; e2eBuild?: boolean }>;
+          };
+        }
+      ).__TAURI_INTERNALS__;
+      return internals.invoke("app_info");
+    });
+    failure = guardFailure({
+      home,
+      dataDir: info?.dataDir,
+      driverRunning: driverRunning(),
+      e2eBuild: info?.e2eBuild,
+    });
+  } catch (e) {
+    failure = `the data folder could not be checked: ${String(e)}`;
+  }
+  if (failure) await abortRun(failure, true);
+}
+
 export const config: WebdriverIO.Config = {
   runner: "local",
   hostname: "127.0.0.1",
@@ -128,7 +171,7 @@ export const config: WebdriverIO.Config = {
     home = makeHome(setup.seed);
     process.env.HENGST_E2E_HOME = home;
     try {
-      mock = await startMock(setup.scenario);
+      mock = await startMock(setup.scenario, setup.mojangDelayMs);
     } catch (e) {
       await abortRun(`hengst-mock did not start: ${String(e)}`, false);
       return;
@@ -141,6 +184,8 @@ export const config: WebdriverIO.Config = {
       stdio: ["ignore", "inherit", "inherit"],
       windowsHide: true,
     });
+    // The specs find the app's process (and the game's) below this one.
+    process.env.HENGST_E2E_DRIVER_PID = String(tauriDriver.pid ?? "");
     tauriDriver.once("error", (e) => {
       driverError = e;
     });
@@ -153,36 +198,9 @@ export const config: WebdriverIO.Config = {
 
   // The app must run on the temp folder behind our driver: anything else, including a failed
   // check, stops the run before a single click.
-  before: async () => {
-    let failure: string | null;
-    try {
-      // The app's own page must be loaded: from any other page (a blank first document, or the
-      // error page of a build that wants the dev server, i.e. not an e2e build) the IPC call fails
-      // with "Origin header is not a valid URL", which says nothing about the cause.
-      const loaded = () =>
-        browser.execute(
-          () => location.origin === "http://tauri.localhost" && document.readyState === "complete",
-        );
-      await browser.waitUntil(loaded, { timeout: 20_000 }).catch(async () => {
-        const href = await browser.execute(() => location.href).catch(() => "unknown");
-        throw new Error(
-          `the app page did not load (the web view shows ${href}; is this an e2e build?)`,
-        );
-      });
-      const info = await browser.execute(async () => {
-        const internals = (
-          window as unknown as {
-            __TAURI_INTERNALS__: { invoke: (cmd: string) => Promise<{ dataDir: string }> };
-          }
-        ).__TAURI_INTERNALS__;
-        return internals.invoke("app_info");
-      });
-      failure = guardFailure({ home, dataDir: info?.dataDir, driverRunning: driverRunning() });
-    } catch (e) {
-      failure = `the data folder could not be checked: ${String(e)}`;
-    }
-    if (failure) await abortRun(failure, true);
-  },
+  before: checkGuard,
+  // `restartApp` (a new session, so a new app on the same folder): the same check again.
+  onReload: checkGuard,
 
   // A failed test notes whether the app window had the focus: another window taking the
   // foreground closes menus and popups.

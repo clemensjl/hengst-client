@@ -104,10 +104,15 @@ describe("guardFailure", () => {
   const home = "C:\\Temp\\hengst-e2e-abc";
 
   it("passes only when our driver runs and the app uses the e2e folder", () => {
-    expect(guardFailure({ home, dataDir: home, driverRunning: true })).toBeNull();
+    expect(guardFailure({ home, dataDir: home, driverRunning: true, e2eBuild: true })).toBeNull();
     // Same folder, other spelling.
     expect(
-      guardFailure({ home, dataDir: "c:\\temp\\HENGST-E2E-ABC\\", driverRunning: true }),
+      guardFailure({
+        home,
+        dataDir: "c:\\temp\\HENGST-E2E-ABC\\",
+        driverRunning: true,
+        e2eBuild: true,
+      }),
     ).toBeNull();
   });
 
@@ -117,22 +122,40 @@ describe("guardFailure", () => {
         home,
         dataDir: "D:\\Roaming\\HengstClient",
         driverRunning: true,
+        e2eBuild: true,
       }),
     ).toMatch(/not on the e2e data folder/);
     // A folder below or beside the e2e folder is another folder.
-    expect(guardFailure({ home, dataDir: `${home}\\sub`, driverRunning: true })).not.toBeNull();
-    expect(guardFailure({ home, dataDir: `${home}x`, driverRunning: true })).not.toBeNull();
+    expect(
+      guardFailure({ home, dataDir: `${home}\\sub`, driverRunning: true, e2eBuild: true }),
+    ).not.toBeNull();
+    expect(
+      guardFailure({ home, dataDir: `${home}x`, driverRunning: true, e2eBuild: true }),
+    ).not.toBeNull();
   });
 
   it("fails without an answer, without a folder or without our driver", () => {
-    expect(guardFailure({ home, dataDir: undefined, driverRunning: true })).toMatch(
+    expect(guardFailure({ home, dataDir: undefined, driverRunning: true, e2eBuild: true })).toMatch(
       /no data folder/,
     );
-    expect(guardFailure({ home, dataDir: "", driverRunning: true })).toMatch(/no data folder/);
-    expect(guardFailure({ home: undefined, dataDir: home, driverRunning: true })).toMatch(
-      /no e2e data folder/,
+    expect(guardFailure({ home, dataDir: "", driverRunning: true, e2eBuild: true })).toMatch(
+      /no data folder/,
     );
-    expect(guardFailure({ home, dataDir: home, driverRunning: false })).toMatch(/tauri-driver/);
+    expect(
+      guardFailure({ home: undefined, dataDir: home, driverRunning: true, e2eBuild: true }),
+    ).toMatch(/no e2e data folder/);
+    expect(guardFailure({ home, dataDir: home, driverRunning: false, e2eBuild: true })).toMatch(
+      /tauri-driver/,
+    );
+  });
+
+  it("fails for a build without the e2e feature, even on the right folder", () => {
+    // A plain debug build honours HENGST_HOME too, but talks to Microsoft and Mojang.
+    for (const e2eBuild of [false, undefined]) {
+      expect(guardFailure({ home, dataDir: home, driverRunning: true, e2eBuild })).toMatch(
+        /not an e2e build/,
+      );
+    }
   });
 });
 
