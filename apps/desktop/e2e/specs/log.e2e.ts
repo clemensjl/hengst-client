@@ -42,6 +42,10 @@ describe("the live log in WebView2", () => {
 
   it("keeps up with a burst: every line, in order, without a gap note", async () => {
     setScript([
+      // Time to open the log view first: the burst must arrive live, not as the backlog of an
+      // attach after it.
+      "out waiting for the view",
+      "sleep 4000",
       "xml INFO|Render thread|info-line before the burst",
       "xml WARN|Render thread|warn-line before the burst",
       "xml ERROR|main|error-line before the burst",
@@ -56,6 +60,8 @@ describe("the live log in WebView2", () => {
     await waitRunning();
     await (await mainButton("Show log")).click();
     await expect($("header h1")).toHaveText("Log");
+    await waitForLogText("waiting for the view");
+    expect(await logText()).not.toContain("burst-line");
     // Following: the view stays at the end while the lines arrive.
     await waitForLogText("after the burst", 60_000);
     const drawn = await drawnBurstNumbers();
