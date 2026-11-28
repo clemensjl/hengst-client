@@ -174,10 +174,25 @@ fn loader_notes(
 
 /// Text from a server (or a file) for the terminal: every control character (C0, DEL, C1)
 /// becomes U+FFFD, so a version id or an error text cannot move the cursor, change the window
-/// title or recolour the terminal.
+/// title or recolour the terminal. Bidi controls (embeddings, overrides, isolates and the marks
+/// LRM, RLM, ALM) are dropped, so the text cannot be shown reordered.
 fn printable(text: &str) -> String {
     text.chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+            )
+        })
         .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
+}
+
+/// The stdout lines of `launch --dry-run`: the Java path, then every (already redacted) argument
+/// indented, each `printable`.
+fn dry_run_lines(java: &std::path::Path, args: &[String]) -> Vec<String> {
+    std::iter::once(printable(&java.display().to_string()))
+        .chain(args.iter().map(|arg| format!("  {}", printable(arg))))
         .collect()
 }
 
@@ -350,9 +365,8 @@ async fn cli_main(cli: Cli) -> anyhow::Result<()> {
                 }
             }
             if dry_run {
-                println!("{}", prepared.java.display());
-                for arg in &prepared.redacted_args() {
-                    println!("  {arg}");
+                for line in dry_run_lines(&prepared.java, &prepared.redacted_args()) {
+                    println!("{line}");
                 }
                 return Ok(());
             }
@@ -797,8 +811,35 @@ mod tests {
             printable("a\u{1b}[31mb\u{7}c\u{7f}d\u{9b}2Je\nf\tg\u{0}"),
             "a\u{fffd}[31mb\u{fffd}c\u{fffd}d\u{fffd}2Je\u{fffd}f\u{fffd}g\u{fffd}"
         );
-        // Not control characters: kept.
-        assert_eq!(printable("Größe \u{202e}x"), "Größe \u{202e}x");
+        assert_eq!(printable("Größe x"), "Größe x");
+    }
+
+    /// Bidi controls are not control characters, but they reorder what the terminal shows: they
+    /// are dropped.
+    #[test]
+    fn printable_drops_bidi_controls() {
+        let bidi = "a\u{202a}b\u{202b}c\u{202c}d\u{202d}e\u{202e}f\u{2066}g\u{2067}h\u{2068}i\u{2069}j\u{200e}k\u{200f}l\u{61c}m";
+        assert_eq!(printable(bidi), "abcdefghijklm");
+        // Ordinary right-to-left text stays.
+        assert_eq!(printable("שלום"), "שלום");
+    }
+
+    /// The dry run prints the Java path and every argument through `printable`: an instance or
+    /// version name inside them cannot steer the terminal.
+    #[test]
+    fn dry_run_lines_are_printable() {
+        let lines = dry_run_lines(
+            std::path::Path::new("C:\\java\u{1b}[2J\\bin\\java.exe"),
+            &["--gameDir".into(), "x\u{202e}y\u{7}".into()],
+        );
+        assert_eq!(
+            lines,
+            [
+                "C:\\java\u{fffd}[2J\\bin\\java.exe",
+                "  --gameDir",
+                "  xy\u{fffd}"
+            ]
+        );
     }
 
     #[test]

@@ -109,3 +109,63 @@ async fn prepares_a_full_version_against_mock_mojang() {
     assert!(paths.asset_object(&asset_hash).is_file());
     assert_eq!(p.args.last().unwrap(), "Dev");
 }
+
+/// A game of the instance runs (its run lock is held): the preparation refuses as soon as the
+/// instance is known, before any jar, library or asset is fetched.
+#[tokio::test]
+async fn a_held_run_lock_refuses_before_any_download() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let s = MockServer::start().await;
+    let u = s.uri();
+    let version = serde_json::to_vec(&json!({
+        "id": "9.9", "type": "release", "mainClass": "net.minecraft.client.main.Main",
+        "downloads": {"client": {"sha1": sha1_hex(b"client"), "size": 6, "url": format!("{u}/client.jar")}},
+        "libraries": []
+    }))
+    .unwrap();
+    let manifest = json!({"latest": {"release": "9.9", "snapshot": "9.9"}, "versions": [
+        {"id": "9.9", "type": "release", "url": format!("{u}/9.9.json"), "sha1": sha1_hex(&version), "releaseTime": "r"}
+    ]});
+    mount(&s, "/manifest.json", serde_json::to_vec(&manifest).unwrap()).await;
+    mount(&s, "/9.9.json", version).await;
+    mount(&s, "/client.jar", b"client".to_vec()).await;
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path());
+    std::fs::create_dir_all(paths.tmp()).unwrap();
+    // What a running game does with its run lock: the file is open without any sharing.
+    let _held = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(paths.tmp().join("run-9.9.lock"))
+        .unwrap();
+    let opts = LaunchOptions {
+        version: "latest".into(),
+        instance: None,
+        account: Account::offline("Dev"),
+        java: None,
+        memory_mb: 1024,
+        loader: None,
+    };
+    let ep = Endpoints {
+        manifest: format!("{u}/manifest.json"),
+        resources: u.clone(),
+        ..Endpoints::default()
+    };
+    let e = prepare(&paths, &opts, &ep).await.unwrap_err();
+    assert!(
+        matches!(&e, hengst_core::Error::InstanceRunning { id } if id == "9.9"),
+        "{e:?}"
+    );
+    let fetched: Vec<String> = s
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .collect();
+    assert_eq!(fetched, ["/manifest.json", "/9.9.json"]);
+}

@@ -135,6 +135,20 @@ pub async fn prepare_with_progress(
     if let Some(name) = &opts.instance {
         validate_id(name)?;
     }
+    let default_instance = match &opts.loader {
+        Some(req) => format!("{}-{}", v.id, req.kind.slug()),
+        None => v.id.clone(),
+    };
+    let instance = opts.instance.as_deref().unwrap_or(&default_instance);
+    validate_id(instance)?;
+    // A game of this instance runs (its run lock is held): refused before any loader, library,
+    // jar or asset step. The lock itself is taken when the game starts (`run`, `spawn_game`).
+    #[cfg(windows)]
+    if crate::runlock::is_running(paths, instance)? {
+        return Err(Error::InstanceRunning {
+            id: instance.to_string(),
+        });
+    }
 
     // A loader problem must surface before any library or jar is downloaded.
     let setup = match &opts.loader {
@@ -147,12 +161,6 @@ pub async fn prepare_with_progress(
     };
     validate_id(&merged.id)?;
 
-    let default_instance = match &setup {
-        Some(s) => format!("{}-{}", v.id, s.resolved.kind.slug()),
-        None => v.id.clone(),
-    };
-    let instance = opts.instance.as_deref().unwrap_or(&default_instance);
-    validate_id(instance)?;
     let game_dir = paths.instance(instance);
     tokio::fs::create_dir_all(&game_dir).await?;
 
