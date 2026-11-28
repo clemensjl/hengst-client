@@ -85,3 +85,10 @@ pub enum JavaChoice {
         settings: SettingsDto,
     },
 }
+
+/// Progress of `java_choose` on its channel: `checking` once a file was picked in the dialog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub enum JavaPhase {
+    Checking,
+}

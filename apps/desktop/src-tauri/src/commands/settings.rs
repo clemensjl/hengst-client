@@ -1,6 +1,6 @@
 use crate::accounts::internal;
 use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
-use crate::dto::settings::{JavaChoice, Patch, SettingsDto, SettingsPatch};
+use crate::dto::settings::{JavaChoice, JavaPhase, Patch, SettingsDto, SettingsPatch};
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventHub};
 use crate::java::{probe_version, validate_java, JavaProblem, ProbeLimits, PROBE_LIMITS};
@@ -8,6 +8,7 @@ use crate::settings::{Settings, SettingsHandle};
 use crate::state::AppState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use tauri::ipc::Channel;
 use tauri::{Runtime, State, WebviewWindow};
 
 /// The memory setting's range (DESIGN.md 11.7), checked here and again when a game starts.
@@ -60,9 +61,14 @@ fn apply(s: &mut Settings, patch: SettingsPatch) {
 
 /// The notice of a reset settings file (from the start or found by an update) is handed out once.
 pub fn settings_get_impl(state: &AppState) -> Result<SettingsDto, ErrorDto> {
+    get_blocking(&state.settings)
+}
+
+/// Blocking: `SettingsDto::new` checks the stored Java path on the file system.
+fn get_blocking(settings: &SettingsHandle) -> Result<SettingsDto, ErrorDto> {
     // Notice first, then the values: an update that lands in between is not announced twice.
-    let notice = state.settings.take_notice();
-    Ok(SettingsDto::new(state.settings.get(), notice))
+    let notice = settings.take_notice();
+    Ok(SettingsDto::new(settings.get(), notice))
 }
 
 /// Validates, saves and announces a change. Blocking (file I/O): the command runs it on a
@@ -110,6 +116,7 @@ fn java_detail(problem: JavaProblem) -> &'static str {
         JavaProblem::Location => "the Java path is not a plain path on a local drive",
         JavaProblem::Name => "the Java path is not a file named java.exe or javaw.exe",
         JavaProblem::Missing => "the Java file does not exist",
+        JavaProblem::Unavailable => "the drive of the Java path is not available",
         JavaProblem::NotStarted => "the Java check failed",
     }
 }
@@ -122,7 +129,9 @@ pub fn checked_java(path: &std::path::Path) -> Result<PathBuf, ErrorDto> {
     })
 }
 
-/// What happens after the dialog: `None` (closed) changes nothing; a file is validated (text
+/// What happens after the dialog: `None` (closed) changes nothing; for a file, `on_checking` is
+/// called first (the web view shows "Checking" from then on, not while the dialog is open), the
+/// file is validated (text
 /// before any file-system call), only then run with `-version` within `limits`, and only a file
 /// that passes both is saved, as its canonical path. Any refusal keeps the previous value.
 /// Blocking (runs a program): call it on a blocking thread.
@@ -131,10 +140,12 @@ pub fn java_choose_impl(
     events: &EventHub,
     picked: Option<PathBuf>,
     limits: ProbeLimits,
+    on_checking: &dyn Fn(),
 ) -> Result<JavaChoice, ErrorDto> {
     let Some(picked) = picked else {
         return Ok(JavaChoice::Cancelled);
     };
+    on_checking();
     let java = validate_java(&picked).map_err(|p| java_error(p, java_detail(p)))?;
     let version = probe_version(&java, limits)
         .map_err(|e| java_error(JavaProblem::NotStarted, &e.to_string()))?;
@@ -155,12 +166,13 @@ pub fn java_choose_impl(
 }
 
 /// "Choose Java": the Windows file dialog, opened here and owned by the app window, then
-/// `java_choose_impl`. Takes no path: the web view cannot name the file. `busy` while a dialog
-/// is open.
+/// `java_choose_impl`. Takes no path: the web view cannot name the file. `channel` gets
+/// `checking` once a file was picked (never the path). `busy` while a dialog is open.
 #[tauri::command]
 pub async fn java_choose<R: Runtime>(
     window: WebviewWindow<R>,
     state: State<'_, AppState>,
+    channel: Channel<JavaPhase>,
 ) -> Result<JavaChoice, ErrorDto> {
     use tauri_plugin_dialog::DialogExt;
     let Some(claim) = state.java_dialog.try_claim() else {
@@ -180,15 +192,22 @@ pub async fn java_choose<R: Runtime>(
     tauri::async_runtime::spawn_blocking(move || {
         let _claim = claim;
         let picked = dialog.blocking_pick_file().and_then(|f| f.into_path().ok());
-        java_choose_impl(&settings, &events, picked, PROBE_LIMITS)
+        java_choose_impl(&settings, &events, picked, PROBE_LIMITS, &|| {
+            let _ = channel.send(JavaPhase::Checking);
+        })
     })
     .await
     .map_err(|_| internal("a background task failed"))?
 }
 
+/// Async: the answer checks the stored Java path (file-system calls), which must not run on the
+/// main thread.
 #[tauri::command]
-pub fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, ErrorDto> {
-    settings_get_impl(&state)
+pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, ErrorDto> {
+    let settings = state.settings.clone();
+    tauri::async_runtime::spawn_blocking(move || get_blocking(&settings))
+        .await
+        .map_err(|_| internal("a background task failed"))?
 }
 
 /// Async so the file I/O (under `SettingsHandle`'s lock, which is never held across an await)
@@ -473,7 +492,27 @@ mod tests {
     const VERSION_21: &str = "err openjdk version \"21.0.5\" 2024-10-15\n";
 
     fn choose(state: &AppState, picked: Option<PathBuf>) -> Result<JavaChoice, ErrorDto> {
-        java_choose_impl(&state.settings, &state.events, picked, QUICK)
+        java_choose_impl(&state.settings, &state.events, picked, QUICK, &|| {})
+    }
+
+    #[test]
+    fn checking_is_announced_only_after_a_file_was_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let announced = std::cell::Cell::new(0);
+        let count = || announced.set(announced.get() + 1);
+        java_choose_impl(&state.settings, &state.events, None, QUICK, &count).unwrap();
+        assert_eq!(
+            announced.get(),
+            0,
+            "the dialog was closed: nothing is checked"
+        );
+        let java = fake(dir.path(), "jdk", "java.exe", VERSION_21);
+        java_choose_impl(&state.settings, &state.events, Some(java), QUICK, &count).unwrap();
+        assert_eq!(announced.get(), 1);
+        let other = dir.path().join("notepad.exe");
+        let _ = java_choose_impl(&state.settings, &state.events, Some(other), QUICK, &count);
+        assert_eq!(announced.get(), 2, "a refused file was checked too");
     }
 
     fn refusal(e: &ErrorDto) -> &str {

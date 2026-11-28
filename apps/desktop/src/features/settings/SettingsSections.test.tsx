@@ -27,6 +27,8 @@ let infoFails = false;
 let infoCalls = 0;
 let javaAnswer: () => JavaChoice | Promise<JavaChoice> = () => ({ kind: "cancelled" });
 let javaCalls = 0;
+/** The channel of the last `java_choose`: the backend's "checking" arrives on it. */
+let javaChannel: { onmessage?: (phase: string) => void } | null = null;
 let update: (patch: Record<string, unknown>) => unknown = () => saved;
 let patches: Record<string, unknown>[] = [];
 
@@ -61,6 +63,7 @@ beforeEach(() => {
     }
     if (cmd === "java_choose") {
       javaCalls += 1;
+      javaChannel = (args as { channel: typeof javaChannel }).channel;
       return javaAnswer();
     }
     return undefined;
@@ -191,7 +194,7 @@ describe("Java", () => {
     expect(screen.queryByRole("button", { name: "Reset" })).toBeNull();
   });
 
-  it("choosing asks Rust with no path, shows Checking, then the version and the path", async () => {
+  it("choosing asks Rust with no path, shows Checking only once a file was picked, then the version and the path", async () => {
     let finish: (c: JavaChoice) => void = () => undefined;
     javaAnswer = () => new Promise((r) => (finish = r));
     view();
@@ -199,6 +202,13 @@ describe("Java", () => {
     const choose = screen.getByRole("button", { name: "Choose Java…" });
     fireEvent.click(choose);
     fireEvent.click(choose);
+    await waitFor(() => expect(javaCalls).toBe(1));
+    // The native dialog is open: nothing is being checked yet, and nothing says so.
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.queryByText("Checking…")).toBeNull();
+    const args = Object.keys(javaChannel ?? {});
+    expect(args).not.toContain("path");
+    act(() => javaChannel?.onmessage?.("checking"));
     expect(await screen.findByText("Checking…")).toBeTruthy();
     await act(async () =>
       finish({
@@ -218,7 +228,8 @@ describe("Java", () => {
 
   it.each([
     ["name", "Choose a java.exe or javaw.exe file."],
-    ["missing", "Choose a java.exe or javaw.exe file."],
+    ["missing", "This file no longer exists."],
+    ["unavailable", "This drive is not available right now."],
     ["notStarted", "This Java installation could not be started."],
     ["location", "Choose a Java file on a local drive."],
   ])("a refused file (%s) says why and keeps the previous value", async (reason, text) => {

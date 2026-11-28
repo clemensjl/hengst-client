@@ -8,6 +8,7 @@ import type { GameVersionsDto } from "./bindings/GameVersionsDto";
 import type { InstanceDto } from "./bindings/InstanceDto";
 import type { InstancesDto } from "./bindings/InstancesDto";
 import type { JavaChoice } from "./bindings/JavaChoice";
+import type { JavaPhase } from "./bindings/JavaPhase";
 import type { Language } from "./bindings/Language";
 import type { LoaderInfoDto } from "./bindings/LoaderInfoDto";
 import type { LoaderKindDto } from "./bindings/LoaderKindDto";
@@ -126,8 +127,13 @@ export const api = {
    * Opens the Windows file dialog in Rust; the chosen file is checked and run with `-version`
    * there and saved only if both pass. No path travels from here. `cancelled` when the dialog was
    * closed; `javaInvalid` (`params.reason`) when the file was refused; `busy` while a dialog is open.
+   * `onPhase` gets `checking` once a file was picked (while the dialog is open nothing is checked).
    */
-  javaChoose: (): Promise<JavaChoice> => guard(invoke<JavaChoice>("java_choose")),
+  javaChoose: (onPhase: (phase: JavaPhase) => void): Promise<JavaChoice> => {
+    const channel = new Channel<JavaPhase>();
+    channel.onmessage = onPhase;
+    return guard(invoke<JavaChoice>("java_choose", { channel }));
+  },
   accountsList: (): Promise<AccountsDto> => guard(invoke<AccountsDto>("accounts_list")),
   /** `id` is the id of an entry of `accountsList`. */
   accountSelect: (id: string): Promise<void> => guard(invoke<void>("account_select", { id })),

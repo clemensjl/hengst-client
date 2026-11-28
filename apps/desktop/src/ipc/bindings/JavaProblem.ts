@@ -3,4 +3,4 @@
 /**
  * Why a Java path cannot be used.
  */
-export type JavaProblem = "location" | "name" | "missing" | "notStarted";
+export type JavaProblem = "location" | "name" | "missing" | "unavailable" | "notStarted";

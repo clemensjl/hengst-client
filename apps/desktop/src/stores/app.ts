@@ -152,7 +152,7 @@ interface AppState {
   /** Saves a change; resolves with the saved settings, rejects with an `IpcError` (nothing changed). */
   updateSettings: (change: Partial<SettingsPatch>) => Promise<SettingsDto>;
   /** "Choose Java": the dialog and the check run in Rust; a chosen file updates the settings. Rejects with an `IpcError`. */
-  chooseJava: () => Promise<JavaChoice>;
+  chooseJava: (onChecking: () => void) => Promise<JavaChoice>;
   loadVersions: (filter: VersionFilter) => Promise<void>;
   loadVersionsSummary: () => Promise<void>;
   loadAccounts: () => Promise<void>;
@@ -317,8 +317,10 @@ export const useApp = create<AppState>()((set, get) => ({
     return data;
   },
 
-  chooseJava: async () => {
-    const answer = await api.javaChoose();
+  chooseJava: async (onChecking) => {
+    const answer = await api.javaChoose((phase) => {
+      if (phase === "checking") onChecking();
+    });
     if (answer.kind === "chosen") {
       // Counts as an update of the settings: an older answer that is still on its way loses.
       const current = latest("settings");

@@ -11,11 +11,12 @@
 //!    credentials). The file name must be `java.exe` or `javaw.exe` (any case).
 //! 2. The drive: its DOS device target (an object-manager lookup, no I/O on the drive) must not be
 //!    a network redirector (mapped drives, WebDAV, RDP drives) and a `subst` drive is followed to
-//!    its own drive; then `GetDriveTypeW` must say fixed, removable or RAM disk. Network, optical,
-//!    unknown and missing drives are refused.
+//!    its own drive; then `GetDriveTypeW` must say fixed, removable or RAM disk. Network, optical
+//!    and unknown drives are refused as not local; an undefined letter or a drive without a root
+//!    (a USB stick that is out) as unavailable.
 //! 3. The folders, one by one from the drive root without following links: a link (symlink or
 //!    junction) is read as text, its target goes through steps 1 and 2 again before anything under
-//!    it is touched.
+//!    it is touched. At most 16 links per check, counted over the whole walk.
 //! 4. The canonical path (`std::fs::canonicalize`, verbatim prefix removed) is checked again with
 //!    steps 1 and 2 and must be an existing regular file. The canonical path is what is saved and
 //!    what is started.
@@ -41,6 +42,8 @@ pub enum JavaProblem {
     Name,
     /// The file does not exist (any more).
     Missing,
+    /// The drive is not there right now (a USB stick that is out, a letter not in use).
+    Unavailable,
     /// `-version` failed: did not start, timed out, printed too much or no version, exited with
     /// an error.
     NotStarted,
@@ -53,6 +56,7 @@ impl JavaProblem {
             JavaProblem::Location => "location",
             JavaProblem::Name => "name",
             JavaProblem::Missing => "missing",
+            JavaProblem::Unavailable => "unavailable",
             JavaProblem::NotStarted => "notStarted",
         }
     }
@@ -106,10 +110,10 @@ fn check_location(path: &str) -> Result<(), JavaProblem> {
         Ok(()) | Err(JavaProblem::Name) => {}
         Err(e) => return Err(e),
     }
-    if drive_is_local(path.as_bytes()[0] as char, 0) {
-        Ok(())
-    } else {
-        Err(JavaProblem::Location)
+    match drive_state(path.as_bytes()[0] as char, &SystemDrives) {
+        DriveState::Local => Ok(()),
+        DriveState::NotLocal => Err(JavaProblem::Location),
+        DriveState::Unavailable => Err(JavaProblem::Unavailable),
     }
 }
 
@@ -119,12 +123,14 @@ fn missing(_: std::io::Error) -> JavaProblem {
     JavaProblem::Missing
 }
 
-/// How many links one path may pass through.
+/// How many links one whole check may pass through, counted over the entire walk (nested and
+/// one after another), so a crafted tree of links cannot make the walk expensive.
 const MAX_LINKS: u32 = 16;
 
 /// Step 3: walks `path` (absolute) component by component without following links; each link's
-/// target is checked as text and by its drive before it is walked in turn.
-fn resolve(path: &Path, depth: u32) -> Result<PathBuf, JavaProblem> {
+/// target is checked as text and by its drive before it is walked in turn. `links` counts every
+/// link of the whole check.
+fn resolve(path: &Path, links: &mut u32) -> Result<PathBuf, JavaProblem> {
     check_location(path.to_str().ok_or(JavaProblem::Location)?)?;
     let mut current = PathBuf::new();
     for component in path.components() {
@@ -139,12 +145,13 @@ fn resolve(path: &Path, depth: u32) -> Result<PathBuf, JavaProblem> {
                 let meta = std::fs::symlink_metadata(&current).map_err(missing)?;
                 // Symlinks and junctions (name-surrogate reparse points).
                 if meta.file_type().is_symlink() {
-                    if depth >= MAX_LINKS {
+                    *links += 1;
+                    if *links > MAX_LINKS {
                         return Err(JavaProblem::Location);
                     }
                     let target = std::fs::read_link(&current).map_err(|_| JavaProblem::Location)?;
                     let target = link_target(&current, &target)?;
-                    current = resolve(&target, depth + 1)?;
+                    current = resolve(&target, links)?;
                 }
             }
         }
@@ -152,45 +159,99 @@ fn resolve(path: &Path, depth: u32) -> Result<PathBuf, JavaProblem> {
     Ok(current)
 }
 
-/// Step 2 for drive `letter`.
+/// What step 2 asks about a drive letter; `SystemDrives` asks Windows, tests answer themselves.
+pub trait DriveProbe {
+    /// The DOS device target of `X:` (`QueryDosDeviceW`, an object-manager lookup, no I/O on the
+    /// drive); `None` when the letter is not defined.
+    fn dos_device(&self, letter: char) -> Option<String>;
+    /// `GetDriveTypeW` of `X:\`.
+    fn drive_type(&self, letter: char) -> u32;
+}
+
+/// The answer of step 2.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DriveState {
+    /// A fixed, removable or RAM disk of this machine.
+    Local,
+    /// A network drive (also behind `subst`), an optical or unknown drive.
+    NotLocal,
+    /// No such drive right now (a letter that is not defined, no root: a USB stick that is out).
+    Unavailable,
+}
+
+/// `GetDriveTypeW` results (values from the Windows SDK, `DRIVE_*`).
+const DRIVE_NO_ROOT: u32 = 1;
+const DRIVE_REMOVABLE_KIND: u32 = 2;
+const DRIVE_FIXED_KIND: u32 = 3;
+const DRIVE_RAMDISK_KIND: u32 = 6;
+
+/// Step 2: the device target first (a redirector or UNC target is never asked anything more,
+/// a `subst` drive is followed to its drive, at most 4 deep), then the drive type.
+pub fn drive_state(letter: char, probe: &dyn DriveProbe) -> DriveState {
+    let mut letter = letter.to_ascii_uppercase();
+    for _ in 0..=4 {
+        let Some(target) = probe.dos_device(letter) else {
+            return DriveState::Unavailable;
+        };
+        match classify_device(&target) {
+            Device::Network => return DriveState::NotLocal,
+            Device::Subst(other) => {
+                letter = other;
+                continue;
+            }
+            Device::Local => {}
+        }
+        return match probe.drive_type(letter) {
+            DRIVE_FIXED_KIND | DRIVE_REMOVABLE_KIND | DRIVE_RAMDISK_KIND => DriveState::Local,
+            DRIVE_NO_ROOT => DriveState::Unavailable,
+            _ => DriveState::NotLocal,
+        };
+    }
+    DriveState::NotLocal
+}
+
+/// The real drives of this machine.
+pub struct SystemDrives;
+
 #[cfg(windows)]
-fn drive_is_local(letter: char, depth: u32) -> bool {
-    use windows_sys::Win32::Storage::FileSystem::{GetDriveTypeW, QueryDosDeviceW};
-    use windows_sys::Win32::System::WindowsProgramming::{
-        DRIVE_FIXED, DRIVE_RAMDISK, DRIVE_REMOVABLE,
-    };
-    if depth > 4 {
-        return false;
+impl DriveProbe for SystemDrives {
+    fn dos_device(&self, letter: char) -> Option<String> {
+        use windows_sys::Win32::Storage::FileSystem::QueryDosDeviceW;
+        let name: Vec<u16> = format!("{letter}:").encode_utf16().chain(Some(0)).collect();
+        let mut buf = vec![0u16; 1024];
+        // SAFETY: `name` is NUL-terminated; `buf` is writable for `buf.len()` u16 units.
+        let n = unsafe { QueryDosDeviceW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        Some(String::from_utf16_lossy(&buf[..end]))
     }
-    let letter = letter.to_ascii_uppercase();
-    let name: Vec<u16> = format!("{letter}:").encode_utf16().chain(Some(0)).collect();
-    let mut buf = vec![0u16; 1024];
-    // SAFETY: `name` is NUL-terminated; `buf` is writable for `buf.len()` u16 units.
-    let n = unsafe { QueryDosDeviceW(name.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
-    if n == 0 {
-        return false;
+
+    fn drive_type(&self, letter: char) -> u32 {
+        use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+        let root: Vec<u16> = format!("{letter}:\\")
+            .encode_utf16()
+            .chain(Some(0))
+            .collect();
+        // SAFETY: `root` is a NUL-terminated wide string.
+        unsafe { GetDriveTypeW(root.as_ptr()) }
     }
-    let end = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
-    match classify_device(&String::from_utf16_lossy(&buf[..end])) {
-        Device::Network => return false,
-        Device::Subst(other) => return drive_is_local(other, depth + 1),
-        Device::Local => {}
-    }
-    let root: Vec<u16> = format!("{letter}:\\")
-        .encode_utf16()
-        .chain(Some(0))
-        .collect();
-    // SAFETY: `root` is a NUL-terminated wide string.
-    let kind = unsafe { GetDriveTypeW(root.as_ptr()) };
-    matches!(kind, DRIVE_FIXED | DRIVE_REMOVABLE | DRIVE_RAMDISK)
 }
 
 #[cfg(not(windows))]
-fn drive_is_local(_: char, _: u32) -> bool {
-    false
+impl DriveProbe for SystemDrives {
+    fn dos_device(&self, _: char) -> Option<String> {
+        None
+    }
+    fn drive_type(&self, _: char) -> u32 {
+        0
+    }
 }
 
-/// Reads up to `max` bytes of a pipe; past that it sets `overflow` and stops reading.
+/// Reads up to `max` bytes of a pipe; past that it sets `overflow` and stops reading for good
+/// (the rest is not drained: the caller sees the flag within one poll and kills the job, which
+/// ends the writer and closes the pipe).
 fn capture(
     mut pipe: impl std::io::Read + Send + 'static,
     max: usize,
@@ -274,7 +335,7 @@ pub fn validate_java(path: &Path) -> Result<PathBuf, JavaProblem> {
     // Lexical: `C:\x\..\java.exe` is checked as what Windows will open.
     let absolute = std::path::absolute(text).map_err(|_| JavaProblem::Location)?;
     check_text(absolute.to_str().ok_or(JavaProblem::Location)?)?;
-    let resolved = resolve(&absolute, 0)?;
+    let resolved = resolve(&absolute, &mut 0)?;
     let canonical = std::fs::canonicalize(&resolved).map_err(missing)?;
     let canonical = PathBuf::from(strip_verbatim(
         canonical.to_str().ok_or(JavaProblem::Location)?,
@@ -404,6 +465,10 @@ pub fn parse_version(output: &str) -> Option<String> {
 mod tests {
     use super::*;
     use std::time::Instant;
+    use windows_sys::Win32::System::WindowsProgramming::{
+        DRIVE_CDROM, DRIVE_FIXED, DRIVE_NO_ROOT_DIR, DRIVE_RAMDISK, DRIVE_REMOTE, DRIVE_REMOVABLE,
+        DRIVE_UNKNOWN,
+    };
 
     #[test]
     fn the_text_check_refuses_every_non_local_form() {
@@ -658,5 +723,152 @@ mod tests {
         );
         assert_eq!(parse_version("openjdk version \"21\u{202E}\""), None);
         assert_eq!(parse_version(""), None);
+    }
+
+    /// Drives as a test describes them: letter -> (DOS device target, GetDriveTypeW).
+    struct FakeDrives(std::collections::HashMap<char, (Option<&'static str>, u32)>);
+
+    impl DriveProbe for FakeDrives {
+        fn dos_device(&self, letter: char) -> Option<String> {
+            self.0
+                .get(&letter)
+                .and_then(|(target, _)| target.map(str::to_string))
+        }
+        fn drive_type(&self, letter: char) -> u32 {
+            self.0
+                .get(&letter)
+                .map_or(DRIVE_NO_ROOT_DIR, |(_, kind)| *kind)
+        }
+    }
+
+    #[test]
+    fn the_drive_decision_follows_device_targets_and_drive_types() {
+        let local = Some(r"\Device\HarddiskVolume3");
+        let drives = FakeDrives(
+            [
+                ('C', (local, DRIVE_FIXED)),
+                ('U', (Some(r"\Device\HarddiskVolume9"), DRIVE_REMOVABLE)),
+                ('R', (Some(r"\Device\Ramdisk0"), DRIVE_RAMDISK)),
+                ('O', (Some(r"\Device\CdRom0"), DRIVE_CDROM)),
+                ('K', (Some(r"\Device\HarddiskVolume5"), DRIVE_UNKNOWN)),
+                // A redirector target is refused before the drive type is asked (which would
+                // say "fixed" here on purpose).
+                (
+                    'Z',
+                    (
+                        Some(r"\Device\LanmanRedirector\;Z:0000000000012345\fileserver\share"),
+                        DRIVE_FIXED,
+                    ),
+                ),
+                (
+                    'W',
+                    (
+                        Some(r"\Device\WebDavRedirector\;W:0000\host\DavWWWRoot"),
+                        DRIVE_REMOTE,
+                    ),
+                ),
+                ('X', (Some(r"\Device\RdpDr\;X:1\tsclient\C"), DRIVE_REMOTE)),
+                ('N', (local, DRIVE_REMOTE)),
+                // subst drives: onto a local drive, onto a network drive, onto UNC, onto
+                // themselves, onto a missing drive.
+                ('E', (Some(r"\??\C:\Tools"), DRIVE_FIXED)),
+                ('F', (Some(r"\??\Z:\jdk"), DRIVE_FIXED)),
+                ('G', (Some(r"\??\UNC\fileserver\share"), DRIVE_FIXED)),
+                ('H', (Some(r"\??\H:\loop"), DRIVE_FIXED)),
+                ('I', (Some(r"\??\Q:\gone"), DRIVE_FIXED)),
+                // Defined, but no medium or root.
+                ('P', (local, DRIVE_NO_ROOT_DIR)),
+            ]
+            .into_iter()
+            .collect(),
+        );
+        for (letter, expected) in [
+            ('C', DriveState::Local),
+            ('c', DriveState::Local),
+            ('U', DriveState::Local),
+            ('R', DriveState::Local),
+            ('E', DriveState::Local),
+            ('O', DriveState::NotLocal),
+            ('K', DriveState::NotLocal),
+            ('Z', DriveState::NotLocal),
+            ('W', DriveState::NotLocal),
+            ('X', DriveState::NotLocal),
+            ('N', DriveState::NotLocal),
+            ('F', DriveState::NotLocal),
+            ('G', DriveState::NotLocal),
+            ('H', DriveState::NotLocal),
+            ('I', DriveState::Unavailable),
+            ('P', DriveState::Unavailable),
+            ('Q', DriveState::Unavailable),
+        ] {
+            assert_eq!(drive_state(letter, &drives), expected, "{letter}");
+        }
+    }
+
+    #[test]
+    fn a_drive_that_is_not_there_is_unavailable() {
+        use windows_sys::Win32::Storage::FileSystem::GetLogicalDrives;
+        // SAFETY: plain call without arguments.
+        let present = unsafe { GetLogicalDrives() };
+        let free = (b'D'..=b'Z')
+            .rev()
+            .find(|l| present & (1 << (l - b'A')) == 0)
+            .expect("a free drive letter") as char;
+        let path = format!(r"{free}:\jdk\bin\java.exe");
+        assert_eq!(
+            validate_java(Path::new(&path)),
+            Err(JavaProblem::Unavailable)
+        );
+    }
+
+    /// Junctions `<dir>/hop<i>` -> `<dir>/d<i>`, each `d<i>` holding the next hop: a path through
+    /// `n` links to `java.exe`.
+    fn junction_chain(dir: &Path, n: usize) -> PathBuf {
+        let mut path = dir.to_path_buf();
+        for i in 0..n {
+            let real = dir.join(format!("d{i}"));
+            std::fs::create_dir_all(&real).unwrap();
+            let status = std::process::Command::new("cmd")
+                .args(["/d", "/c", "mklink", "/J"])
+                .arg(path.join(format!("hop{i}")))
+                .arg(&real)
+                .stdout(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(status.success(), "mklink /J needs no privilege");
+            path = path.join(format!("hop{i}"));
+        }
+        let last = dir.join(format!("d{}", n - 1));
+        java_in(&last, "java.exe");
+        path.join("java.exe")
+    }
+
+    #[test]
+    fn the_number_of_links_on_one_path_is_bounded_in_total() {
+        let dir = tempfile::tempdir().unwrap();
+        // Each hop is at nesting depth one (the walk returns to the top before the next), so only
+        // a count over the whole walk stops a long chain.
+        let path = junction_chain(dir.path(), MAX_LINKS as usize + 1);
+        assert_eq!(validate_java(&path), Err(JavaProblem::Location));
+        let dir = tempfile::tempdir().unwrap();
+        let path = junction_chain(dir.path(), MAX_LINKS as usize);
+        assert!(validate_java(&path).is_ok());
+    }
+
+    #[test]
+    fn a_symlinked_java_exe_pointing_at_a_unc_path_is_refused_without_a_connection() {
+        let dir = tempfile::tempdir().unwrap();
+        let link = dir.path().join("java.exe");
+        // Creating the link does not touch the target.
+        if let Err(e) = std::os::windows::fs::symlink_file(r"\\192.0.2.1\share\java.exe", &link) {
+            eprintln!(
+                "SKIPPED: symlink creation is not permitted here (needs developer mode or the \
+                 privilege): {e}"
+            );
+            return;
+        }
+        let start = Instant::now();
+        assert_eq!(validate_java(&link), Err(JavaProblem::Location));
+        assert!(start.elapsed() < Duration::from_secs(1));
     }
 }

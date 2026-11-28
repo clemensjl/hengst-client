@@ -1406,10 +1406,10 @@ async fn a_stored_unc_java_path_is_refused_before_the_preparation() {
     let (preparer, calls) = counting_preparer();
     fx.state.game.set_preparer(preparer);
     // An older or hand-edited settings.json.
-    for stored in [
-        r"\192.0.2.1\share\java.exe",
-        r"\?\UNC\192.0.2.1\share\java.exe",
-        r"C:\Windows\notepad.exe",
+    for (stored, reason) in [
+        (r"\\192.0.2.1\share\java.exe", "location"),
+        (r"\\?\UNC\192.0.2.1\share\java.exe", "location"),
+        (r"C:\Windows\notepad.exe", "name"),
     ] {
         fx.state
             .settings
@@ -1425,12 +1425,60 @@ async fn a_stored_unc_java_path_is_refused_before_the_preparation() {
         };
         assert!(start.elapsed() < Duration::from_secs(2), "{stored}");
         assert_eq!(error.code, ErrorCode::JavaInvalid, "{stored}");
+        assert_eq!(error.params["reason"], reason, "{stored}");
         assert_eq!(error.action, Some(ErrorAction::OpenSettings));
         assert!(!error.detail.contains("192.0.2.1"), "{}", error.detail);
         assert!(!error.detail.contains("notepad"), "{}", error.detail);
         fx.idle().await;
     }
     assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing was prepared");
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_java_and_memory_gate_runs_before_the_account_is_renewed() {
+    // The token is due: a start that reached the account step would ask the sign-in mock.
+    let fx = fixture(Login::Expired).await;
+    let (preparer, calls) = counting_preparer();
+    fx.state.game.set_preparer(preparer);
+    let before = fx
+        .server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .len();
+    for (java, memory) in [
+        (Some(PathBuf::from(r"\\192.0.2.1\share\java.exe")), 2048),
+        (None, 100),
+    ] {
+        fx.state
+            .settings
+            .update(|s| {
+                s.java_override = java.clone();
+                s.memory_mb = memory;
+                Ok(())
+            })
+            .unwrap();
+        let (_, events) = fx.play().await;
+        let PlayEvent::Failed { error } = ended(&events).await else {
+            panic!("{:?}", events.lock().unwrap());
+        };
+        assert!(
+            matches!(error.code, ErrorCode::JavaInvalid | ErrorCode::InvalidInput),
+            "{error:?}"
+        );
+        fx.idle().await;
+    }
+    assert!(fx.auth.requests().is_empty(), "{:?}", fx.auth.requests());
+    assert_eq!(
+        fx.server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .len(),
+        before,
+        "no request reached the mock"
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread")]

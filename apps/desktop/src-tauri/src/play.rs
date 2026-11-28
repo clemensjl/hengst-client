@@ -461,6 +461,36 @@ impl PlayTask {
 
     async fn prepare_and_start(&self) -> Result<(), ErrorDto> {
         let r = &self.req;
+        // Before anything else (the account step may renew over the network and write the
+        // account store): the app's own memory value (an instance's comes from its own file, the
+        // CLI's business) reaches the JVM arguments only from the range the settings allow, and
+        // the Java path that would be started is checked again (text before any file-system
+        // call, so a stored UNC path never connects); its canonical path is the one started.
+        if r.instance.config.memory_mb.is_none()
+            && !crate::commands::settings::MEMORY_MB.contains(&r.settings.memory_mb)
+        {
+            return Err(ErrorDto {
+                action: Some(ErrorAction::OpenSettings),
+                ..crate::commands::settings::invalid_input("memoryMb")
+            });
+        }
+        let java = match r
+            .instance
+            .config
+            .java
+            .clone()
+            .or_else(|| r.settings.java_override.clone())
+        {
+            Some(java) => {
+                let checked = tokio::task::spawn_blocking(move || {
+                    crate::commands::settings::checked_java(&java)
+                })
+                .await
+                .map_err(|_| internal("a background task failed"))??;
+                Some(checked)
+            }
+            None => None,
+        };
         let (account, marked) = r.accounts.play_account(&r.settings).await;
         if marked {
             r.events.emit(AppEvent::DataChanged {
@@ -468,27 +498,8 @@ impl PlayTask {
             });
         }
         let (account, chosen) = account.map_err(|e| error_dto(&e))?;
-        let mut opts = instances::launch_options(
-            &r.instance,
-            account,
-            r.settings.memory_mb,
-            r.settings.java_override.clone(),
-        );
-        // The app's own memory value (an instance's comes from its own file, the CLI's business)
-        // reaches the JVM arguments only from the range the settings allow.
-        if r.instance.config.memory_mb.is_none()
-            && !crate::commands::settings::MEMORY_MB.contains(&opts.memory_mb)
-        {
-            return Err(ErrorDto {
-                action: Some(ErrorAction::OpenSettings),
-                ..crate::commands::settings::invalid_input("memoryMb")
-            });
-        }
-        // The path is started: checked again (text before any file-system call, so a stored UNC
-        // path never connects), and the canonical path it resolves to is the one started.
-        if let Some(java) = &opts.java {
-            opts.java = Some(crate::commands::settings::checked_java(java)?);
-        }
+        let mut opts = instances::launch_options(&r.instance, account, r.settings.memory_mb, None);
+        opts.java = java;
         let progress: ProgressSink = {
             let (out, root) = (self.out.clone(), r.paths.root().to_path_buf());
             Arc::new(move |p| {

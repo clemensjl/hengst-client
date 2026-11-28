@@ -32,6 +32,8 @@
   "settings.java.name": "Choose a java.exe or javaw.exe file.",
   "settings.java.notStarted": "This Java installation could not be started.",
   "settings.java.location": "Choose a Java file on a local drive.",
+  "settings.java.missing": "This file no longer exists.",
+  "settings.java.unavailable": "This drive is not available right now.",
   "settings.launch.title": "Launch",
   "settings.launch.minimize": "Minimize to the notification area when the game starts",
   "about.versionFailed": "The version could not be loaded.",

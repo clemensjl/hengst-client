@@ -37,6 +37,16 @@ describe("the third-party license list", () => {
     expect(names(data.javascript)).toContain("react");
   });
 
+  it("lists the build-time packages whose CSS ships and leaves out type-only and compiler packages", () => {
+    const names = data.javascript.map((e) => e.name);
+    expect(names).toContain("tailwindcss");
+    expect(names).toContain("shadcn");
+    for (const name of names) {
+      expect(name.startsWith("@types/") || name.startsWith("@typescript/"), name).toBe(false);
+      expect(["typescript", "csstype"]).not.toContain(name);
+    }
+  });
+
   it("leaves out the app's own crates", () => {
     const names = data.rust.map((e) => e.name);
     expect(names).not.toContain("hengst-core");

@@ -155,8 +155,8 @@ export function LicensesDialog({ load = loadLicenses }: { load?: () => Promise<L
       <DialogTrigger render={<Button className="self-start" />}>
         {t("about.thirdParty")}
       </DialogTrigger>
-      <DialogContent className="w-[640px]">
-        <DialogTitle className="pr-0">{t("about.thirdParty")}</DialogTitle>
+      <DialogContent className="w-[640px]" closeLabel={t("common.close")}>
+        <DialogTitle>{t("about.thirdParty")}</DialogTitle>
         <DialogDescription>{t("about.licenses.intro")}</DialogDescription>
         <DialogBody className="flex flex-col gap-6">{body()}</DialogBody>
         <DialogFooter>

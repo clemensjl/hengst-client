@@ -52,6 +52,7 @@ pub const ALL_TYPES: &[Export] = &[
     settings::JavaOverrideDto::export_all,
     settings::SettingsDto::export_all,
     settings::JavaChoice::export_all,
+    settings::JavaPhase::export_all,
     settings::SettingsPatch::export_all,
     play::RunId::export_all,
     play::TransferDto::export_all,

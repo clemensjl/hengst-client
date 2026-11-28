@@ -32,6 +32,8 @@
   "settings.java.name": "Wähle eine java.exe oder javaw.exe aus.",
   "settings.java.notStarted": "Diese Java-Installation ließ sich nicht starten.",
   "settings.java.location": "Wähle eine Java-Datei auf einem lokalen Laufwerk aus.",
+  "settings.java.missing": "Diese Datei gibt es nicht mehr.",
+  "settings.java.unavailable": "Dieses Laufwerk ist gerade nicht verfügbar.",
   "settings.launch.title": "Spielstart",
   "settings.launch.minimize": "Beim Spielstart in den Infobereich verkleinern",
   "about.versionFailed": "Die Version konnte nicht geladen werden.",

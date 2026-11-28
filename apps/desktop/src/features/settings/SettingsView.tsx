@@ -267,7 +267,8 @@ function MemoryField({ titleId, saved }: { titleId: string; saved: number }) {
 const PROBLEM_KEYS: Record<JavaProblem, string> = {
   location: "settings.java.location",
   name: "settings.java.name",
-  missing: "settings.java.name",
+  missing: "settings.java.missing",
+  unavailable: "settings.java.unavailable",
   notStarted: "settings.java.notStarted",
 };
 
@@ -315,8 +316,8 @@ function JavaSetting() {
 
   const choose = () =>
     run(async () => {
-      setChecking(true);
-      const answer = await chooseJava();
+      // While the native dialog is open nothing is checked yet: "Checking" only after the pick.
+      const answer = await chooseJava(() => setChecking(true));
       if (answer.kind === "chosen") setVersion(answer.version);
     });
   const reset = () =>

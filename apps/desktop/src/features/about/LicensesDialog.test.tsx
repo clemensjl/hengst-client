@@ -52,11 +52,15 @@ describe("LicensesDialog", () => {
     expect(within(dialog).getByText("Apache text")).toBeTruthy();
   });
 
-  it("has one secondary Close button and returns focus to its trigger", async () => {
+  it("has the header close button and one Close in the footer, and returns focus to its trigger", async () => {
     const trigger = open(async () => data);
     const dialog = await screen.findByRole("dialog", { name: "Third-party licenses" });
-    const closes = within(dialog).getAllByRole("button", { name: "Close" });
+    // DESIGN.md 10.9: the X top right; 11.10: the footer only dismisses.
+    expect(within(dialog).getAllByRole("button", { name: "Close" })).toHaveLength(2);
+    const footer = dialog.querySelector("[data-slot=dialog-footer]") as HTMLElement;
+    const closes = within(footer).getAllByRole("button");
     expect(closes).toHaveLength(1);
+    expect(closes[0].textContent).toBe("Close");
     fireEvent.click(closes[0]);
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     await waitFor(() => expect(document.activeElement).toBe(trigger));

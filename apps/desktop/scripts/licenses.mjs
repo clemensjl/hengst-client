@@ -25,6 +25,32 @@ export const INPUTS = {
   generator: join(desktop, "scripts/licenses.mjs"),
 };
 
+/**
+ * Build-time packages whose code ends up in the bundle although they are not runtime
+ * dependencies: `src/styles/index.css` imports `tailwindcss` (its preflight and the generated
+ * utilities) and `shadcn/tailwind.css`. No fonts or icon files are bundled from packages (the app
+ * uses system fonts; icons come from lucide-react, a runtime dependency).
+ */
+const SHIPPED_BUILD_PACKAGES = ["shadcn", "tailwindcss"];
+
+/**
+ * Packages `pnpm licenses list --prod` names only because a runtime package declares them as a
+ * (peer) dependency, and of which nothing reaches the bundle: type declarations and the compiler.
+ */
+const NOT_SHIPPED = (name) =>
+  name.startsWith("@types/") ||
+  name.startsWith("@typescript/") ||
+  name === "typescript" ||
+  name === "csstype";
+
+/** NOTICE files in a package folder (Apache-2.0 section 4d), sorted; none is an empty list. */
+function noticeFiles(dir) {
+  return readdirSync(dir)
+    .filter((f) => /^notice/i.test(f))
+    .sort()
+    .map((f) => readFileSync(join(dir, f), "utf8"));
+}
+
 /** SHA-256 of a text file with LF line endings (a CRLF checkout hashes the same). */
 export function hashFile(path) {
   const text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
@@ -100,29 +126,48 @@ function main() {
       name: p.name,
       version: p.version,
       license: p.license.replace(/\s+/g, " ").trim(),
+      manifest_path: p.manifest_path,
     }))
     .sort(byName)
-    .map((p) => ({ ...p, texts: (rustTexts.get(`${p.name}@${p.version}`) ?? []).map(addText) }));
+    .map((p) => ({
+      name: p.name,
+      version: p.version,
+      license: p.license,
+      // The license texts cargo-about chose, then any NOTICE file the crate ships (Apache-2.0
+      // section 4d asks to pass it on).
+      texts: [
+        ...(rustTexts.get(`${p.name}@${p.version}`) ?? []),
+        ...noticeFiles(dirname(p.manifest_path)),
+      ].map(addText),
+    }));
 
-  // JavaScript: the production dependencies; their texts are the license files in the package.
+  // JavaScript: the production dependencies, without the type-only and compiler packages pnpm
+  // lists because a runtime package names them as a (peer) dependency (nothing of them is in the
+  // bundle), plus the build-time packages whose CSS is in the bundle. Texts: the license and
+  // NOTICE files in the package.
   const pnpm = JSON.parse(run("pnpm", ["licenses", "list", "--json", "--prod"], desktop));
-  const javascript = Object.values(pnpm)
+  const listed = Object.values(pnpm)
     .flat()
-    .flatMap((p) =>
-      p.versions.map((version, i) => {
-        const dir = p.paths[i];
-        const files = readdirSync(dir)
-          .filter((f) => /^(licen[cs]e|copying)/i.test(f))
-          .sort();
-        if (files.length === 0) throw new Error(`no license file in ${p.name}@${version}`);
-        return {
-          name: p.name,
-          version,
-          license: p.license,
-          files: files.map((f) => readFileSync(join(dir, f), "utf8")),
-        };
-      }),
-    )
+    .filter((p) => !NOT_SHIPPED(p.name))
+    .flatMap((p) => p.versions.map((version, i) => ({ ...p, version, dir: p.paths[i] })));
+  const shipped = SHIPPED_BUILD_PACKAGES.map((name) => {
+    const dir = join(desktop, "node_modules", name);
+    const meta = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+    return { name, version: meta.version, license: meta.license, dir };
+  });
+  const javascript = [...listed, ...shipped]
+    .map((p) => {
+      const files = readdirSync(p.dir)
+        .filter((f) => /^(licen[cs]e|copying|notice)/i.test(f))
+        .sort();
+      if (files.length === 0) throw new Error(`no license file in ${p.name}@${p.version}`);
+      return {
+        name: p.name,
+        version: p.version,
+        license: p.license,
+        files: files.map((f) => readFileSync(join(p.dir, f), "utf8")),
+      };
+    })
     .sort(byName)
     .map(({ files, ...p }) => ({ ...p, texts: files.map(addText) }));
 
