@@ -580,7 +580,10 @@ impl Accounts {
         // unchanged (it may have been signed out while the renewal was in flight, fully or
         // halfway, or signed out and in again). The lock is taken inside the synchronous
         // callback, never across an await. The entry as saved is what the start compares with
-        // later (`still_present`).
+        // later (`still_present`). The save runs on this worker thread and can block for up to
+        // 775 ms in `replace_file` (a held file); moving it to a blocking thread would need an
+        // async callback in the core's `launch_account_with` and an owned `Accounts`, so it stays
+        // here (a renewal happens at most once per start).
         let renewed: Mutex<Option<StoredAccount>> = Mutex::new(None);
         let result = launch_account_with(
             &self.store,

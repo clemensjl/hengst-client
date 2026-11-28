@@ -806,6 +806,8 @@ mod tests {
     #[test]
     fn only_one_shell_call_runs_at_a_time() {
         // Serialized with other users of the one slot by taking it for the whole test.
+        // The global flag is safe here: every fixture swaps in a fake trasher, and the only other
+        // claimant of the slot is the ignored manual test.
         let first = ShellSlot::claim();
         assert!(first.is_some());
         assert!(ShellSlot::claim().is_none());

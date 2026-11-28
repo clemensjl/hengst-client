@@ -3,8 +3,7 @@
 //!
 //! # Public surface
 //!
-//! Only what the CLI, the desktop app, the test kit and the integration tests use is public;
-//! everything else is crate-private.
+//! What the CLI, the desktop app, the test kit and the integration tests use:
 //!
 //! - [`launch`]: prepare a version (`prepare*`, `LaunchOptions`, `Endpoints`, `Prepared`), resolve
 //!   it from metadata alone (`resolve`, `Resolution`), start it (`run`, `ensure_launch_allowed`).
@@ -13,8 +12,7 @@
 //! - [`manifest`], [`loaders`]: version and loader metadata; [`loaders::forge`] only names the
 //!   install marker and log files.
 //! - [`auth`]: sign-in (`MicrosoftAuth`, browser and device code), the account store and the
-//!   launch account. The raw token chain (`msa`, `xbox`, `minecraft`) is private; only
-//!   `DeviceCode`, `MsaTokens` and `Profile` are re-exported.
+//!   launch account, with `DeviceCode`, `MsaTokens` and `Profile`.
 //! - [`process`]: job objects and the process runners of installer processors
 //!   (`ProcessRunner`, `SystemRunner`, `JobRunner`).
 //! - [`args::Account`], [`secret::Secret`], [`progress`], [`download::http_client`],

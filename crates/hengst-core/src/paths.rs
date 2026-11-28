@@ -508,7 +508,8 @@ mod tests {
             held.take();
         })
         .unwrap();
-        assert_eq!(pauses, 1);
+        // At least the one pause; a scanner may hold the file once more on its own.
+        assert!(pauses >= 1, "{pauses}");
         assert_eq!(std::fs::read(&to).unwrap(), b"new");
         assert!(!from.exists());
         // Through the real entry point, with a reader that never lets go: the error after the

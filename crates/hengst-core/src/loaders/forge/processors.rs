@@ -591,7 +591,10 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
     tmp.push(".part");
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text)?;
-    crate::paths::replace_file(&tmp, marker)?;
+    if let Err(e) = crate::paths::replace_file(&tmp, marker) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -2173,6 +2176,18 @@ mod tests {
         let err = write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         assert!(!i.marker.exists());
+    }
+
+    #[test]
+    fn write_marker_leaves_no_temp_file_when_the_replace_fails() {
+        let i = install();
+        std::fs::remove_file(&i.marker).unwrap();
+        // A folder where the marker belongs: the rename over it fails.
+        std::fs::create_dir(&i.marker).unwrap();
+        assert!(write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).is_err());
+        let mut tmp = i.marker.as_os_str().to_owned();
+        tmp.push(".part");
+        assert!(!PathBuf::from(&tmp).exists(), "{tmp:?} left behind");
     }
 
     #[test]

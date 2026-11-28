@@ -327,6 +327,8 @@ pub(crate) async fn resolve_loader(
 ) -> Result<(ResolvedLoader, bool)> {
     let (list, cached) = list_saved(dl, paths, ep, req.kind, game).await?;
     let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
+    // The id comes from remote metadata; a launch checks it the same way (`fetch_profile`).
+    crate::paths::validate_id(&version.id)?;
     Ok((
         ResolvedLoader {
             kind: req.kind,
@@ -783,6 +785,38 @@ mod tests {
             list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1").await,
             Err(Error::Status { status: 503, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn resolve_loader_refuses_a_build_id_a_launch_would_refuse() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let server = MockServer::start().await;
+        let id = "0.1.0\u{1b}[31m";
+        let body = serde_json::json!([{"loader": {
+            "separator": ".", "build": 1, "version": id, "stable": true,
+            "maven": format!("net.fabricmc:fabric-loader:{id}"),
+        }}]);
+        Mock::given(method("GET"))
+            .and(path("/fabric/versions/loader/1.21.11"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let ep = LoaderEndpoints {
+            fabric: format!("{}/fabric", server.uri()),
+            ..LoaderEndpoints::default()
+        };
+        let req = LoaderRequest {
+            kind: LoaderKind::Fabric,
+            version: None,
+        };
+        let err = resolve_loader(&dl, &paths, &ep, &req, "1.21.11")
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, Error::UnsafePath(raw) if raw == id), "{err}");
     }
 
     #[test]

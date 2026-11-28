@@ -101,7 +101,7 @@ impl Downloader {
 
     #[expect(
         dead_code,
-        reason = "never called since Phase 0; reported in Task 21, removal is the owner's call"
+        reason = "no caller: every download uses the default concurrency"
     )]
     pub fn with_concurrency(mut self, n: usize) -> Self {
         self.concurrency = n.max(1);

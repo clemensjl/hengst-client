@@ -72,7 +72,6 @@ jobs:
       # third-party license list fails here without cargo-about on the runner.
       - run: pnpm -C apps/desktop test
       - run: pnpm -C apps/desktop format:check
-      - run: pnpm -C apps/desktop build
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       # The app as `tauri build` makes it (frontend from beforeBuildCommand, custom-protocol), debug,
@@ -133,13 +132,23 @@ jobs:
       - run: cargo build -p hengst-cli
       - env:
           HOME_DIR: ${{ runner.temp }}/hengst
+        # The list mirrors the entries of prepare-matrix and loader-matrix (plus one Forge and one
+        # NeoForge pick): keep the three in sync.
         run: |
-          failed=0
-          while read -r version loader; do
-            args=(launch "$version" --resolve-only)
-            if [ -n "$loader" ]; then args+=(--loader "$loader"); fi
+          check() {
+            local args=(launch "$1" --resolve-only)
+            if [ -n "$2" ]; then args+=(--loader "$2"); fi
             echo "hengst ${args[*]}"
-            if ! target/debug/hengst --home "$HOME_DIR" "${args[@]}"; then failed=1; fi
+            # stdin is the list below: hengst must not read from it.
+            target/debug/hengst --home "$HOME_DIR" "${args[@]}" < /dev/null
+          }
+          failures=()
+          while read -r version loader; do
+            if check "$version" "$loader"; then continue; fi
+            # Live third-party services: one retry after a pause.
+            echo "failed, retrying in 10 s"
+            sleep 10
+            if ! check "$version" "$loader"; then failures+=("$version${loader:+ $loader}"); fi
           done <<'EOF'
           rd-132211
           a1.2.6
@@ -162,7 +171,11 @@ jobs:
           1.20.1 forge
           1.21.1 neoforge
           EOF
-          exit $failed
+          if [ ${#failures[@]} -gt 0 ]; then
+            echo "resolve failed for ${#failures[@]} entries:"
+            printf '  %s\n' "${failures[@]}"
+            exit 1
+          fi
 
   mod:
     # The companion mod under mod/. The workflow triggers stay as they are; the changes step below makes this job

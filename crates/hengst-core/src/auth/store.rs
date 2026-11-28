@@ -198,7 +198,10 @@ impl<S: SecretStore> AccountStore<S> {
         tmp.push(".tmp");
         let tmp = PathBuf::from(tmp);
         std::fs::write(&tmp, serde_json::to_vec_pretty(file)?)?;
-        crate::paths::replace_file(&tmp, &self.file)?;
+        if let Err(e) = crate::paths::replace_file(&tmp, &self.file) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(())
     }
 
@@ -382,6 +385,16 @@ mod tests {
         let file = dir.path().join("sub").join("accounts.json");
         let store = AccountStore::new(file.clone(), MemorySecretStore::default());
         (dir, file, store)
+    }
+
+    #[test]
+    fn a_failed_replace_leaves_no_temp_file() {
+        let (_d, file, store) = fresh();
+        // A folder where the file belongs: the rename over it fails.
+        std::fs::create_dir_all(&file).unwrap();
+        assert!(store.write(&AccountsFile::default()).is_err());
+        let tmp = file.with_file_name("accounts.json.tmp");
+        assert!(!tmp.exists(), "{} left behind", tmp.display());
     }
 
     fn has_secret(store: &AccountStore<MemorySecretStore>, uuid: &str, kind: SecretKind) -> bool {
