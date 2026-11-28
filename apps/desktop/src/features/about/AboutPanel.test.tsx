@@ -117,4 +117,27 @@ describe("AboutPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Try again" }));
     expect(await screen.findByText("3 game versions known")).toBeTruthy();
   });
+
+  it("a failed app info shows an inline error with a retry instead of a skeleton forever", async () => {
+    let fail = true;
+    mockIPC((cmd) => {
+      if (cmd === "app_info") {
+        if (fail) throw { code: "internal", params: {}, action: null, detail: "x" };
+        return info;
+      }
+      return versions(1);
+    });
+    render(<AboutPanel />);
+    expect(await screen.findByText("The version could not be loaded.")).toBeTruthy();
+    fail = false;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("Version 0.1.0")).toBeTruthy();
+  });
+
+  it("Third-party licenses opens the license dialog", async () => {
+    mockIPC((cmd) => (cmd === "app_info" ? info : versions(1)));
+    render(<AboutPanel />);
+    fireEvent.click(screen.getByRole("button", { name: "Third-party licenses" }));
+    expect(await screen.findByRole("dialog", { name: "Third-party licenses" })).toBeTruthy();
+  });
 });

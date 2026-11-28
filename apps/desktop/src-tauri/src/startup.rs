@@ -15,7 +15,7 @@ use tauri::{
     WebviewWindowBuilder, WindowEvent,
 };
 
-const WINDOW_LABEL: &str = "main";
+pub(crate) const WINDOW_LABEL: &str = "main";
 
 /// Debug-only start arguments. Release builds ignore all of them (the data folder is then
 /// `HENGST_HOME` or the default).
@@ -197,10 +197,13 @@ pub fn cancel_operations_when_destroyed<R: tauri::Runtime>(window: &WebviewWindo
     window.on_window_event(move |event| cancel_operations_on(&handle, event));
 }
 
-/// What the hook does with a window event: only the window's destruction cancels.
+/// What the hook does with a window event: only the window's destruction cancels (and ends the
+/// live log's consumer, whose channel went with the window).
 pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &WindowEvent) {
     if let WindowEvent::Destroyed = event {
-        app.state::<AppState>().operations.cancel_all();
+        let state = app.state::<AppState>();
+        state.operations.cancel_all();
+        state.log.detach();
     }
 }
 
@@ -208,9 +211,16 @@ pub fn cancel_operations_on<R: tauri::Runtime>(app: &AppHandle<R>, event: &Windo
 /// starts loading a document, every running operation that can still be cancelled is cancelled.
 /// The hook belongs to the window and not to `subscribe_events`, so a later re-subscribe of the
 /// same page (or any other command) can never cancel a sign-in.
+///
+/// The old page's event channel is gone with it: the hub forgets it until the new page subscribes,
+/// so a tray quit request in between waits for that page (`EventHub::request_quit`). So is its
+/// live log consumer, and the log batches it never acknowledged (`LiveLog::page_reset`).
 pub fn cancel_operations_on_page_load<R: tauri::Runtime>(app: &AppHandle<R>, event: PageLoadEvent) {
     if matches!(event, PageLoadEvent::Started) {
-        app.state::<AppState>().operations.cancel_all();
+        let state = app.state::<AppState>();
+        state.events.unsubscribe();
+        state.operations.cancel_all();
+        state.log.page_reset();
     }
 }
 
@@ -326,6 +336,50 @@ fn create_window(
         ),
     }
     cancel_operations_when_destroyed(&window);
+    // While a game runs, closing hides the window into the tray (DESIGN.md 11.11). While a start
+    // is committing (its process is being created), the close waits for its outcome and is then
+    // decided again.
+    {
+        let (hidden, handle) = (window.clone(), app.clone());
+        window.on_window_event(move |event| {
+            if let WindowEvent::CloseRequested { api, .. } = event {
+                use crate::tray::CloseAction;
+                let app_state = handle.state::<AppState>();
+                let ops = app_state.operations.clone();
+                // The commit flag before the state (`tray::snapshot` says why).
+                let (state, committing) = crate::tray::game_snapshot(&app_state);
+                let mut action = crate::tray::on_close_requested(&state, committing);
+                if action == CloseAction::Close {
+                    // What is being prepared is cancelled with the window anyway; cancelled now, no
+                    // start can begin its commit any more, and one that already did holds the close.
+                    // Both are read again: the start may also have finished meanwhile.
+                    ops.cancel_all();
+                    let (state, committing) = crate::tray::game_snapshot(&app_state);
+                    action = crate::tray::on_close_requested(&state, committing);
+                }
+                match action {
+                    // Never hide into a tray icon that could not be shown: the window would be lost.
+                    CloseAction::HideToTray if crate::tray::tray_shown(&handle) => {
+                        api.prevent_close();
+                        if let Err(e) = hidden.hide() {
+                            eprintln!("could not hide the main window: {e}");
+                        }
+                    }
+                    CloseAction::Wait => {
+                        api.prevent_close();
+                        let again = hidden.clone();
+                        tauri::async_runtime::spawn(async move {
+                            crate::tray::commit_settled(&ops).await;
+                            if let Err(e) = again.close() {
+                                eprintln!("could not close the main window: {e}");
+                            }
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        });
+    }
     // With the setting on System the native background follows the OS theme at runtime too.
     {
         let (themed, handle) = (window.clone(), app.clone());
@@ -446,10 +500,15 @@ pub fn run() {
     }
     builder
         .plugin(tauri_plugin_opener::init())
+        // Used from Rust only (the Java choice); the capability grants no `dialog:` permission.
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(with_commands!(handler))
         .setup(move |app| {
             create_window(app.handle(), &args, &paths, dev_url, theme)?;
+            crate::tray::install(app.handle());
+            #[cfg(feature = "e2e")]
+            crate::e2e_hook::install(app.handle(), paths.root().to_path_buf());
             Ok(())
         })
         .run(context)

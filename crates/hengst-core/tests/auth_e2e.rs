@@ -1,8 +1,6 @@
 use hengst_core::auth::flow::{launch_account, needs_refresh, LoginSession};
-use hengst_core::auth::minecraft::Profile;
-use hengst_core::auth::msa::MsaTokens;
 use hengst_core::auth::store::{AccountStore, MemorySecretStore, SecretKind};
-use hengst_core::auth::{AuthEndpoints, AuthError, MicrosoftAuth};
+use hengst_core::auth::{AuthEndpoints, AuthError, MicrosoftAuth, MsaTokens, Profile};
 use hengst_core::secret::Secret;
 use hengst_core::Error;
 use serde_json::json;

@@ -1,6 +1,6 @@
-pub mod fabric;
+pub(crate) mod fabric;
 pub mod forge;
-pub mod merge;
+pub(crate) mod merge;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -142,7 +142,7 @@ pub struct ResolvedLoader {
 
 /// Everything `prepare` needs from a resolved loader.
 #[derive(Debug)]
-pub struct LoaderSetup {
+pub(crate) struct LoaderSetup {
     pub resolved: ResolvedLoader,
     /// The loader's launcher profile, to be merged onto the vanilla version.
     pub child: VersionJson,
@@ -197,7 +197,7 @@ fn older_than(game: &str, minor: u64, patch: u64) -> Option<bool> {
 }
 
 /// `NoLoaderVersions` with a reason for the common mistakes, decided without any request.
-pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
+pub(crate) fn no_versions(kind: LoaderKind, game: &str) -> Error {
     let hint = match kind {
         LoaderKind::NeoForge if older_than(game, 20, 1) == Some(true) => {
             Some(LoaderHint::NeoForgeStartsAt1201)
@@ -219,7 +219,7 @@ pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
 
 /// Resolves a loader request for a game version: picks the build and fetches its profile.
 /// Fails before anything is downloaded.
-pub async fn prepare_loader(
+pub(crate) async fn prepare_loader(
     dl: &Downloader,
     paths: &Paths,
     ep: &LoaderEndpoints,
@@ -313,6 +313,29 @@ pub async fn prepare_loader(
             })
         }
     }
+}
+
+/// Picks the loader build of a request from the version list alone (no profile, no installer):
+/// what `hengst launch --resolve-only` reports. A named build must be on the list. `true` when the
+/// list is the saved one because the service was unreachable.
+pub(crate) async fn resolve_loader(
+    dl: &Downloader,
+    paths: &Paths,
+    ep: &LoaderEndpoints,
+    req: &LoaderRequest,
+    game: &str,
+) -> Result<(ResolvedLoader, bool)> {
+    let (list, cached) = list_saved(dl, paths, ep, req.kind, game).await?;
+    let version = pick_version(&list, req.version.as_deref(), req.kind, game)?.clone();
+    // The id comes from remote metadata; a launch checks it the same way (`fetch_profile`).
+    crate::paths::validate_id(&version.id)?;
+    Ok((
+        ResolvedLoader {
+            kind: req.kind,
+            version,
+        },
+        cached,
+    ))
 }
 
 /// The service could not be reached or failed on its side (not "this does not exist").
@@ -425,7 +448,7 @@ fn cmp_segments(a: &str, b: &str, missing: &str) -> Ordering {
 }
 
 /// Total ordering for loader version strings. Never panics, whatever the input.
-pub fn compare_versions(a: &str, b: &str) -> Ordering {
+pub(crate) fn compare_versions(a: &str, b: &str) -> Ordering {
     fn split(s: &str) -> (&str, Option<&str>) {
         let s = s.split('+').next().unwrap_or("");
         match s.split_once('-') {
@@ -444,7 +467,7 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     })
 }
 
-pub fn sort_newest_first(v: &mut [LoaderVersion]) {
+pub(crate) fn sort_newest_first(v: &mut [LoaderVersion]) {
     v.sort_by(|a, b| compare_versions(&b.id, &a.id));
 }
 
@@ -762,6 +785,38 @@ mod tests {
             list_saved(&dl, &paths, &ep_for(&down), LoaderKind::Forge, "1.20.1").await,
             Err(Error::Status { status: 503, .. })
         ));
+    }
+
+    #[tokio::test]
+    async fn resolve_loader_refuses_a_build_id_a_launch_would_refuse() {
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+        let dir = tempfile::tempdir().unwrap();
+        let paths = Paths::new(dir.path());
+        let dl = Downloader::new(reqwest::Client::new());
+        let server = MockServer::start().await;
+        let id = "0.1.0\u{1b}[31m";
+        let body = serde_json::json!([{"loader": {
+            "separator": ".", "build": 1, "version": id, "stable": true,
+            "maven": format!("net.fabricmc:fabric-loader:{id}"),
+        }}]);
+        Mock::given(method("GET"))
+            .and(path("/fabric/versions/loader/1.21.11"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+        let ep = LoaderEndpoints {
+            fabric: format!("{}/fabric", server.uri()),
+            ..LoaderEndpoints::default()
+        };
+        let req = LoaderRequest {
+            kind: LoaderKind::Fabric,
+            version: None,
+        };
+        let err = resolve_loader(&dl, &paths, &ep, &req, "1.21.11")
+            .await
+            .unwrap_err();
+        assert!(matches!(&err, Error::UnsafePath(raw) if raw == id), "{err}");
     }
 
     #[test]

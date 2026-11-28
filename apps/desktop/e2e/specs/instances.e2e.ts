@@ -69,6 +69,11 @@ async function rectsByText(scope: ReturnType<typeof $>, texts: string[]) {
 }
 
 describe("instances", () => {
+  // From 4b the app starts on the start page; these tests are about the Instances view.
+  before(async () => {
+    await $('nav button[aria-label="Instances"]').click();
+  });
+
   // A failed test must not leave its dialog over the next one.
   afterEach(async () => {
     for (let i = 0; i < 3 && (await dialog().isExisting()); i++) await browser.keys("Escape");

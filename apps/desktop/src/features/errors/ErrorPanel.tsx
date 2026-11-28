@@ -101,6 +101,13 @@ export interface ErrorPanelProps {
    * panel that appears on its own (a background refresh failing).
    */
   autoFocus?: boolean;
+  /**
+   * Title and body for a failure that is not an error of the backend (the game closed
+   * unexpectedly); they replace the copy of `error.code`.
+   */
+  copy?: { title: string; body: string };
+  /** Shows a ghost button that closes the panel (DESIGN.md 10.2: "Schließen" / "Dismiss"). */
+  dismiss?: { label: string; onClick: () => void };
 }
 
 /** DESIGN.md 10.11. */
@@ -111,13 +118,17 @@ export function ErrorPanel({
   extraAction,
   context,
   autoFocus = false,
+  copy,
+  dismiss,
 }: ErrorPanelProps) {
   const { t } = useTranslation();
   const guard = useClickGuard();
   const titleRef = useRef<HTMLParagraphElement>(null);
   const [open, setOpen] = useState(false);
   const [openFailed, setOpenFailed] = useState(false);
-  const { title, body, actionLabel } = describeError(error, t, context);
+  const described = describeError(error, t, context);
+  const { title, body } = copy ?? described;
+  const { actionLabel } = described;
   const action = error.action;
 
   // A new error is a different panel to the user, so focus follows it; an equal one in a new
@@ -141,17 +152,25 @@ export function ErrorPanel({
   }, [needsHandler, onAction, error.code, action?.kind]);
 
   const runAction = (a: ErrorAction) => {
-    if (a.kind === "openUrl") {
+    const opened =
+      a.kind === "openUrl"
+        ? api.openUrl(a.target)
+        : a.kind === "openLog"
+          ? // Only the path the backend reported goes back; Rust checks it again.
+            api.openLocation({ kind: "logFile", path: a.path })
+          : null;
+    if (opened) {
       setOpenFailed(false);
-      return api.openUrl(a.target).catch((e: unknown) => {
+      return opened.catch((e: unknown) => {
         if (e instanceof IpcError) setOpenFailed(true);
         else throw e;
       });
     }
     onAction?.(a);
   };
-  // The panel opens links itself, so an `openUrl` button needs no handler; the others do.
-  const showAction = actionLabel && action && (action.kind === "openUrl" || onAction);
+  // The panel opens links and logs itself, so those buttons need no handler; the others do.
+  const opensItself = action?.kind === "openUrl" || action?.kind === "openLog";
+  const showAction = actionLabel && action && (opensItself || onAction);
 
   return (
     <div
@@ -189,15 +208,23 @@ export function ErrorPanel({
           {extraAction && (
             <Button onClick={() => guard(extraAction.onClick)}>{extraAction.label}</Button>
           )}
-          <CollapsibleTrigger render={<Button variant="ghost" />}>
-            {t("errors.details")}
-            {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
-          </CollapsibleTrigger>
+          {/* Without a detail text there is nothing to disclose. */}
+          {error.detail && (
+            <CollapsibleTrigger render={<Button variant="ghost" />}>
+              {t("errors.details")}
+              {open ? <ChevronUpIcon aria-hidden="true" /> : <ChevronDownIcon aria-hidden="true" />}
+            </CollapsibleTrigger>
+          )}
+          {dismiss && (
+            <Button variant="ghost" onClick={dismiss.onClick}>
+              {dismiss.label}
+            </Button>
+          )}
         </div>
         {openFailed && (
           <p className="flex items-center gap-2 text-small text-danger">
             <CircleAlertIcon className="size-4 shrink-0" aria-hidden="true" />
-            {t("errors.openFailed.title")}
+            {action?.kind === "openLog" ? t("play.logOpenFailed") : t("errors.openFailed.title")}
           </p>
         )}
         <CollapsibleContent className="flex flex-col items-start gap-2">

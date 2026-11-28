@@ -22,6 +22,8 @@ describe("singleByRole", () => {
     const found = find("checkbox", "Beta");
     expect(found).not.toBeNull();
     expect(found!.getAttribute("role")).toBe("checkbox");
+    // WebDriver hands an absent `within` over as null: the whole document.
+    expect(singleByRole("checkbox", "Beta", false, null)).toBe(found);
   });
 
   it("skips anything inside an aria-hidden subtree", () => {
@@ -47,6 +49,39 @@ describe("singleByRole", () => {
     );
     expect(find("button", "Beta")?.hasAttribute("role")).toBe(false);
     expect(find("checkbox", "Beta")?.getAttribute("role")).toBe("checkbox");
+  });
+
+  it("looks only inside the first element matching `within` when one is given", () => {
+    render(
+      <>
+        <nav>
+          <button aria-label="Play">x</button>
+        </nav>
+        <main>
+          <button>Play</button>
+        </main>
+      </>,
+    );
+    expect(find("button", "Play")).toBeNull();
+    const inMain = singleByRole("button", "Play", false, "main");
+    expect(inMain).not.toBeNull();
+    expect(inMain!.closest("main")).not.toBeNull();
+    const inNav = singleByRole("button", "Play", false, "nav");
+    expect(inNav).not.toBeNull();
+    expect(inNav!.closest("nav")).not.toBeNull();
+    expect(singleByRole("button", "Play", false, "aside")).toBeNull();
+  });
+
+  it("leaves aria-hidden text out of a name, as the accessibility tree does", () => {
+    // The log toolbar's copy button keeps its width with a hidden copy of its idle label.
+    render(
+      <button>
+        <span aria-hidden="true">Copy</span>
+        <span>Copied</span>
+      </button>,
+    );
+    expect(find("button", "Copied")).not.toBeNull();
+    expect(find("button", "CopyCopied")).toBeNull();
   });
 
   it("finds nothing when the name is ambiguous", () => {

@@ -3,18 +3,27 @@ import type { AccountsDto } from "./bindings/AccountsDto";
 import type { AppInfo } from "./bindings/AppInfo";
 import type { CreateInstanceRequest } from "./bindings/CreateInstanceRequest";
 import type { ErrorDto } from "./bindings/ErrorDto";
+import type { GameStateDto } from "./bindings/GameStateDto";
 import type { GameVersionsDto } from "./bindings/GameVersionsDto";
 import type { InstanceDto } from "./bindings/InstanceDto";
 import type { InstancesDto } from "./bindings/InstancesDto";
+import type { JavaChoice } from "./bindings/JavaChoice";
+import type { JavaPhase } from "./bindings/JavaPhase";
 import type { Language } from "./bindings/Language";
 import type { LoaderInfoDto } from "./bindings/LoaderInfoDto";
 import type { LoaderKindDto } from "./bindings/LoaderKindDto";
 import type { LoaderVersionsDto } from "./bindings/LoaderVersionsDto";
 import type { LoginEvent } from "./bindings/LoginEvent";
+import type { LogBatch } from "./bindings/LogBatch";
+import type { LogCopyDto } from "./bindings/LogCopyDto";
+import type { LogFilter } from "./bindings/LogFilter";
+import type { LogRunDto } from "./bindings/LogRunDto";
 import type { LoginMethod } from "./bindings/LoginMethod";
 import type { OpenTarget } from "./bindings/OpenTarget";
+import type { PlayEvent } from "./bindings/PlayEvent";
 import type { SettingsDto } from "./bindings/SettingsDto";
 import type { SettingsPatch } from "./bindings/SettingsPatch";
+import type { StopResult } from "./bindings/StopResult";
 import type { UrlTarget } from "./bindings/UrlTarget";
 import type { VersionFilter } from "./bindings/VersionFilter";
 
@@ -114,6 +123,17 @@ export const api = {
   settingsGet: (): Promise<SettingsDto> => guard(invoke<SettingsDto>("settings_get")),
   settingsUpdate: (change: Partial<SettingsPatch>): Promise<SettingsDto> =>
     guard(invoke<SettingsDto>("settings_update", { patch: { ...KEEP, ...change } })),
+  /**
+   * Opens the Windows file dialog in Rust; the chosen file is checked and run with `-version`
+   * there and saved only if both pass. No path travels from here. `cancelled` when the dialog was
+   * closed; `javaInvalid` (`params.reason`) when the file was refused; `busy` while a dialog is open.
+   * `onPhase` gets `checking` once a file was picked (while the dialog is open nothing is checked).
+   */
+  javaChoose: (onPhase: (phase: JavaPhase) => void): Promise<JavaChoice> => {
+    const channel = new Channel<JavaPhase>();
+    channel.onmessage = onPhase;
+    return guard(invoke<JavaChoice>("java_choose", { channel }));
+  },
   accountsList: (): Promise<AccountsDto> => guard(invoke<AccountsDto>("accounts_list")),
   /** `id` is the id of an entry of `accountsList`. */
   accountSelect: (id: string): Promise<void> => guard(invoke<void>("account_select", { id })),
@@ -155,4 +175,46 @@ export const api = {
   /** Opens the data folder or the folder of an instance; the path is made in Rust. */
   openLocation: (target: OpenTarget): Promise<void> =>
     guard(invoke<void>("open_location", { target })),
+  /**
+   * Starts the instance; `onEvent` gets this start's events, `preparing` with the operation id
+   * first (it can arrive before this resolves), then progress and one of `started`, `failed`,
+   * `cancelled`. Only the id travels: account, Java and arguments are chosen in Rust. Running,
+   * stopping and the exit arrive as `gameState` app events. `busy` while a game is prepared or runs.
+   */
+  play: (instanceId: string, onEvent: (e: PlayEvent) => void): Promise<number> => {
+    const channel = new Channel<PlayEvent>();
+    channel.onmessage = onEvent;
+    return guard(invoke<number>("play", { instanceId, channel }));
+  },
+  /** `true` if the start was still being prepared; its channel then gets `cancelled`. */
+  playCancel: (op: number): Promise<boolean> => guard(invoke<boolean>("play_cancel", { op })),
+  /** Asks the game to close; `noWindow` means nothing was sent (offer the force stop). */
+  gameStop: (): Promise<StopResult> => guard(invoke<StopResult>("game_stop")),
+  /** Ends the game at once; `false` when none runs. */
+  gameForceStop: (): Promise<boolean> => guard(invoke<boolean>("game_force_stop")),
+  /** The game's state now, as the last `gameState` event carried it. */
+  gameState: (): Promise<GameStateDto> => guard(invoke<GameStateDto>("game_state")),
+  /** The runs whose log the app holds (the current and the previous one), newest first. */
+  logRuns: (): Promise<LogRunDto[]> => guard(invoke<LogRunDto[]>("log_runs")),
+  /**
+   * Streams the log of `runId` to `onBatch`: what the buffer holds from `sinceSeq` on (0: from the
+   * oldest line), then new lines; `dropped` counts lines that left the buffer before they were sent,
+   * `end` closes the stream; a long line arrives in parts with one `seq` (append `part` > 0). Each batch with lines is acknowledged here as it arrives (also on a
+   * channel a later attach replaced), so the backend sends the next one. A new attach replaces this
+   * one; `logDetach` stops it. `invalidInput` (`runId`) when the run's log is not held any more.
+   */
+  logAttach: (runId: number, sinceSeq: number, onBatch: (b: LogBatch) => void): Promise<void> => {
+    const channel = new Channel<LogBatch>();
+    channel.onmessage = (b) => {
+      if (b.lines.length > 0) void invoke<void>("log_ack", { ack: b.ack }).catch(() => undefined);
+      onBatch(b);
+    };
+    return guard(invoke<void>("log_attach", { runId, sinceSeq, channel }));
+  },
+  logDetach: (): Promise<void> => guard(invoke<void>("log_detach")),
+  /** The held lines that `filter` lets through, redacted, for the clipboard (at most 4 MiB). */
+  logCopy: (runId: number, filter: LogFilter): Promise<LogCopyDto> =>
+    guard(invoke<LogCopyDto>("log_copy", { runId, filter })),
+  /** Quits the app; `false` (and nothing happens) while a game still runs. */
+  appQuit: (): Promise<boolean> => guard(invoke<boolean>("app_quit")),
 };

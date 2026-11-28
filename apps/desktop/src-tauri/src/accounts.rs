@@ -9,11 +9,12 @@ use crate::dto::accounts::{
     AccountDto, AccountKindDto, AccountsDto, LoginEvent, LoginMethod, OperationId, DEV_ACCOUNT_ID,
 };
 use crate::dto::error::{ErrorCode, ErrorDto};
-use crate::error::error_dto;
+use crate::error::{error_dto, strip_paths};
 use crate::events::{AppEvent, DataScope, EventHub, EventSink};
 use crate::settings::{Language, Settings, SettingsHandle};
+use hengst_core::args::Account;
 use hengst_core::auth::browser::{BrowserLoginPages, BROWSER_LOGIN_TIMEOUT};
-use hengst_core::auth::flow::LoginSession;
+use hengst_core::auth::flow::{launch_account_with, LoginSession};
 use hengst_core::auth::store::{load_accounts_file, AccountStore, SecretStore, StoredAccount};
 use hengst_core::auth::{unix_now, AuthError, MicrosoftAuth};
 use hengst_core::paths::Paths;
@@ -156,10 +157,12 @@ pub fn login_pages(language: Language) -> BrowserLoginPages {
 // ---- operations ----
 
 /// The kind of a running operation. Browser and device-code sign-in share `Login`, so "use a code
-/// instead" ends the waiting browser sign-in and frees its port. Phase 4b adds `Play`.
+/// instead" ends the waiting browser sign-in and frees its port. `Play` is the preparation of a
+/// game start (`play`); it never replaces another one, `play` refuses while one runs.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OpKind {
     Login,
+    Play,
 }
 
 struct Entry {
@@ -238,10 +241,19 @@ impl Operations {
     /// Ends an operation that has not started saving its result: abort (dropping the task frees its
     /// listener) and `Cancelled` to its channel. `false` for an unknown, finished or saving one.
     pub fn cancel(&self, id: OperationId) -> bool {
+        self.cancel_if(id, |_| true)
+    }
+
+    /// `cancel`, but only an operation of this kind.
+    pub fn cancel_of(&self, kind: OpKind, id: OperationId) -> bool {
+        self.cancel_if(id, |k| k == kind)
+    }
+
+    fn cancel_if(&self, id: OperationId, kind: impl Fn(OpKind) -> bool) -> bool {
         let entry = {
             let mut inner = lock(&self.inner);
             match inner.running.get(&id) {
-                Some(e) if !e.committing => inner.running.remove(&id),
+                Some(e) if !e.committing && kind(e.kind) => inner.running.remove(&id),
                 _ => None,
             }
         };
@@ -311,7 +323,7 @@ impl Operations {
 
     /// The operation is about to save its result: from now on it cannot be cancelled. `false`
     /// when it was cancelled in the meantime, then it must stop without sending anything.
-    fn try_commit(&self, id: OperationId) -> bool {
+    pub(crate) fn try_commit(&self, id: OperationId) -> bool {
         match lock(&self.inner).running.get_mut(&id) {
             Some(entry) => {
                 entry.committing = true;
@@ -321,9 +333,18 @@ impl Operations {
         }
     }
 
+    /// An operation of `kind` is saving its result right now. For `Play` that is the commit
+    /// window: the game process is being created and the state still says `Preparing`.
+    pub fn has_committing(&self, kind: OpKind) -> bool {
+        lock(&self.inner)
+            .running
+            .values()
+            .any(|e| e.kind == kind && e.committing)
+    }
+
     /// The operation ends by itself. `true`: it owns the terminal event and must send it. `false`:
     /// `cancel` was first and has sent `Cancelled`.
-    fn finish(&self, id: OperationId) -> bool {
+    pub(crate) fn finish(&self, id: OperationId) -> bool {
         lock(&self.inner).running.remove(&id).is_some()
     }
 }
@@ -344,14 +365,21 @@ const REOPEN_GAP: Duration = Duration::from_secs(2);
 /// with the terminal event, under the same small lock `progress` takes: an event of the task
 /// after the terminal event is refused, however far the task still runs before its abort
 /// takes effect. `Started` is queued before the task exists, so it is first by ordering.
-#[derive(Clone)]
-pub struct OpOut {
-    queue: Arc<Mutex<Option<mpsc::UnboundedSender<LoginEvent>>>>,
+pub struct OpOut<E = LoginEvent> {
+    queue: Arc<Mutex<Option<mpsc::UnboundedSender<E>>>>,
 }
 
-impl OpOut {
+impl<E> Clone for OpOut<E> {
+    fn clone(&self) -> Self {
+        OpOut {
+            queue: self.queue.clone(),
+        }
+    }
+}
+
+impl<E: Send + 'static> OpOut<E> {
     /// The forwarding task ends once the terminal event has been handed to `sink`.
-    pub fn new(sink: EventSink<LoginEvent>) -> (OpOut, JoinHandle<()>) {
+    pub fn new(sink: EventSink<E>) -> (OpOut<E>, JoinHandle<()>) {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let forwarder = tokio::spawn(async move {
             while let Some(event) = rx.recv().await {
@@ -370,7 +398,7 @@ impl OpOut {
     }
 
     /// Queues a progress event; `false` (nothing sent) once the operation has ended.
-    pub fn progress(&self, event: LoginEvent) -> bool {
+    pub fn progress(&self, event: E) -> bool {
         match lock(&self.queue).as_ref() {
             Some(tx) => tx.send(event).is_ok(),
             None => false,
@@ -378,7 +406,7 @@ impl OpOut {
     }
 
     /// Queues the terminal event and closes the queue; `false` if it was closed already.
-    pub fn end(&self, event: LoginEvent) -> bool {
+    pub fn end(&self, event: E) -> bool {
         match lock(&self.queue).take() {
             Some(tx) => tx.send(event).is_ok(),
             None => false,
@@ -537,6 +565,117 @@ impl Accounts {
         self.exact(uuid)?;
         self.store.mark_sign_in_required(uuid)?;
         Ok(())
+    }
+
+    /// The account a game starts with: the development account when it is chosen (`dev-offline`
+    /// builds only; other builds never make an offline account, and the core refuses to start one
+    /// anyway), otherwise the selected Microsoft account through the core's `launch_account`, which
+    /// renews its login when it is due. When Microsoft refuses the renewal (`LoginExpired`), the
+    /// account is marked "sign in again" before the error is returned; the flag says so, and the
+    /// caller then refreshes the account list. With the account comes the entry as it was when it
+    /// was chosen (`None` for the development account), for `still_present` before the spawn.
+    pub async fn play_account(
+        &self,
+        settings: &Settings,
+    ) -> (Result<(Account, Option<StoredAccount>)>, bool) {
+        if cfg!(feature = "dev-offline") && settings.dev_account {
+            return (Ok((Account::offline("Dev"), None)), false);
+        }
+        let stored = match self.store.find(None) {
+            Ok(stored) => stored,
+            Err(e) => return (Err(e), false),
+        };
+        // Already flagged (also by a sign-out that failed halfway, which can leave the Minecraft
+        // token stored): refused before any token is read or renewed; nothing new to mark.
+        if stored.sign_in_required {
+            return (
+                Err(Error::Auth(AuthError::LoginExpired { name: stored.name })),
+                false,
+            );
+        }
+        // A renewed session is saved like a sign-in: under `io_lock`, and only if the entry is
+        // unchanged (it may have been signed out while the renewal was in flight, fully or
+        // halfway, or signed out and in again). The lock is taken inside the synchronous
+        // callback, never across an await. The entry as saved is what the start compares with
+        // later (`still_present`). The save runs on this worker thread and can block for up to
+        // 775 ms in `replace_file` (a held file); moving it to a blocking thread would need an
+        // async callback in the core's `launch_account_with` and an owned `Accounts`, so it stays
+        // here (a renewal happens at most once per start).
+        let renewed: Mutex<Option<StoredAccount>> = Mutex::new(None);
+        let result = launch_account_with(
+            &self.store,
+            self.auth.as_ref(),
+            Some(&stored.uuid),
+            unix_now(),
+            |session| {
+                let _io = self.io();
+                self.unchanged(&stored)?;
+                let saved = self.store.save_session(session)?;
+                *renewed.lock().unwrap_or_else(|p| p.into_inner()) = Some(saved);
+                Ok(())
+            },
+        )
+        .await
+        .map(|account| {
+            let chosen = renewed
+                .into_inner()
+                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(|| stored.clone());
+            (account, Some(chosen))
+        });
+        if let Err(Error::Auth(AuthError::LoginExpired { .. })) = &result {
+            // Signed out (and maybe in again) meanwhile: that is the answer, nothing is marked.
+            if let Some(other) = self.after_login_expired(&stored) {
+                return (Err(other), true);
+            }
+            return (result, true);
+        }
+        (result, false)
+    }
+
+    /// The account step of a start reported `LoginExpired`. That is also what a sign-out
+    /// overlapping that step looks like (its secrets are gone), so the entry is checked again
+    /// under `io_lock` against `stored`, the entry the start chose: gone -> its `AccountNotFound`
+    /// is returned and nothing is marked (a mark would tell the user to sign in an account they
+    /// just removed); there but a different entry (signed out and in again, or flagged by a
+    /// half-failed sign-out) -> `LoginExpired` is returned and nothing is marked (the new entry's
+    /// login is fine); the same entry -> it is marked "sign in again" (a failure to mark is only
+    /// logged) and `None` is returned.
+    fn after_login_expired(&self, stored: &StoredAccount) -> Option<Error> {
+        let _io = self.io();
+        let now = match self.exact(&stored.uuid) {
+            Ok(now) => now,
+            Err(e) => return Some(e),
+        };
+        if now != *stored {
+            return Some(Error::Auth(AuthError::LoginExpired { name: now.name }));
+        }
+        if let Err(e) = self.store.mark_sign_in_required(&stored.uuid) {
+            self.diag(&format!(
+                "play: could not mark the account ({})",
+                strip_paths(&e.to_string())
+            ));
+        }
+        None
+    }
+
+    /// The account chosen for a start (`chosen`, as it was then) is still the same entry: a
+    /// sign-out removed it (`AccountNotFound`), or it differs (`LoginExpired`): a sign-out failed
+    /// halfway and left it "sign in again", or it was signed out and signed in again, which
+    /// writes a new entry with a new login. The caller holds `io_lock`.
+    fn unchanged(&self, chosen: &StoredAccount) -> Result<()> {
+        let now = self.exact(&chosen.uuid)?;
+        if now != *chosen {
+            return Err(Error::Auth(AuthError::LoginExpired { name: now.name }));
+        }
+        Ok(())
+    }
+
+    /// `unchanged` under `io_lock`: checked right before the game process starts, so a sign-out
+    /// during a long preparation never launches with the removed account's token in memory.
+    pub fn still_present(&self, chosen: &StoredAccount) -> Result<()> {
+        let _io = self.io();
+        self.unchanged(chosen)
     }
 
     fn diag(&self, line: &str) {
@@ -735,7 +874,7 @@ impl Accounts {
     async fn microsoft_step(
         self: &Arc<Self>,
         c: &LoginCtx,
-    ) -> std::result::Result<Option<hengst_core::auth::msa::MsaTokens>, ErrorDto> {
+    ) -> std::result::Result<Option<hengst_core::auth::MsaTokens>, ErrorDto> {
         if let Some(reason) = &self.store_error {
             return Err(dto(Error::CredentialStore(reason.clone())));
         }

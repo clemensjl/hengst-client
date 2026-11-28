@@ -1622,7 +1622,7 @@ git commit -m "test(desktop): WebDriver end-to-end tests for accounts and instan
 
 ### Task 19: Live-Log in der Oberfläche
 - Files: `apps/desktop/src/features/log/{LogView.tsx,LogToolbar.tsx,logStore.ts}`, Bibliothek Virtuoso (`pick-ui-library`); CSP- und Prototyp-Prüfung aus den Global Constraints (Virtuoso setzt Positionen per `style`-Attribut, kein `'unsafe-inline'` für Style-Elemente).
-- Inhalt nach DESIGN.md 10.13 und 11.9: virtualisierte Liste (höchstens 10.000 Zeilen im Speicher) im Log-Bereich, Werkzeugleiste in zwei Zeilen (Zeile 1: Label "Im Log suchen", Suchfeld, Trefferzahl, Vorheriger/Nächster Treffer; Zeile 2: "Stufen: 4 von 5" mit Fehler, Warnung, Info, Debug, Sonstige, rechts "Kopieren" und "Logdatei öffnen"; ab Fensterbreite 1280 (`full:`) eine Zeile, unter 880 CSS-Pixeln drei Zeilen), Laufwahl ("Aktueller Lauf" / "Letzter Lauf"), "Zum Ende springen", Strg+F, Kopieren (gefiltert), Leer-, Lade- und Fehlerzustände aus 11.9, Mono, Farben `--log-*`.
+- Inhalt nach DESIGN.md 10.13 und 11.9: virtualisierte Liste (höchstens 10.000 Zeilen im Speicher) im Log-Bereich, Werkzeugleiste in zwei Zeilen (Zeile 1: Label "Im Log suchen", Suchfeld, Trefferzahl, Vorheriger/Nächster Treffer; Zeile 2: "Stufen: 4 von 5" mit Fehler, Warnung, Info, Debug, Sonstige, rechts "Kopieren" und "Logdatei öffnen"; ab Fensterbreite 1280 (`full:`) eine Zeile, auch unter 880 CSS-Pixeln zwei Zeilen, die umbrechen statt abzuschneiden, wie DESIGN.md 10.13 rechnet), Laufwahl ("Aktueller Lauf" / "Letzter Lauf"), "Zum Ende springen", Strg+F, Kopieren (gefiltert), Leer-, Lade- und Fehlerzustände aus 11.9, Mono, Farben `--log-*`.
 - Tests: Filter und Suche im Store, Grenze, Folgen-Logik; Sichtprüfung mit 10.000 Zeilen.
 
 ### Task 20: Einstellungen vollständig und Über

@@ -1,6 +1,6 @@
 use super::*;
-use hengst_core::auth::minecraft::Profile;
 use hengst_core::auth::store::{secret_key, MemorySecretStore, SecretKind};
+use hengst_core::auth::Profile;
 use hengst_testkit::{
     auth_endpoints, browser_visit, AuthScenario, MockAccount, Services, PLAYER_A, PLAYER_B,
 };
@@ -625,6 +625,26 @@ async fn an_operation_that_is_saving_cannot_be_cancelled() {
     );
     assert!(!ops.finish(id));
     assert!(!ops.try_commit(id));
+}
+
+/// Only a committing operation of the asked kind counts, and only until it finishes.
+#[tokio::test(flavor = "multi_thread")]
+async fn has_committing_sees_only_a_committing_operation_of_that_kind() {
+    let ops = Operations::default();
+    let pending = |_: OperationId| tokio::spawn(std::future::pending::<()>()).abort_handle();
+    let login = ops.start(OpKind::Login, Box::new(|| {}), pending);
+    let play = ops.start(OpKind::Play, Box::new(|| {}), pending);
+    assert!(!ops.has_committing(OpKind::Play), "not committing yet");
+    assert!(ops.try_commit(login));
+    assert!(
+        !ops.has_committing(OpKind::Play),
+        "a committing sign-in is no game"
+    );
+    assert!(ops.has_committing(OpKind::Login));
+    assert!(ops.try_commit(play));
+    assert!(ops.has_committing(OpKind::Play));
+    assert!(ops.finish(play));
+    assert!(!ops.has_committing(OpKind::Play));
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -1519,4 +1539,34 @@ async fn login_events_never_contain_tokens() {
     }
     // What the user must see is shown: the user code is in the events.
     assert!(outputs.iter().any(|o| o.contains("TEST-0")));
+}
+
+// ---- an expired login (4b play) ----
+
+/// The login step of a start reported `LoginExpired` (for example because a sign-out removed the
+/// secrets meanwhile): an account that is gone by now is "not found", is not marked and does not
+/// come back.
+#[test]
+fn an_expired_login_of_an_account_signed_out_meanwhile_is_not_found_and_not_marked() {
+    let (_d, paths, accounts, _store) = seeded(&[PLAYER_A, PLAYER_B]);
+    let chosen = accounts.exact(PLAYER_A.uuid).unwrap();
+    accounts.remove(PLAYER_A.uuid).unwrap();
+    let gone = accounts.after_login_expired(&chosen);
+    assert!(
+        matches!(gone, Some(Error::Auth(AuthError::AccountNotFound { .. }))),
+        "{gone:?}"
+    );
+    let file = std::fs::read_to_string(paths.accounts_file()).unwrap();
+    assert!(!file.contains(PLAYER_A.uuid), "{file}");
+    // The other account is untouched.
+    let b = accounts.exact(PLAYER_B.uuid).unwrap();
+    assert!(!b.sign_in_required);
+}
+
+#[test]
+fn an_expired_login_of_a_present_account_marks_it_sign_in_again() {
+    let (_d, _paths, accounts, _store) = seeded(&[PLAYER_A]);
+    let chosen = accounts.exact(PLAYER_A.uuid).unwrap();
+    assert!(accounts.after_login_expired(&chosen).is_none());
+    assert!(accounts.exact(PLAYER_A.uuid).unwrap().sign_in_required);
 }

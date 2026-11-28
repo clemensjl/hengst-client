@@ -19,7 +19,7 @@ pub use auth::{
     auth_endpoints, mount_auth, AuthHandle, AuthScenario, MockAccount, RecordedRequest, Redacted,
     PLAYER_A, PLAYER_B,
 };
-pub use mojang::{endpoints, mount_mojang};
+pub use mojang::{endpoints, mount_mojang, mount_mojang_delayed};
 
 use wiremock::MockServer;
 
@@ -40,6 +40,123 @@ pub async fn browser_visit(authorize_url: &str) -> Result<String, reqwest::Error
         .await
 }
 
+/// The profile folder (`<target>/debug`) above a test executable. Cargo puts tests into
+/// `<profile>/deps/` or, in newer versions, into `<profile>/build/<package>/<hash>/out/`; a
+/// binary lies right in the profile folder.
+fn profile_folder(exe: &std::path::Path) -> std::path::PathBuf {
+    let folder = exe.parent().expect("a folder");
+    let named = |p: &std::path::Path, name: &str| p.file_name().is_some_and(|n| n == name);
+    if named(folder, "deps") {
+        if let Some(profile) = folder.parent() {
+            return profile.to_path_buf();
+        }
+    }
+    if named(folder, "out") {
+        // out -> <hash> -> <package> -> build -> <profile>
+        if let Some(build) = folder.ancestors().nth(3).filter(|p| named(p, "build")) {
+            if let Some(profile) = build.parent() {
+                return profile.to_path_buf();
+            }
+        }
+    }
+    folder.to_path_buf()
+}
+
+/// The `fake-java` binary of this crate, for tests of other crates (only this crate's own tests
+/// get `CARGO_BIN_EXE_fake-java`). It is looked for in the profile folder of the running test
+/// executable (`<target>/debug`, where `cargo test --workspace` puts it); when it is missing or
+/// older than its source it is built there first with `cargo build -j 6 -p hengst-testkit --bin
+/// fake-java --profile <the test's profile>`, once per test process. Panics with the paths if the
+/// build fails or the binary is not where the profile puts it.
+pub fn fake_java() -> std::path::PathBuf {
+    use std::path::{Path, PathBuf};
+    use std::sync::OnceLock;
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let exe = std::env::current_exe().expect("the test executable's path");
+        let profile = profile_folder(&exe);
+        let bin = profile.join(format!("fake-java{}", std::env::consts::EXE_SUFFIX));
+        let source = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/bin/fake-java.rs");
+        let modified = |p: &Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let fresh = match (modified(&bin), modified(&source)) {
+            (Some(b), Some(s)) => b >= s,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !fresh {
+            let target = profile.parent().expect("the target folder");
+            // Built with the profile of the running test so it lands next to it: the folder
+            // `debug` is the dev profile, any other folder (`release`, a custom one) its name.
+            let folder = profile
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_else(|| panic!("no profile folder above {}", exe.display()));
+            let cargo_profile = if folder == "debug" { "dev" } else { folder };
+            let status = std::process::Command::new(
+                std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()),
+            )
+            .args([
+                "build",
+                "-j",
+                "6",
+                "-p",
+                "hengst-testkit",
+                "--bin",
+                "fake-java",
+            ])
+            .args(["--profile", cargo_profile])
+            .arg("--target-dir")
+            .arg(target)
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .status()
+            .expect("cargo could not be started to build fake-java");
+            assert!(
+                status.success(),
+                "building fake-java with profile {cargo_profile} failed"
+            );
+        }
+        assert!(
+            bin.is_file(),
+            "no fake-java at {} (test executable {})",
+            bin.display(),
+            exe.display()
+        );
+        bin
+    })
+    .clone()
+}
+
+/// `fake_java()` copied as `java.exe` into its own folder next to it (`<profile>/fake-java-as-java`),
+/// for code that accepts only a file named `java.exe` or `javaw.exe` (the desktop app's Java
+/// setting). Refreshed when `fake-java` is newer; the copy goes through a temp file and a rename.
+pub fn fake_java_exe() -> std::path::PathBuf {
+    use std::path::PathBuf;
+    use std::sync::OnceLock;
+    static PATH: OnceLock<PathBuf> = OnceLock::new();
+    PATH.get_or_init(|| {
+        let source = fake_java();
+        let folder = source
+            .parent()
+            .expect("a profile folder")
+            .join("fake-java-as-java");
+        std::fs::create_dir_all(&folder).expect("the fake-java-as-java folder");
+        let exe = folder.join("java.exe");
+        let modified = |p: &std::path::Path| std::fs::metadata(p).and_then(|m| m.modified()).ok();
+        let fresh = matches!((modified(&exe), modified(&source)), (Some(c), Some(s)) if c >= s);
+        if !fresh {
+            let tmp = folder.join(format!("java.exe.{}.tmp", std::process::id()));
+            std::fs::copy(&source, &tmp).expect("copying fake-java");
+            // Another test process may have put its copy there meanwhile; either copy is the same.
+            if std::fs::rename(&tmp, &exe).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+        assert!(exe.is_file(), "no copy of fake-java at {}", exe.display());
+        exe
+    })
+    .clone()
+}
+
 /// One mock server with both the sign-in chain (accounts A and B) and the Mojang services
 /// mounted: what the end-to-end binary `hengst-mock` serves.
 pub struct Services {
@@ -50,8 +167,13 @@ pub struct Services {
 
 impl Services {
     pub async fn start(scenario: AuthScenario) -> Services {
+        Self::start_with(scenario, std::time::Duration::ZERO).await
+    }
+
+    /// `start` whose Mojang and Fabric answers each wait `mojang_delay` (`mount_mojang_delayed`).
+    pub async fn start_with(scenario: AuthScenario, mojang_delay: std::time::Duration) -> Services {
         let server = MockServer::builder().start().await;
-        mount_mojang(&server).await;
+        mojang::mount_mojang_delayed(&server, mojang_delay).await;
         let auth = mount_auth(&server, scenario, &[PLAYER_A, PLAYER_B]).await;
         Services { server, auth }
     }
@@ -72,6 +194,22 @@ mod tests {
     use hengst_core::paths::Paths;
     use hengst_core::Error;
     use std::time::Duration;
+
+    #[test]
+    fn the_profile_folder_is_found_in_both_cargo_layouts() {
+        use std::path::Path;
+        let profile = Path::new("t").join("debug");
+        // Tests of older cargo versions: `<profile>/deps/<test>.exe`.
+        assert_eq!(profile_folder(&profile.join("deps").join("x.exe")), profile);
+        // Tests of newer cargo versions: `<profile>/build/<package>/<hash>/out/<test>.exe`.
+        let new_layout = profile.join("build").join("pkg").join("0a1b").join("out");
+        assert_eq!(profile_folder(&new_layout.join("x.exe")), profile);
+        // A binary or example right in the profile folder.
+        assert_eq!(profile_folder(&profile.join("x.exe")), profile);
+        // A folder that only happens to be called `out` is no build output folder.
+        let other = Path::new("t").join("a").join("b").join("c").join("out");
+        assert_eq!(profile_folder(&other.join("x.exe")), other);
+    }
 
     fn pages() -> BrowserLoginPages {
         BrowserLoginPages {

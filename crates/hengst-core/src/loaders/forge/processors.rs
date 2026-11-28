@@ -591,7 +591,10 @@ pub fn write_marker(plan: &Plan, marker: &Path, installer_sha1: &str) -> Result<
     tmp.push(".part");
     let tmp = PathBuf::from(tmp);
     std::fs::write(&tmp, text)?;
-    std::fs::rename(&tmp, marker)?;
+    if let Err(e) = crate::paths::replace_file(&tmp, marker) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -696,30 +699,19 @@ pub fn install_state_valid(
 /// without a JVM.
 pub trait ProcessRunner: Send + Sync {
     /// Runs `cmd` as built by `run_processors` and returns its exit code (-1 if it has none), or
-    /// `None` when it did not finish within `timeout` and was killed.
+    /// `None` when it did not finish within `timeout` and was killed. An error of kind
+    /// `Interrupted` means the run was cancelled (see `JobRunner`).
     fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>>;
 }
 
-/// Starts the real process.
+/// Starts the real process in its own kill-on-close job object without a console window (see
+/// `crate::process`): at the timeout, when the launcher ends, and after the process exits,
+/// everything it started is terminated with it. Cannot be cancelled; `JobRunner` can.
 pub struct SystemRunner;
 
 impl ProcessRunner for SystemRunner {
     fn run(&self, cmd: &mut Command, timeout: Duration) -> std::io::Result<Option<i32>> {
-        // Deferred to Phase 4 (desktop app): put the child into a Windows job object so that it
-        // is also killed when the launcher itself is killed. Today such a child keeps running.
-        let mut child = cmd.spawn()?;
-        let deadline = std::time::Instant::now() + timeout;
-        loop {
-            if let Some(status) = child.try_wait()? {
-                return Ok(Some(status.code().unwrap_or(-1)));
-            }
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Ok(None);
-            }
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        crate::process::run_in_job(cmd, timeout, None)
     }
 }
 
@@ -772,8 +764,10 @@ fn processor_command(java: &Path, c: &ProcessorCommand, cwd: &Path) -> Result<Co
 /// Right before each start the jar and classpath are checked against their declared SHA-1, and
 /// after a zero exit the declared outputs. A processor running longer than `PROCESSOR_TIMEOUT`
 /// is killed. Any failure stops the run with an error naming the
-/// processor and the log: a non-zero exit is `Error::Processor`, everything else
+/// processor and the log: a non-zero exit is `Error::Processor`, a cancelled run
+/// (`ErrorKind::Interrupted` from the runner) `Error::Cancelled`, everything else
 /// `Error::InstallFailed`.
+#[cfg(test)]
 pub fn run_processors(
     runner: &dyn ProcessRunner,
     java: &Path,
@@ -826,6 +820,9 @@ fn run_processors_with(
         let mut cmd = processor_command(java, c, cwd)?;
         cmd.stdout(out.try_clone()?).stderr(out.try_clone()?);
         let code = runner.run(&mut cmd, timeout).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                return Error::Cancelled;
+            }
             failed(format!(
                 "{name}: could not start {}: {e}; see {}",
                 java.display(),
@@ -1840,6 +1837,30 @@ mod tests {
         }
     }
 
+    /// Reports that it was cancelled, like `JobRunner` does.
+    struct Interrupted;
+
+    impl ProcessRunner for Interrupted {
+        fn run(&self, _: &mut Command, _: std::time::Duration) -> std::io::Result<Option<i32>> {
+            Err(std::io::ErrorKind::Interrupted.into())
+        }
+    }
+
+    #[test]
+    fn interrupted_runner_is_a_cancelled_run() {
+        let (_t, env, plan) = two_step();
+        let log = env.root.join("logs/install.log");
+        let err = run_processors(
+            &Interrupted,
+            Path::new("java"),
+            &plan.commands,
+            &env.work,
+            &log,
+        )
+        .unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "{err}");
+    }
+
     #[test]
     fn hung_processor_is_stopped_at_the_timeout_and_named() {
         let (_t, env, plan) = two_step();
@@ -2155,6 +2176,18 @@ mod tests {
         let err = write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).unwrap_err();
         assert!(err.to_string().contains("missing"), "{err}");
         assert!(!i.marker.exists());
+    }
+
+    #[test]
+    fn write_marker_leaves_no_temp_file_when_the_replace_fails() {
+        let i = install();
+        std::fs::remove_file(&i.marker).unwrap();
+        // A folder where the marker belongs: the rename over it fails.
+        std::fs::create_dir(&i.marker).unwrap();
+        assert!(write_marker(&i.plan, &i.marker, SHA_OF_INSTALLER).is_err());
+        let mut tmp = i.marker.as_os_str().to_owned();
+        tmp.push(".part");
+        assert!(!PathBuf::from(&tmp).exists(), "{tmp:?} left behind");
     }
 
     #[test]

@@ -29,6 +29,14 @@ if (import.meta.env.DEV && location.hash === "#error-gallery") {
       </StrictMode>,
     ),
   );
+} else if (import.meta.env.DEV && location.hash.startsWith("#log-gallery")) {
+  void import("@/dev/LogGallery").then(({ LogGallery }) =>
+    root.render(
+      <StrictMode>
+        <LogGallery />
+      </StrictMode>,
+    ),
+  );
 } else {
   root.render(
     <StrictMode>

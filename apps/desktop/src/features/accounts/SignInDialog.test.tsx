@@ -137,7 +137,7 @@ describe("SignInDialog outcomes", () => {
     const backend = await setup([mira, account("c", "Old_Mate", { signInRequired: true })], {
       open: { id: "c", name: "Old_Mate" },
     });
-    expect(screen.getByRole("heading", { name: "Sign in Old_Mate again" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "Sign in ⁨Old_Mate⁩ again" })).toBeTruthy();
     await startBrowser(backend);
     act(() => {
       backend.emit({ event: "browserOpened" });
@@ -148,6 +148,13 @@ describe("SignInDialog outcomes", () => {
     });
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(toast).toHaveBeenCalledWith("Signed in as Jonas_T. Old_Mate is still signed out.");
+  });
+
+  it("the re-sign-in title isolates a name with bidi controls", async () => {
+    await setup([mira, account("c", "Old‮_Mate", { signInRequired: true })], {
+      open: { id: "c", name: "Old‮_Mate" },
+    });
+    expect(screen.getByRole("heading", { name: "Sign in ⁨Old_Mate⁩ again" })).toBeTruthy();
   });
 
   it("re-signing in as the same account gets the plain message", async () => {

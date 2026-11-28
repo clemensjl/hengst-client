@@ -2,7 +2,9 @@ import { Button as ButtonPrimitive } from "@base-ui/react/button";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
-/* DESIGN.md 10.1: five variants, three sizes. The default is `secondary`, so a button without a
+/* DESIGN.md 10.1: five variants, three sizes. An inert button (`aria-disabled`, focusable, its
+   reason as description) keeps its rest fill on hover and press: it does nothing, so it shows no
+   hover or pressed state. The default is `secondary`, so a button without a
    variant can never become a second accent button (DESIGN.md 2.5). Pressed fills apply at once
    (active:duration-0); the return transitions over --dur-press. */
 const svg = "[&_svg:not([class*='size-'])]";
@@ -12,14 +14,14 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary:
-          "border-transparent bg-primary text-primary-foreground hover:bg-accent-hover active:bg-accent-pressed disabled:border-border disabled:bg-hover disabled:text-text-disabled",
+          "border-transparent bg-primary text-primary-foreground hover:bg-accent-hover active:bg-accent-pressed aria-disabled:hover:bg-primary aria-disabled:active:bg-primary disabled:border-border disabled:bg-hover disabled:text-text-disabled",
         secondary:
-          "border-input bg-secondary text-foreground hover:bg-hover active:bg-selected disabled:border-border disabled:bg-card disabled:text-text-disabled",
+          "border-input bg-secondary text-foreground hover:bg-hover active:bg-selected aria-disabled:hover:bg-secondary aria-disabled:active:bg-secondary disabled:border-border disabled:bg-card disabled:text-text-disabled",
         ghost:
-          "border-transparent text-foreground hover:bg-hover active:bg-selected disabled:text-text-disabled",
+          "border-transparent text-foreground hover:bg-hover active:bg-selected aria-disabled:hover:bg-transparent aria-disabled:active:bg-transparent disabled:text-text-disabled",
         destructive:
-          "border-transparent bg-destructive text-destructive-foreground hover:bg-danger-hover active:bg-danger-pressed disabled:border-border disabled:bg-hover disabled:text-text-disabled",
-        link: "border-transparent text-foreground underline decoration-1 underline-offset-[3px] hover:decoration-2 active:text-muted-foreground disabled:text-text-disabled disabled:no-underline",
+          "border-transparent bg-destructive text-destructive-foreground hover:bg-danger-hover active:bg-danger-pressed aria-disabled:hover:bg-destructive aria-disabled:active:bg-destructive disabled:border-border disabled:bg-hover disabled:text-text-disabled",
+        link: "border-transparent text-foreground underline decoration-1 underline-offset-[3px] hover:decoration-2 active:text-muted-foreground aria-disabled:hover:decoration-1 aria-disabled:active:text-foreground disabled:text-text-disabled disabled:no-underline",
       },
       size: {
         default: `h-10 text-label ${svg}:size-4`,

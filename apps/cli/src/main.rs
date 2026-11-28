@@ -9,15 +9,16 @@ use hengst_core::auth::store::{load_accounts_file, AccountStore};
 use hengst_core::auth::{client_id, unix_now, AuthEndpoints, MicrosoftAuth};
 use hengst_core::download::http_client;
 use hengst_core::launch::{
-    ensure_launch_allowed, prepare_with_progress, run, Endpoints, LaunchOptions, DEV_OFFLINE,
+    ensure_launch_allowed, prepare_with_progress, resolve, run, Endpoints, LaunchOptions,
+    Resolution, DEV_OFFLINE,
 };
-use hengst_core::loaders::forge::processors::SystemRunner;
 use hengst_core::loaders::{
     list_versions, pick_version, LoaderEndpoints, LoaderKind, LoaderRequest, LoaderVersion,
     ResolvedLoader,
 };
 use hengst_core::manifest::{fetch_manifest, VersionKind, MANIFEST_URL};
 use hengst_core::paths::Paths;
+use hengst_core::process::SystemRunner;
 use hengst_core::progress::{Progress, Transfer};
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -72,6 +73,12 @@ enum Cmd {
         /// NeoForge also run the installer's processors)
         #[arg(long)]
         dry_run: bool,
+        /// Only resolve the game version and the loader build and print them as one JSON line,
+        /// e.g. {"game":"1.21.11","loader":{"kind":"fabric","version":"0.17.3","stable":true}}
+        /// ("loader":null without --loader). Fetches only the version manifest and the loader's
+        /// version list: no downloads, no account, no Java. Exit code 0; 1 on errors, 2 on invalid arguments.
+        #[arg(long, conflicts_with_all = ["account", "offline", "java", "memory", "instance", "dry_run"])]
+        resolve_only: bool,
     },
     /// List loader versions for a game version, newest first
     Loaders {
@@ -144,6 +151,69 @@ fn unstable_note(requested: Option<&str>, resolved: &ResolvedLoader, game: &str)
     ))
 }
 
+/// The stderr notes about a picked loader build: the saved list was used because the service is
+/// unreachable, then the unstable fallback (only with the game id; `None` skips it).
+fn loader_notes(
+    requested: Option<&str>,
+    resolved: &ResolvedLoader,
+    from_cache: bool,
+    game: Option<&str>,
+) -> Vec<String> {
+    let mut notes = Vec::new();
+    if from_cache {
+        notes.push(format!(
+            "note: the {} version service is unreachable; picked {} from the last saved list",
+            resolved.kind, resolved.version.id
+        ));
+    }
+    if let Some(note) = game.and_then(|game| unstable_note(requested, resolved, game)) {
+        notes.push(note);
+    }
+    notes.iter().map(|n| printable(n)).collect()
+}
+
+/// Text from a server (or a file) for the terminal: every control character (C0, DEL, C1)
+/// becomes U+FFFD, so a version id or an error text cannot move the cursor, change the window
+/// title or recolour the terminal. Bidi controls (embeddings, overrides, isolates and the marks
+/// LRM, RLM, ALM) are dropped, so the text cannot be shown reordered.
+fn printable(text: &str) -> String {
+    text.chars()
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}' | '\u{200E}' | '\u{200F}' | '\u{061C}'
+            )
+        })
+        .map(|c| if c.is_control() { '\u{fffd}' } else { c })
+        .collect()
+}
+
+/// The stdout lines of `launch --dry-run`: the Java path, then every (already redacted) argument
+/// indented, each `printable`.
+fn dry_run_lines(java: &std::path::Path, args: &[String]) -> Vec<String> {
+    std::iter::once(printable(&java.display().to_string()))
+        .chain(args.iter().map(|arg| format!("  {}", printable(arg))))
+        .collect()
+}
+
+/// What a failed command prints: the error and its causes, each made `printable` (error texts
+/// embed remote ids, e.g. `UnsafePath`).
+fn error_text(e: &anyhow::Error) -> String {
+    let mut text = format!("Error: {}", printable(&e.to_string()));
+    let causes: Vec<String> = e
+        .chain()
+        .skip(1)
+        .map(|c| printable(&c.to_string()))
+        .collect();
+    if !causes.is_empty() {
+        text.push_str("\n\nCaused by:");
+        for (i, cause) in causes.iter().enumerate() {
+            text.push_str(&format!("\n    {i}: {cause}"));
+        }
+    }
+    text
+}
+
 /// One line per loader version (at most `limit`), the default marked.
 fn loader_lines(versions: &[LoaderVersion], limit: usize, default_id: &str) -> Vec<String> {
     versions
@@ -152,9 +222,24 @@ fn loader_lines(versions: &[LoaderVersion], limit: usize, default_id: &str) -> V
         .map(|v| {
             let stable = if v.stable { "stable" } else { "unstable" };
             let marker = if v.id == default_id { " (default)" } else { "" };
-            format!("{:<24} {stable}{marker}", v.id)
+            printable(&format!("{:<24} {stable}{marker}", v.id))
         })
         .collect()
+}
+
+/// The stdout line of `launch --resolve-only`: one JSON object, keys in this order.
+fn resolution_line(r: &Resolution) -> String {
+    let text = |s: &str| serde_json::Value::from(s).to_string();
+    let loader = match &r.loader {
+        Some(l) => format!(
+            r#"{{"kind":{},"version":{},"stable":{}}}"#,
+            text(l.kind.slug()),
+            text(&l.version.id),
+            l.version.stable
+        ),
+        None => "null".to_string(),
+    };
+    format!(r#"{{"game":{},"loader":{loader}}}"#, text(&r.game))
 }
 
 /// Maps `latest` / `latest-snapshot` to a game version id; other ids pass through.
@@ -180,8 +265,18 @@ fn open_store(_paths: &Paths) -> anyhow::Result<AccountStore<MemorySecretStore>>
 }
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> std::process::ExitCode {
     let cli = Cli::parse();
+    match cli_main(cli).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("{}", error_text(&e));
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+async fn cli_main(cli: Cli) -> anyhow::Result<()> {
     let paths = Paths::new(cli.home.unwrap_or_else(Paths::default_root));
     match cli.cmd {
         Cmd::Versions { kind, limit } => {
@@ -192,7 +287,7 @@ async fn main() -> anyhow::Result<()> {
                 .filter(|v| kind.matches(v.kind))
                 .take(limit)
             {
-                println!("{:<28} {:?}", v.id, v.kind);
+                println!("{}", printable(&format!("{:<28} {:?}", v.id, v.kind)));
             }
         }
         Cmd::Launch {
@@ -205,7 +300,23 @@ async fn main() -> anyhow::Result<()> {
             loader,
             loader_version,
             dry_run,
+            resolve_only,
         } => {
+            let request = loader.map(|kind| LoaderRequest {
+                kind,
+                version: loader_version.clone(),
+            });
+            if resolve_only {
+                let r = resolve(&paths, &version, request.as_ref(), &Endpoints::default()).await?;
+                if let Some(resolved) = r.loader.as_ref() {
+                    let (requested, cached) = (loader_version.as_deref(), r.loader_list_from_cache);
+                    for note in loader_notes(requested, resolved, cached, Some(&r.game)) {
+                        eprintln!("{note}");
+                    }
+                }
+                println!("{}", resolution_line(&r));
+                return Ok(());
+            }
             let account = match offline {
                 Some(name) => Account::offline(&name),
                 None => {
@@ -225,14 +336,11 @@ async fn main() -> anyhow::Result<()> {
                 account,
                 java,
                 memory_mb: memory,
-                loader: loader.map(|kind| LoaderRequest {
-                    kind,
-                    version: loader_version.clone(),
-                }),
+                loader: request,
             };
             let sink = Arc::new(|event: Progress| {
                 if let Some(line) = progress_line(&event) {
-                    eprintln!("{line}");
+                    eprintln!("{}", printable(&line));
                 }
             });
             let prepared = prepare_with_progress(
@@ -243,32 +351,22 @@ async fn main() -> anyhow::Result<()> {
                 sink,
             )
             .await?;
-            if let Some(resolved) = prepared
-                .loader
-                .as_ref()
-                .filter(|_| prepared.loader_list_from_cache)
-            {
-                eprintln!(
-                    "note: the {} version service is unreachable; picked {} from the last saved list",
-                    resolved.kind, resolved.version.id
-                );
-            }
-            if let Some(resolved) = prepared
-                .loader
-                .as_ref()
-                .filter(|r| note_applies(loader_version.as_deref(), r))
-            {
-                // The note is cosmetic: a failed lookup skips it silently.
-                if let Ok(game) = resolve_game(&paths, &opts.version).await {
-                    if let Some(note) = unstable_note(loader_version.as_deref(), resolved, &game) {
-                        eprintln!("{note}");
-                    }
+            if let Some(resolved) = prepared.loader.as_ref() {
+                let requested = loader_version.as_deref();
+                // The unstable note is cosmetic: a failed lookup skips it silently.
+                let game = if note_applies(requested, resolved) {
+                    resolve_game(&paths, &opts.version).await.ok()
+                } else {
+                    None
+                };
+                let cached = prepared.loader_list_from_cache;
+                for note in loader_notes(requested, resolved, cached, game.as_deref()) {
+                    eprintln!("{note}");
                 }
             }
             if dry_run {
-                println!("{}", prepared.java.display());
-                for arg in &prepared.redacted_args() {
-                    println!("  {arg}");
+                for line in dry_run_lines(&prepared.java, &prepared.redacted_args()) {
+                    println!("{line}");
                 }
                 return Ok(());
             }
@@ -295,14 +393,15 @@ async fn main() -> anyhow::Result<()> {
             let code = auth.start_device_login().await?;
             println!(
                 "To sign in, open {} and enter the code {}",
-                code.verification_uri, code.user_code
+                printable(&code.verification_uri),
+                printable(&code.user_code)
             );
             println!("Waiting for sign-in...");
             let tokens = auth.poll_device_login(&code).await?;
             let session = auth.complete_login(tokens, unix_now()).await?;
             let saved = store.save_session(&session)?;
             let suffix = if first { " (default account)" } else { "" };
-            println!("Signed in as {}{suffix}", saved.name);
+            println!("Signed in as {}{suffix}", printable(&saved.name));
         }
         Cmd::Accounts { action: None } => {
             let file = load_accounts_file(&paths.accounts_file())?;
@@ -315,18 +414,21 @@ async fn main() -> anyhow::Result<()> {
                 } else {
                     ' '
                 };
-                println!("{marker} {:<16} {}", a.name, a.uuid);
+                println!(
+                    "{}",
+                    printable(&format!("{marker} {:<16} {}", a.name, a.uuid))
+                );
             }
         }
         Cmd::Accounts {
             action: Some(AccountsCmd::Use { name }),
         } => {
             let a = open_store(&paths)?.set_default(&name)?;
-            println!("{} is now the default account", a.name);
+            println!("{} is now the default account", printable(&a.name));
         }
         Cmd::Logout { name } => {
             let a = open_store(&paths)?.remove(&name)?;
-            println!("Removed {}", a.name);
+            println!("Removed {}", printable(&a.name));
         }
     }
     Ok(())
@@ -541,6 +643,64 @@ mod tests {
     }
 
     #[test]
+    fn resolve_only_needs_no_account_and_refuses_launch_options() {
+        let cli = Cli::try_parse_from([
+            "hengst",
+            "launch",
+            "latest",
+            "--loader",
+            "fabric",
+            "--resolve-only",
+        ])
+        .unwrap();
+        match cli.cmd {
+            Cmd::Launch { resolve_only, .. } => assert!(resolve_only),
+            _ => panic!("expected launch"),
+        }
+        for extra in [
+            &["--offline", "Dev"][..],
+            &["--account", "Steve"],
+            &["--dry-run"],
+            &["--java", "java.exe"],
+            &["--memory", "1024"],
+            &["--instance", "x"],
+        ] {
+            let mut args = vec!["hengst", "launch", "1.21.11", "--resolve-only"];
+            args.extend_from_slice(extra);
+            assert!(Cli::try_parse_from(&args).is_err(), "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn a_resolution_is_one_json_line() {
+        let vanilla = Resolution {
+            game: "1.21.11".into(),
+            loader: None,
+            loader_list_from_cache: false,
+        };
+        assert_eq!(
+            resolution_line(&vanilla),
+            r#"{"game":"1.21.11","loader":null}"#
+        );
+        let fabric = Resolution {
+            game: "1.21.11".into(),
+            loader: Some(ResolvedLoader {
+                kind: LoaderKind::LegacyFabric,
+                version: LoaderVersion {
+                    id: "0.17.3".into(),
+                    maven: "net.fabricmc:fabric-loader:0.17.3".into(),
+                    stable: true,
+                },
+            }),
+            loader_list_from_cache: true,
+        };
+        assert_eq!(
+            resolution_line(&fabric),
+            r#"{"game":"1.21.11","loader":{"kind":"legacy-fabric","version":"0.17.3","stable":true}}"#
+        );
+    }
+
+    #[test]
     fn loader_defaults_to_none() {
         let cli = Cli::try_parse_from(["hengst", "launch", "1.20.1"]).unwrap();
         match cli.cmd {
@@ -642,6 +802,85 @@ mod tests {
             Cli::try_parse_from(["hengst", "loaders", "fabric", "1.21.11", "--limit", "0"])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn printable_replaces_every_control_character() {
+        assert_eq!(printable("1.21.11 Pre-Release 1"), "1.21.11 Pre-Release 1");
+        assert_eq!(
+            printable("a\u{1b}[31mb\u{7}c\u{7f}d\u{9b}2Je\nf\tg\u{0}"),
+            "a\u{fffd}[31mb\u{fffd}c\u{fffd}d\u{fffd}2Je\u{fffd}f\u{fffd}g\u{fffd}"
+        );
+        assert_eq!(printable("Größe x"), "Größe x");
+    }
+
+    /// Bidi controls are not control characters, but they reorder what the terminal shows: they
+    /// are dropped.
+    #[test]
+    fn printable_drops_bidi_controls() {
+        let bidi = "a\u{202a}b\u{202b}c\u{202c}d\u{202d}e\u{202e}f\u{2066}g\u{2067}h\u{2068}i\u{2069}j\u{200e}k\u{200f}l\u{61c}m";
+        assert_eq!(printable(bidi), "abcdefghijklm");
+        // Ordinary right-to-left text stays.
+        assert_eq!(printable("שלום"), "שלום");
+    }
+
+    /// The dry run prints the Java path and every argument through `printable`: an instance or
+    /// version name inside them cannot steer the terminal.
+    #[test]
+    fn dry_run_lines_are_printable() {
+        let lines = dry_run_lines(
+            std::path::Path::new("C:\\java\u{1b}[2J\\bin\\java.exe"),
+            &["--gameDir".into(), "x\u{202e}y\u{7}".into()],
+        );
+        assert_eq!(
+            lines,
+            [
+                "C:\\java\u{fffd}[2J\\bin\\java.exe",
+                "  --gameDir",
+                "  xy\u{fffd}"
+            ]
+        );
+    }
+
+    #[test]
+    fn remote_text_reaches_the_terminal_without_control_characters() {
+        let bad = "0.1\u{1b}]0;title\u{7}";
+        let clean = |lines: &[String]| lines.iter().all(|l| !l.chars().any(char::is_control));
+        let v = LoaderVersion {
+            id: bad.into(),
+            maven: bad.into(),
+            stable: false,
+        };
+        assert!(clean(&loader_lines(std::slice::from_ref(&v), 5, bad)));
+        assert!(clean(&loader_notes(
+            None,
+            &resolved(bad, false),
+            true,
+            Some("1\u{1b}c")
+        )));
+        let err = anyhow::Error::from(hengst_core::Error::UnsafePath(bad.into()));
+        let text = error_text(&err.context("resolving the loader"));
+        assert!(
+            !text.replace('\n', "").chars().any(char::is_control),
+            "{text:?}"
+        );
+        assert!(text.starts_with("Error: resolving the loader"), "{text}");
+        assert!(text.contains("0.1\u{fffd}]0;title\u{fffd}"), "{text}");
+    }
+
+    #[test]
+    fn loader_notes_are_the_cache_note_then_the_unstable_note() {
+        let r = resolved("0.31.0-beta.6", false);
+        assert_eq!(
+            loader_notes(None, &r, true, Some("1.21.11")),
+            [
+                "note: the quilt version service is unreachable; picked 0.31.0-beta.6 from the last saved list",
+                "note: no stable quilt release for Minecraft 1.21.11, using 0.31.0-beta.6",
+            ]
+        );
+        // No game id (its lookup failed or was not needed): only the cache note.
+        assert_eq!(loader_notes(None, &r, true, None).len(), 1);
+        assert!(loader_notes(None, &resolved("0.30.2", true), false, Some("1.21.11")).is_empty());
     }
 
     #[test]

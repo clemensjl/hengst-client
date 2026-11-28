@@ -24,11 +24,33 @@ describe("motion", () => {
   // DESIGN.md 10.15: the spinner is a progress indicator, not a transition, so it keeps turning
   // when a keyboard-triggered request runs; under reduced motion it is hidden.
   it("the spinner utility is exempt from the keyboard rule and turns linearly at 800 ms", () => {
-    const rule = CSS.match(/html\[data-input="keyboard"\] \*:not\(([^)]*)\)/);
+    const rule = CSS.match(/html\[data-input="keyboard"\]\s+\*:not\(([^)]*)\)/);
     expect(rule?.[1]).toContain(".spinner");
+    // The launch progress fill is a progress indicator too (DESIGN.md 8).
+    expect(rule?.[1]).toContain(".motion-progress");
     const spinner = CSS.match(/@utility spinner \{([\s\S]*?)\n\}\n/)?.[1] ?? "";
     expect(spinner).toMatch(/animation:\s*spinner-turn 800ms linear infinite/);
     expect(spinner).toMatch(/@media \(prefers-reduced-motion: reduce\)\s*\{\s*display:\s*none/);
     expect(CSS).toMatch(/@keyframes spinner-turn \{[^}]*\}[^}]*\}/);
+  });
+
+  // DESIGN.md 8: the progress fill is scaleX, linear, --dur-progress, and jumps under reduced
+  // motion; the Play button scales to 0.98 while pressed over --dur-press, fills at once, and
+  // drops the scale under reduced motion.
+  it("the progress fill and the Play press animate only transform and scale", () => {
+    const progress = CSS.match(/@utility motion-progress \{([\s\S]*?)\n\}\n/)?.[1] ?? "";
+    expect(progress).toMatch(/transition-property:\s*transform;/);
+    expect(progress).toMatch(/transition-duration:\s*var\(--dur-progress\)/);
+    expect(progress).toMatch(/transition-timing-function:\s*linear/);
+    expect(progress).toMatch(/prefers-reduced-motion: reduce\)\s*\{\s*transition:\s*none/);
+    expect(CSS).toMatch(
+      /\.play-press \{\s*transition-property: background-color, color, border-color, scale;\s*transition-duration: var\(--dur-press\);\s*transition-timing-function: var\(--ease-out\);/,
+    );
+    expect(CSS).toMatch(
+      /\.play-press:active \{\s*scale: 0\.98;\s*transition-duration: 0ms, 0ms, 0ms, var\(--dur-press\);/,
+    );
+    expect(CSS).toMatch(
+      /prefers-reduced-motion: reduce\)\s*\{\s*\.play-press:active \{\s*scale: none;/,
+    );
   });
 });

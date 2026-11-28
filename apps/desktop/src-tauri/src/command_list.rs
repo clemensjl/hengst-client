@@ -5,11 +5,13 @@ macro_rules! with_commands {
         $callback!(
             app::app_info,
             app::subscribe_events,
+            app::app_quit,
             versions::game_versions,
             open::open_url,
             open::open_location,
             settings::settings_get,
             settings::settings_update,
+            settings::java_choose,
             accounts::accounts_list,
             accounts::account_select,
             accounts::account_remove,
@@ -21,7 +23,17 @@ macro_rules! with_commands {
             instances::instances_list,
             instances::instance_create,
             instances::instance_select,
-            instances::instance_delete
+            instances::instance_delete,
+            play::play,
+            play::play_cancel,
+            play::game_stop,
+            play::game_force_stop,
+            play::game_state,
+            log::log_runs,
+            log::log_attach,
+            log::log_ack,
+            log::log_detach,
+            log::log_copy
         )
     };
 }

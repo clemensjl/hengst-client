@@ -10,7 +10,7 @@ import {
   AlertDialogFooter,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { chipRef } from "./AccountChip";
+import { dialogReturnRef } from "./dialogReturn";
 import { InfoBlock, useOpenUrl } from "./InfoBlock";
 
 /**
@@ -33,7 +33,7 @@ export function NoClientIdDialog({ onClosed }: { onClosed: () => void }) {
         if (!isOpen) onClosed();
       }}
     >
-      <AlertDialogContent initialFocus={closeRef} finalFocus={chipRef}>
+      <AlertDialogContent initialFocus={closeRef} finalFocus={dialogReturnRef}>
         <AlertDialogBody>
           <InfoBlock title={<AlertDialogTitle>{t("signIn.noClientId.title")}</AlertDialogTitle>}>
             <AlertDialogDescription>{t("signIn.noClientId.body")}</AlertDialogDescription>

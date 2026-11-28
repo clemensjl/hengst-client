@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 #[derive(Debug, Clone)]
-pub struct MinecraftToken {
+pub(crate) struct MinecraftToken {
     pub token: Secret,
     pub expires_in: u64,
 }
@@ -58,7 +58,7 @@ pub(crate) fn ownership(owns: bool, profile: Option<Profile>) -> Result<Profile>
 
 impl MicrosoftAuth {
     /// Exchange an XSTS token for a Minecraft services access token.
-    pub async fn minecraft_login(&self, xsts: &XboxToken) -> Result<MinecraftToken> {
+    pub(crate) async fn minecraft_login(&self, xsts: &XboxToken) -> Result<MinecraftToken> {
         let url = format!("{}/authentication/login_with_xbox", self.ep.minecraft);
         let body = json!({
             "identityToken": format!("XBL3.0 x={};{}", xsts.uhs, xsts.token.expose()),
@@ -83,7 +83,7 @@ impl MicrosoftAuth {
 
     /// Whether the account owns the Java Edition (entitlement signatures are
     /// not verified).
-    pub async fn owns_game(&self, mc: &Secret) -> Result<bool> {
+    pub(crate) async fn owns_game(&self, mc: &Secret) -> Result<bool> {
         let url = format!("{}/entitlements/mcstore", self.ep.minecraft);
         let resp = self.get_bearer(&url, mc).await?;
         if !resp.status().is_success() {
@@ -102,7 +102,7 @@ impl MicrosoftAuth {
     }
 
     /// The player profile, or `None` when the account has none yet.
-    pub async fn profile(&self, mc: &Secret) -> Result<Option<Profile>> {
+    pub(crate) async fn profile(&self, mc: &Secret) -> Result<Option<Profile>> {
         let url = format!("{}/minecraft/profile", self.ep.minecraft);
         let resp = self.get_bearer(&url, mc).await?;
         let status = resp.status();

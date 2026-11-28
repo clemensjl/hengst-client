@@ -20,7 +20,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const INSTANCE_FILE: &str = "instance.json";
+pub(crate) const INSTANCE_FILE: &str = "instance.json";
 
 /// The format of `instance.json` this build reads and writes.
 ///
@@ -30,7 +30,7 @@ pub const INSTANCE_FILE: &str = "instance.json";
 /// `v<n>_to_v<n+1>(Value) -> Value`, one fixture file per old format and a test; a migrated file is
 /// only written back by the next `save`, in the new format. Unknown fields survive in `extra` and
 /// in `save`, which merges onto the map that is on disk.
-pub const INSTANCE_FORMAT: u32 = 1;
+pub(crate) const INSTANCE_FORMAT: u32 = 1;
 
 /// A metadata file is a few hundred bytes; anything above this is not read.
 const MAX_FILE_BYTES: u64 = 1024 * 1024;
@@ -97,7 +97,7 @@ pub struct NewInstance {
 }
 
 /// The folder name `prepare` uses without `--instance`: `<game>` or `<game>-<loader slug>`.
-pub fn default_id(game: &str, loader: Option<LoaderKind>) -> String {
+pub(crate) fn default_id(game: &str, loader: Option<LoaderKind>) -> String {
     match loader {
         Some(kind) => format!("{game}-{}", kind.slug()),
         None => game.to_string(),
@@ -106,7 +106,7 @@ pub fn default_id(game: &str, loader: Option<LoaderKind>) -> String {
 
 /// Reads a folder name as a default id: the whole name as a game version, else the longest loader
 /// suffix whose rest is a game version. `is_game` knows the versions (the manifest).
-pub fn parse_default_id(
+pub(crate) fn parse_default_id(
     id: &str,
     is_game: impl Fn(&str) -> bool,
 ) -> Option<(String, Option<LoaderKind>)> {
@@ -585,7 +585,11 @@ pub fn create(paths: &Paths, new: &NewInstance, now: u64) -> Result<Instance> {
 /// (objects are merged key by key, other values replaced). Refuses a file from a newer format
 /// (`InstanceFormatTooNew`) and a damaged one (`InstanceUnreadable`), never creates the folder, and
 /// validates the name `f` leaves.
-pub fn update(paths: &Paths, id: &str, f: impl FnOnce(&mut InstanceConfig)) -> Result<Instance> {
+pub(crate) fn update(
+    paths: &Paths,
+    id: &str,
+    f: impl FnOnce(&mut InstanceConfig),
+) -> Result<Instance> {
     let _lock = lock_existing(paths, id)?;
     let dir = instance_dir(paths, id)?;
     let file = dir.join(INSTANCE_FILE);
@@ -750,9 +754,15 @@ fn judge_aftermath(
 /// what it left behind cannot be checked, the error is `InstanceMoveUnknown`. If `trash` reports
 /// success and the folder is still there, it is an I/O error. There is no other way
 /// to remove the folder. The shared `versions`, `libraries` and
-/// `assets` are never touched. Whether the instance is running is for the caller to know.
+/// `assets` are never touched. An instance whose game runs (its run lock is held, also by a game
+/// an earlier launcher session started) is refused with `InstanceRunning`; a game this process is
+/// still preparing holds no run lock yet and is for the caller to know.
 pub fn delete(paths: &Paths, id: &str, trash: &dyn Fn(&Path) -> Result<()>) -> Result<()> {
     let _lock = lock_existing(paths, id)?;
+    #[cfg(windows)]
+    if crate::runlock::is_running(paths, id)? {
+        return Err(Error::InstanceRunning { id: id.to_string() });
+    }
     let dir = instance_dir(paths, id)?;
     if let State::TooNew(format) = read_state(&dir) {
         return Err(Error::InstanceFormatTooNew {

@@ -52,6 +52,10 @@ pub enum ArgValue {
 pub struct AssetIndexRef {
     pub id: String,
     pub sha1: String,
+    #[expect(
+        dead_code,
+        reason = "format field: parsing requires it, nothing reads it"
+    )]
     pub size: u64,
     pub url: String,
 }
@@ -64,6 +68,10 @@ pub struct VersionDownloads {
 #[derive(Deserialize, Clone, Debug)]
 pub struct FileRef {
     pub sha1: String,
+    #[expect(
+        dead_code,
+        reason = "format field: parsing requires it, nothing reads it"
+    )]
     pub size: u64,
     pub url: String,
 }
@@ -72,6 +80,13 @@ pub struct FileRef {
 #[serde(rename_all = "camelCase")]
 pub struct JavaVersion {
     pub component: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "format field: parsing requires it, only tests read it"
+        )
+    )]
     pub major_version: u32,
 }
 
@@ -100,6 +115,13 @@ pub struct LibraryDownloads {
 pub struct Artifact {
     pub path: String,
     pub sha1: String,
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "format field: parsing requires it, only tests read it"
+        )
+    )]
     pub size: u64,
     pub url: String,
 }
@@ -125,6 +147,10 @@ pub struct LoggingClient {
 pub struct LoggingFile {
     pub id: String,
     pub sha1: String,
+    #[expect(
+        dead_code,
+        reason = "format field: parsing requires it, nothing reads it"
+    )]
     pub size: u64,
     pub url: String,
 }

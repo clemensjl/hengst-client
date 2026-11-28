@@ -33,10 +33,28 @@ fn capability_allows_exactly_the_commands() {
         granted.iter().all(|p| !p.starts_with("opener:")),
         "opener is used from Rust only"
     );
+    assert!(
+        granted.iter().all(|p| !p.starts_with("dialog:")),
+        "the file dialog is opened from Rust only"
+    );
 }
 
 #[test]
 fn command_names_are_unique() {
     let set: BTreeSet<&&str> = hengst_desktop_lib::COMMANDS.iter().collect();
     assert_eq!(set.len(), hengst_desktop_lib::COMMANDS.len());
+}
+
+#[test]
+fn main_json_is_the_only_capability_file() {
+    let names: Vec<String> =
+        std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/capabilities"))
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+    assert_eq!(
+        names,
+        ["main.json"],
+        "a second file could grant plugin permissions"
+    );
 }

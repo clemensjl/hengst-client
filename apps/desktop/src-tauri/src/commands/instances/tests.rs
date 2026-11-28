@@ -1054,6 +1054,15 @@ async fn a_timed_out_or_stopped_call_is_unknown_and_a_pending_one_started_nothin
     use crate::recycle::RecycleFailure;
     let mut fx = fixture().await;
     make(&fx, "A", "9.9");
+    // First, while no time-out has happened: a time-out starts a thread that announces the list
+    // again once the (process-wide) shell call is over, which may land at any later moment.
+    fx.state.trasher = failing_with(RecycleFailure::StillRunning);
+    fx.clear_events();
+    let dto = instance_delete_impl(&fx.state, "9.9".into())
+        .await
+        .unwrap_err();
+    assert_eq!(dto.code, ErrorCode::RecycleBinPending);
+    assert!(fx.events().is_empty());
     for failure in [
         RecycleFailure::TimedOut,
         RecycleFailure::Aborted("x".into()),
@@ -1070,13 +1079,6 @@ async fn a_timed_out_or_stopped_call_is_unknown_and_a_pending_one_started_nothin
             "no \"nothing was deleted\" claim"
         );
     }
-    fx.state.trasher = failing_with(RecycleFailure::StillRunning);
-    fx.clear_events();
-    let dto = instance_delete_impl(&fx.state, "9.9".into())
-        .await
-        .unwrap_err();
-    assert_eq!(dto.code, ErrorCode::RecycleBinPending);
-    assert!(fx.events().is_empty());
     // A time-out after which the folder is gone is unknown as well, and the list refreshes.
     fx.state.trasher = Arc::new(|p| {
         std::fs::remove_dir_all(p)?;

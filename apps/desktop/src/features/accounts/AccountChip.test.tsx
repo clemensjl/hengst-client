@@ -117,7 +117,7 @@ describe("AccountChip", () => {
     const items = within(menu).getAllByRole("menuitemradio");
     expect(within(items[0]).getByText("Sign in again")).toBeTruthy();
     fireEvent.click(items[0]);
-    expect(await screen.findByRole("heading", { name: "Sign in Old_Mate again" })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "Sign in ⁨Old_Mate⁩ again" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   });
@@ -235,7 +235,7 @@ describe("remove account", () => {
   it("remove asks first and names the account; account_remove only after the confirmation", async () => {
     const backend = await setup([mira, jonas], { open: "none" });
     const dialog = await openRemove(backend);
-    expect(within(dialog).getByRole("heading", { name: "Sign out Jonas_T?" })).toBeTruthy();
+    expect(within(dialog).getByRole("heading", { name: "Sign out ⁨Jonas_T⁩?" })).toBeTruthy();
     expect(
       within(dialog).getByText(
         "The saved sign-in is removed from this PC. Your Microsoft account stays unchanged.",
@@ -244,8 +244,22 @@ describe("remove account", () => {
     expect(backend.count("account_remove")).toBe(0);
     fireEvent.click(within(dialog).getByRole("button", { name: "Sign out" }));
     await waitFor(() => expect(backend.of("account_remove")).toEqual([{ id: "b" }]));
-    await waitFor(() => expect(toast).toHaveBeenCalledWith("Signed out Jonas_T"));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Signed out ⁨Jonas_T⁩"));
     await waitFor(() => expect(screen.queryByRole("alertdialog")).toBeNull());
+  });
+
+  it("a name with bidi controls is isolated in the sign-out dialog and its toast", async () => {
+    const tricky = account("b", "Jo‮nas");
+    const backend = await setup([mira, tricky], { open: "none" });
+    const menu = await openMenu();
+    fireEvent.click(within(menu).getByRole("menuitem", { name: "Sign out" }));
+    const sub = await screen.findAllByRole("menu");
+    fireEvent.click(within(sub[sub.length - 1]).getAllByRole("menuitem")[1]);
+    const dialog = await screen.findByRole("alertdialog");
+    expect(within(dialog).getByRole("heading", { name: "Sign out ⁨Jonas⁩?" })).toBeTruthy();
+    fireEvent.click(within(dialog).getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(backend.of("account_remove")).toEqual([{ id: "b" }]));
+    await waitFor(() => expect(toast).toHaveBeenCalledWith("Signed out ⁨Jonas⁩"));
   });
 
   it("remove keeps focus on Keep first, and Keep or Escape leave the account alone and return focus to the chip", async () => {

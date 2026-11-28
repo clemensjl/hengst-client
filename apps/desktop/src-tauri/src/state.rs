@@ -1,5 +1,7 @@
 use crate::accounts::{Accounts, Operations};
 use crate::events::EventHub;
+use crate::log::LiveLog;
+use crate::play::Game;
 use crate::settings::{load_settings, SettingsHandle};
 use hengst_core::auth::unix_now;
 use hengst_core::launch::Endpoints;
@@ -25,12 +27,46 @@ pub struct AppState {
     /// The one lock of `instances_list` (with its adoption of CLI folders), `instance_create` and
     /// `instance_delete`: a list never adopts a folder that a create has made but not yet filled.
     pub instance_lock: tokio::sync::Mutex<()>,
-    /// The instance the app is preparing or running. Always `None` in 4a; 4b sets it. An instance
-    /// the CLI started is invisible to the app and not covered. Task 15 must set it while holding
-    /// `instance_lock`: `instance_delete` reads it under that lock, so a start that sets it
-    /// outside the lock can be overtaken by a delete between its check and its start.
-    pub active_instance: Mutex<Option<String>>,
+    /// The instance the app is preparing or running. A game of an earlier session of the app is not
+    /// in here; its run lock (`hengst_core::runlock`) covers it in `play` and `instance_delete`. A
+    /// game the CLI started is invisible to the app and not covered. Only `game` changes it, together with its state; a start sets it
+    /// while holding `instance_lock`: `instance_delete` reads it under that lock, so a start that
+    /// set it outside the lock could be overtaken by a delete between its check and its start.
+    pub active_instance: Arc<Mutex<Option<String>>>,
+    /// The one game: its state, the running process and the line hand-off.
+    pub game: Arc<Game>,
+    /// The output of the current and the previous run (`log.rs`); the game feeds it.
+    pub log: Arc<LiveLog>,
     pub trasher: Trasher,
+    /// The Java file dialog: one at a time.
+    pub java_dialog: JavaDialog,
+}
+
+/// The log line for a settings file that cannot be read; folders are cut (`strip_paths`).
+fn blocked_message(reason: &str) -> String {
+    format!(
+        "settings: {}; the defaults are used and nothing is saved until the file can be read",
+        crate::error::strip_paths(reason)
+    )
+}
+
+/// Allows one Java file dialog at a time: a second "Choose Java" while one is open is `busy`.
+#[derive(Default)]
+pub struct JavaDialog(Arc<AtomicBool>);
+
+/// Held while the dialog and the check run; dropping it allows the next one.
+pub struct JavaDialogClaim(Arc<AtomicBool>);
+
+impl JavaDialog {
+    pub fn try_claim(&self) -> Option<JavaDialogClaim> {
+        (!self.0.swap(true, Ordering::SeqCst)).then(|| JavaDialogClaim(self.0.clone()))
+    }
+}
+
+impl Drop for JavaDialogClaim {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
 }
 
 impl AppState {
@@ -48,19 +84,25 @@ impl AppState {
     pub fn with_accounts(paths: Paths, endpoints: Endpoints, accounts: Accounts) -> AppState {
         let loaded = load_settings(&paths, unix_now());
         if let Some(reason) = &loaded.blocked {
-            eprintln!("settings: {reason}; the defaults are used and nothing is saved until the file can be read");
+            eprintln!("{}", blocked_message(reason));
         }
+        let events = EventHub::default();
+        let active_instance: Arc<Mutex<Option<String>>> = Arc::default();
+        let game = Arc::new(Game::new(events.clone(), active_instance.clone()));
         AppState {
             settings: SettingsHandle::from_loaded(paths.clone(), loaded),
             paths,
             endpoints,
-            events: EventHub::default(),
+            log: game.log().clone(),
+            game,
+            events,
             versions: VersionsCache::default(),
             accounts: Arc::new(accounts),
             operations: Operations::default(),
             instance_lock: tokio::sync::Mutex::new(()),
-            active_instance: Mutex::new(None),
+            active_instance,
             trasher: Arc::new(crate::recycle::move_to_recycle_bin),
+            java_dialog: JavaDialog::default(),
         }
     }
 }
@@ -106,5 +148,20 @@ impl VersionsCache {
     /// `true` exactly once per app run.
     pub fn claim_refresh(&self) -> bool {
         !self.inner.refresh_started.swap(true, Ordering::SeqCst)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_blocked_settings_message_names_no_folder() {
+        let message = blocked_message(
+            r"could not read C:\Users\Mira_K\AppData\Roaming\HengstClient\settings.json: Access is denied. (os error 5)",
+        );
+        assert!(!message.contains("Mira_K"), "{message}");
+        assert!(message.contains("settings.json"), "{message}");
+        assert!(message.contains("os error 5"), "{message}");
     }
 }

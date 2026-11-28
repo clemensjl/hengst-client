@@ -1,17 +1,20 @@
 use crate::accounts::internal;
 use crate::dto::error::{ErrorAction, ErrorCode, ErrorDto};
-use crate::dto::settings::{Patch, SettingsDto, SettingsPatch};
+use crate::dto::settings::{JavaChoice, JavaPhase, Patch, SettingsDto, SettingsPatch};
 use crate::error::error_dto;
 use crate::events::{AppEvent, DataScope, EventHub};
+use crate::java::{probe_version, validate_java, JavaProblem, ProbeLimits, PROBE_LIMITS};
 use crate::settings::{Settings, SettingsHandle};
 use crate::state::AppState;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use tauri::ipc::Channel;
 use tauri::{Runtime, State, WebviewWindow};
 
-const MEMORY_MB: std::ops::RangeInclusive<u32> = 512..=65536;
+/// The memory setting's range (DESIGN.md 11.7), checked here and again when a game starts.
+pub const MEMORY_MB: std::ops::RangeInclusive<u32> = 512..=65536;
 
-fn invalid_input(field: &str) -> ErrorDto {
+pub fn invalid_input(field: &str) -> ErrorDto {
     ErrorDto {
         code: ErrorCode::InvalidInput,
         params: BTreeMap::from([("field".to_string(), field.to_string())]),
@@ -58,9 +61,14 @@ fn apply(s: &mut Settings, patch: SettingsPatch) {
 
 /// The notice of a reset settings file (from the start or found by an update) is handed out once.
 pub fn settings_get_impl(state: &AppState) -> Result<SettingsDto, ErrorDto> {
+    get_blocking(&state.settings)
+}
+
+/// Blocking: `SettingsDto::new` checks the stored Java path on the file system.
+fn get_blocking(settings: &SettingsHandle) -> Result<SettingsDto, ErrorDto> {
     // Notice first, then the values: an update that lands in between is not announced twice.
-    let notice = state.settings.take_notice();
-    Ok(SettingsDto::new(state.settings.get(), notice))
+    let notice = settings.take_notice();
+    Ok(SettingsDto::new(settings.get(), notice))
 }
 
 /// Validates, saves and announces a change. Blocking (file I/O): the command runs it on a
@@ -93,9 +101,113 @@ pub fn settings_update_impl(
     update_blocking(&state.settings, &state.events, patch)
 }
 
+/// The error of a Java path that cannot be used. `detail` is English and names no path.
+pub fn java_error(problem: JavaProblem, detail: &str) -> ErrorDto {
+    ErrorDto {
+        code: ErrorCode::JavaInvalid,
+        params: BTreeMap::from([("reason".to_string(), problem.key().to_string())]),
+        action: None,
+        detail: detail.to_string(),
+    }
+}
+
+fn java_detail(problem: JavaProblem) -> &'static str {
+    match problem {
+        JavaProblem::Location => "the Java path is not a plain path on a local drive",
+        JavaProblem::Name => "the Java path is not a file named java.exe or javaw.exe",
+        JavaProblem::Missing => "the Java file does not exist",
+        JavaProblem::Unavailable => "the drive of the Java path is not available",
+        JavaProblem::NotStarted => "the Java check failed",
+    }
+}
+
+/// A stored Java path, checked before a game starts. The error carries "open settings".
+pub fn checked_java(path: &std::path::Path) -> Result<PathBuf, ErrorDto> {
+    validate_java(path).map_err(|p| ErrorDto {
+        action: Some(ErrorAction::OpenSettings),
+        ..java_error(p, java_detail(p))
+    })
+}
+
+/// What happens after the dialog: `None` (closed) changes nothing; for a file, `on_checking` is
+/// called first (the web view shows "Checking" from then on, not while the dialog is open), the
+/// file is validated (text
+/// before any file-system call), only then run with `-version` within `limits`, and only a file
+/// that passes both is saved, as its canonical path. Any refusal keeps the previous value.
+/// Blocking (runs a program): call it on a blocking thread.
+pub fn java_choose_impl(
+    settings: &SettingsHandle,
+    events: &EventHub,
+    picked: Option<PathBuf>,
+    limits: ProbeLimits,
+    on_checking: &dyn Fn(),
+) -> Result<JavaChoice, ErrorDto> {
+    let Some(picked) = picked else {
+        return Ok(JavaChoice::Cancelled);
+    };
+    on_checking();
+    let java = validate_java(&picked).map_err(|p| java_error(p, java_detail(p)))?;
+    let version = probe_version(&java, limits)
+        .map_err(|e| java_error(JavaProblem::NotStarted, &e.to_string()))?;
+    let saved = settings
+        .update(|s| {
+            s.java_override = Some(java);
+            Ok(())
+        })
+        .map_err(|e| error_dto(&e))?;
+    let notice = settings.take_notice();
+    events.emit(AppEvent::DataChanged {
+        scope: DataScope::Settings,
+    });
+    Ok(JavaChoice::Chosen {
+        version,
+        settings: SettingsDto::new(saved, notice),
+    })
+}
+
+/// "Choose Java": the Windows file dialog, opened here and owned by the app window, then
+/// `java_choose_impl`. Takes no path: the web view cannot name the file. `channel` gets
+/// `checking` once a file was picked (never the path). `busy` while a dialog is open.
 #[tauri::command]
-pub fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, ErrorDto> {
-    settings_get_impl(&state)
+pub async fn java_choose<R: Runtime>(
+    window: WebviewWindow<R>,
+    state: State<'_, AppState>,
+    channel: Channel<JavaPhase>,
+) -> Result<JavaChoice, ErrorDto> {
+    use tauri_plugin_dialog::DialogExt;
+    let Some(claim) = state.java_dialog.try_claim() else {
+        return Err(ErrorDto {
+            code: ErrorCode::Busy,
+            params: BTreeMap::new(),
+            action: None,
+            detail: "a Java file dialog is already open".to_string(),
+        });
+    };
+    let (settings, events) = (state.settings.clone(), state.events.clone());
+    let dialog = window
+        .dialog()
+        .file()
+        .set_parent(&window)
+        .add_filter("java.exe, javaw.exe", &["exe"]);
+    tauri::async_runtime::spawn_blocking(move || {
+        let _claim = claim;
+        let picked = dialog.blocking_pick_file().and_then(|f| f.into_path().ok());
+        java_choose_impl(&settings, &events, picked, PROBE_LIMITS, &|| {
+            let _ = channel.send(JavaPhase::Checking);
+        })
+    })
+    .await
+    .map_err(|_| internal("a background task failed"))?
+}
+
+/// Async: the answer checks the stored Java path (file-system calls), which must not run on the
+/// main thread.
+#[tauri::command]
+pub async fn settings_get(state: State<'_, AppState>) -> Result<SettingsDto, ErrorDto> {
+    let settings = state.settings.clone();
+    tauri::async_runtime::spawn_blocking(move || get_blocking(&settings))
+        .await
+        .map_err(|_| internal("a background task failed"))?
 }
 
 /// Async so the file I/O (under `SettingsHandle`'s lock, which is never held across an await)
@@ -127,7 +239,8 @@ mod tests {
     use crate::dto::error::ErrorCode;
     use crate::dto::settings::{Patch, SettingsPatch};
     use crate::events::{AppEvent, DataScope};
-    use crate::settings::{Language, SettingsNotice, Theme};
+    use crate::java::JavaProblem;
+    use crate::settings::{load_settings, Language, SettingsNotice, Theme};
     use hengst_core::launch::Endpoints;
     use hengst_core::paths::Paths;
     use std::sync::{Arc, Mutex};
@@ -336,7 +449,10 @@ mod tests {
             })
             .unwrap();
         let kept = settings_update_impl(&state, theme_patch(Theme::Light)).unwrap();
-        assert_eq!(kept.java_override, Some(java.display().to_string()));
+        assert_eq!(
+            kept.java_override.map(|j| j.path),
+            Some(java.display().to_string())
+        );
         let cleared = settings_update_impl(
             &state,
             SettingsPatch {
@@ -356,5 +472,197 @@ mod tests {
         assert!(settings_update_impl(&state, theme_patch(Theme::Dark)).is_err());
         assert_eq!(state.settings.get().theme, Theme::System);
         assert!(dir.path().join("settings.json").is_dir());
+    }
+
+    const QUICK: ProbeLimits = ProbeLimits {
+        timeout: std::time::Duration::from_secs(3),
+        max_output: 64 * 1024,
+    };
+
+    /// fake-java copied as `name` into `<dir>/<folder>/`, with `script` as what it does there.
+    fn fake(dir: &std::path::Path, folder: &str, name: &str, script: &str) -> PathBuf {
+        let bin = dir.join(folder);
+        std::fs::create_dir_all(&bin).unwrap();
+        let java = bin.join(name);
+        std::fs::copy(hengst_testkit::fake_java(), &java).unwrap();
+        std::fs::write(bin.join("fake-java.txt"), script).unwrap();
+        java
+    }
+
+    const VERSION_21: &str = "err openjdk version \"21.0.5\" 2024-10-15\n";
+
+    fn choose(state: &AppState, picked: Option<PathBuf>) -> Result<JavaChoice, ErrorDto> {
+        java_choose_impl(&state.settings, &state.events, picked, QUICK, &|| {})
+    }
+
+    #[test]
+    fn checking_is_announced_only_after_a_file_was_picked() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let announced = std::cell::Cell::new(0);
+        let count = || announced.set(announced.get() + 1);
+        java_choose_impl(&state.settings, &state.events, None, QUICK, &count).unwrap();
+        assert_eq!(
+            announced.get(),
+            0,
+            "the dialog was closed: nothing is checked"
+        );
+        let java = fake(dir.path(), "jdk", "java.exe", VERSION_21);
+        java_choose_impl(&state.settings, &state.events, Some(java), QUICK, &count).unwrap();
+        assert_eq!(announced.get(), 1);
+        let other = dir.path().join("notepad.exe");
+        let _ = java_choose_impl(&state.settings, &state.events, Some(other), QUICK, &count);
+        assert_eq!(announced.get(), 2, "a refused file was checked too");
+    }
+
+    fn refusal(e: &ErrorDto) -> &str {
+        assert_eq!(e.code, ErrorCode::JavaInvalid, "{e:?}");
+        assert!(e.action.is_none());
+        &e.params["reason"]
+    }
+
+    #[test]
+    fn a_chosen_java_is_checked_and_saved_as_its_canonical_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let log = record(&state);
+        let java = fake(dir.path(), "jdk", "java.exe", VERSION_21);
+        let JavaChoice::Chosen { version, settings } = choose(&state, Some(java.clone())).unwrap()
+        else {
+            panic!("not chosen");
+        };
+        assert_eq!(version, "21.0.5");
+        let shown = settings.java_override.unwrap();
+        assert_eq!(shown.problem, None);
+        assert!(!shown.path.starts_with(r"\\"), "{}", shown.path);
+        let stored = state.settings.get().java_override.unwrap();
+        assert_eq!(stored, crate::java::validate_java(&java).unwrap());
+        assert_eq!(
+            load_settings(&state.paths, 1).settings.java_override,
+            Some(stored)
+        );
+        assert_eq!(
+            *log.lock().unwrap(),
+            [AppEvent::DataChanged {
+                scope: DataScope::Settings
+            }]
+        );
+    }
+
+    #[test]
+    fn a_closed_dialog_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let log = record(&state);
+        assert!(matches!(choose(&state, None), Ok(JavaChoice::Cancelled)));
+        assert!(log.lock().unwrap().is_empty());
+        assert!(!dir.path().join("settings.json").exists());
+    }
+
+    #[test]
+    fn a_refused_choice_is_never_run_and_keeps_the_previous_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let good = fake(dir.path(), "jdk", "java.exe", VERSION_21);
+        choose(&state, Some(good)).unwrap();
+        let before = state.settings.get().java_override;
+        // A program that would take 5 s if it were run: the refusal comes at once.
+        let other = fake(dir.path(), "tools", "notepad.exe", "sleep 5000\n");
+        let folder = dir.path().join("java.exe");
+        std::fs::create_dir(&folder).unwrap();
+        for (picked, reason) in [
+            (other, "name"),
+            (folder, "name"),
+            (dir.path().join("gone").join("java.exe"), "missing"),
+            (PathBuf::from(r"\\192.0.2.1\share\java.exe"), "location"),
+            (
+                PathBuf::from(r"\\?\UNC\192.0.2.1\share\java.exe"),
+                "location",
+            ),
+        ] {
+            let start = std::time::Instant::now();
+            let e = choose(&state, Some(picked.clone())).unwrap_err();
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+            assert_eq!(refusal(&e), reason, "{}", picked.display());
+            assert!(!e.detail.contains("192.0.2.1"), "{}", e.detail);
+            assert!(
+                !e.detail.contains(&*dir.path().to_string_lossy()),
+                "{}",
+                e.detail
+            );
+            assert_eq!(state.settings.get().java_override, before);
+        }
+    }
+
+    #[test]
+    fn a_java_that_fails_its_check_keeps_the_previous_value() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        choose(
+            &state,
+            Some(fake(dir.path(), "jdk", "java.exe", VERSION_21)),
+        )
+        .unwrap();
+        let before = state.settings.get().java_override;
+        for (folder, script) in [
+            ("exit3", "err openjdk version \"21\"\nexit 3\n"),
+            ("hangs", "sleep 60000\n"),
+            ("garbage", "out <img src=x>\n"),
+        ] {
+            let picked = fake(dir.path(), folder, "javaw.exe", script);
+            let e = choose(&state, Some(picked)).unwrap_err();
+            assert_eq!(refusal(&e), "notStarted", "{folder}");
+            assert!(
+                !e.detail.contains(&*dir.path().to_string_lossy()),
+                "{}",
+                e.detail
+            );
+            assert!(!e.detail.contains("img"), "{}", e.detail);
+            assert_eq!(state.settings.get().java_override, before);
+        }
+    }
+
+    #[test]
+    fn a_stored_java_path_is_checked_for_display_without_being_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let shown = |stored: PathBuf| {
+            state
+                .settings
+                .update(|s| {
+                    s.java_override = Some(stored);
+                    Ok(())
+                })
+                .unwrap();
+            settings_get_impl(&state).unwrap().java_override.unwrap()
+        };
+        let start = std::time::Instant::now();
+        let unc = shown(PathBuf::from(r"\\192.0.2.1\share\java.exe"));
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        assert_eq!(unc.problem, Some(JavaProblem::Location));
+        assert_eq!(unc.path, r"\\192.0.2.1\share\java.exe");
+        assert_eq!(
+            shown(dir.path().join("gone").join("java.exe")).problem,
+            Some(JavaProblem::Missing)
+        );
+        assert_eq!(
+            shown(PathBuf::from(r"C:\Windows\notepad.exe")).problem,
+            Some(JavaProblem::Name)
+        );
+        // A file that would hang if it were run: showing it is instant.
+        let hangs = fake(dir.path(), "jdk", "java.exe", "sleep 60000\n");
+        let start = std::time::Instant::now();
+        assert_eq!(shown(hangs).problem, None);
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn only_one_java_dialog_at_a_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = state_in(dir.path());
+        let first = state.java_dialog.try_claim().unwrap();
+        assert!(state.java_dialog.try_claim().is_none());
+        drop(first);
+        assert!(state.java_dialog.try_claim().is_some());
     }
 }

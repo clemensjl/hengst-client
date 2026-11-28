@@ -39,7 +39,9 @@ describe.each([
     const nav = screen.getByRole("navigation", { name: "Hauptnavigation" });
     const items = within(nav).getAllByRole("button");
     expect(items.map((b) => b.getAttribute("aria-label") ?? b.textContent)).toEqual([
+      "Spielen",
       "Instanzen",
+      "Log",
       "Einstellungen",
     ]);
     expect(items.filter((b) => b.getAttribute("aria-current") === "page")).toHaveLength(1);

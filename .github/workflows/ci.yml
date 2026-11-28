@@ -64,11 +64,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: apps/desktop/.nvmrc
+          cache: pnpm
+          cache-dependency-path: apps/desktop/pnpm-lock.yaml
       - run: pnpm -C apps/desktop install --frozen-lockfile
       - run: pnpm -C apps/desktop typecheck
+      # Includes licenses.test.ts: it hashes the lock files, about.toml and the generator, so a stale
+      # third-party license list fails here without cargo-about on the runner.
       - run: pnpm -C apps/desktop test
       - run: pnpm -C apps/desktop format:check
-      - run: pnpm -C apps/desktop build
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # The app as `tauri build` makes it (frontend from beforeBuildCommand, custom-protocol), debug,
+      # without installers. Output stays in target/, which is git-ignored; the app is not started.
+      - run: pnpm -C apps/desktop tauri build --debug --no-bundle
 
   prepare-matrix:
     # Hits live third-party services and "latest" moves upstream: weekly and on demand only.
@@ -104,6 +112,70 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo run --release -p hengst-cli -- --home "${{ runner.temp }}/hengst" launch ${{ matrix.version }} --loader ${{ matrix.loader }} --offline Dev --dry-run
+
+  resolve-matrix:
+    # Pull requests only: the cheap counterpart of prepare-matrix and loader-matrix. `--resolve-only`
+    # fetches the version manifest and the loader version lists and nothing else (no libraries,
+    # assets, installers, account or Java). "latest" and the loader lists move upstream, so a
+    # failure here can come from upstream rather than from the change. No secrets are used, so it
+    # runs the same on pull requests from forks.
+    if: github.event_name == 'pull_request'
+    needs: test
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p hengst-cli
+      - env:
+          HOME_DIR: ${{ runner.temp }}/hengst
+        # The list mirrors the entries of prepare-matrix and loader-matrix (plus one Forge and one
+        # NeoForge pick): keep the three in sync.
+        run: |
+          check() {
+            local args=(launch "$1" --resolve-only)
+            if [ -n "$2" ]; then args+=(--loader "$2"); fi
+            echo "hengst ${args[*]}"
+            # stdin is the list below: hengst must not read from it.
+            target/debug/hengst --home "$HOME_DIR" "${args[@]}" < /dev/null
+          }
+          failures=()
+          while read -r version loader; do
+            if check "$version" "$loader"; then continue; fi
+            # Live third-party services: one retry after a pause.
+            echo "failed, retrying in 10 s"
+            sleep 10
+            if ! check "$version" "$loader"; then failures+=("$version${loader:+ $loader}"); fi
+          done <<'EOF'
+          rd-132211
+          a1.2.6
+          b1.7.3
+          1.2.5
+          1.5.2
+          1.7.10
+          1.8.9
+          1.12.2
+          1.16.5
+          1.20.4
+          1.21.11
+          latest
+          latest-snapshot
+          1.21.11 fabric
+          latest fabric
+          1.21.11 quilt
+          1.8.9 legacy-fabric
+          1.12.2 legacy-fabric
+          1.20.1 forge
+          1.21.1 neoforge
+          EOF
+          if [ ${#failures[@]} -gt 0 ]; then
+            echo "resolve failed for ${#failures[@]} entries:"
+            printf '  %s\n' "${failures[@]}"
+            exit 1
+          fi
 
   mod:
     # The companion mod under mod/. The workflow triggers stay as they are; the changes step below makes this job

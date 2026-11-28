@@ -58,7 +58,7 @@ export function parseListenerPids(stdout: string): number[] {
  * Runs a command in a fresh Windows PowerShell and resolves with its output; a non-zero exit is
  * an error. A cold start plus the NetTCPIP (CIM) module takes seconds on a busy machine.
  */
-function runPowerShell(command: string): Promise<string> {
+export function runPowerShell(command: string): Promise<string> {
   return new Promise((done, fail) => {
     execFile(
       "powershell.exe",
@@ -84,6 +84,8 @@ export interface GuardInput {
   dataDir: string | undefined;
   /** The tauri-driver this worker started is still running. */
   driverRunning: boolean;
+  /** What the app reports as `e2eBuild` (`app_info`): built with the `e2e` feature. */
+  e2eBuild: boolean | undefined;
 }
 
 const normalize = (p: string) =>
@@ -92,13 +94,21 @@ const normalize = (p: string) =>
     .toLowerCase();
 
 /** Why the run must stop, or `null` when the app runs on the e2e data folder behind our driver. */
-export function guardFailure({ home, dataDir, driverRunning }: GuardInput): string | null {
+export function guardFailure({
+  home,
+  dataDir,
+  driverRunning,
+  e2eBuild,
+}: GuardInput): string | null {
   if (!driverRunning) return "our tauri-driver is not running (it exited or did not start)";
   if (!home) return "there is no e2e data folder";
   if (!dataDir) return "the app reported no data folder";
   if (normalize(dataDir) !== normalize(home)) {
     return `the app runs on ${dataDir}, not on the e2e data folder`;
   }
+  // A plain debug build honours HENGST_HOME as well, but signs in with Microsoft and downloads
+  // from Mojang: a game spec would reach the real services.
+  if (e2eBuild !== true) return "the app is not an e2e build (build it with --features e2e)";
   return null;
 }
 
