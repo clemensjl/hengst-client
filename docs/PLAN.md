@@ -217,6 +217,22 @@ Stand 20.11.2026: Phase 0 und 1 erledigt (PR #1), Phase 2 (Login) umgesetzt (Mic
 
 Stand 21.11.2026: Phase 3 (Loader) umgesetzt: `hengst launch --loader` und `hengst loaders` für Fabric, Quilt, Legacy Fabric, Forge (ab 1.7.10, beide Installer-Formate) und NeoForge (ab 1.20.1). Echt gestartet auf Windows 11 (Loader meldet sich im Log, Texturen geladen, 15 s am Leben, kein Crash-Report; Offline-Entwicklungskonto, Ton aus): Fabric 1.21.11 und 26.3, Quilt 1.21.11, Legacy Fabric 1.8.9 und 1.12.2, Forge 1.7.10, 1.8.9, 1.12.2 (zwei Installer-Formate), 1.16.5, 1.20.1 und 26.3, NeoForge 1.20.1, 1.21.1 und 26.3. Nicht geprüft: Spielen, Mods, Serverbeitritt, alle übrigen Spielversionen. Forge vor 1.7.10 wird bewusst abgelehnt.
 
+### Stand Phase 4 (28.11.2026)
+
+**Umgesetzt** (Desktop-App mit Tauri 2 und React unter `apps/desktop`, Windows x64): Konten (Microsoft-Anmeldung im Browser mit PKCE oder per Code, mehrere Konten, Wechsel, Abmelden; Entwicklungskonto nur in Entwicklungs-Builds), Instanzen (Anlegen mit und ohne Loader, Liste, Löschen in den Papierkorb), Startseite (Spielen mit Fortschritt, Abbrechen, Beenden, Beenden erzwingen, Hinweis bei unerwartetem Ende), Infobereich (Fenster schließen versteckt es, solange ein Spiel läuft; Beenden fragt nach), Laufsperre gegen einen zweiten Start derselben Instanz, auch über einen Neustart der App und die CLI hinweg, Live-Log (Suche, Stufenfilter, die letzten zwei Läufe, Kopieren, Logdatei öffnen; Token schon im Kern geschwärzt), Einstellungen (Sprache, Design, Arbeitsspeicher, eigenes Java mit Pfadprüfung, Minimieren beim Start, Datenordner), Über-Bereich mit Drittlizenzen. Dazu `hengst launch --resolve-only` und eine CI mit Frontend-Tests und Debug-Build der App.
+
+**Wie geprüft:**
+
+- Automatisch: Rust-Tests des Workspace (861 mit allen Features, Dienste gemockt, `fake-java` statt Java), 860 Frontend-Tests (Vitest), Clippy und Formatprüfung. Das sind Tests gegen Mocks, keine Prüfung am echten Fenster.
+- E2E über WebDriver gegen die echte App mit `hengst-mock`: die fünf Spec-Dateien der Phase 4a (16 Tests, Konten, Anmeldung, Instanzen) liefen am 23.11. grün, auf dem Stand vor 4b.
+- In der echten App auf dem unsichtbaren Agent-Desktop angesehen: Anmeldeabläufe gegen den Mock, Instanzen anlegen, Startseite in ihren Ruhezuständen, Logansicht leer, Öffnen einer Logdatei. Aus der App wurde noch **kein Spiel gestartet**; Vorbereiten, Laufen und Beenden kennen nur die Tests.
+- Neue E2E-Specs aus Task 22 (Spielen mit `fake-java`, Live-Log unter Last, Einstellungen mit Neustart, Infobereich und Beenden, Laufsperre nach einem beendeten Launcher, Java auf einer Netzwerkfreigabe) sind geschrieben und typgeprüft, aber **noch nicht gelaufen**.
+
+**Offen:**
+
+- Task 22 Teil 2 am freien Rechner: die ganze E2E-Suite einschließlich der drei Wächterläufe; echte Spielstarts aus der App (Debug-Build mit `dev-offline`) für Vanilla 1.21.11, Fabric 1.21.11 und Forge 1.20.1 bis zum Titelbildschirm; Darstellung bei 1366 × 768 und 125 % Skalierung sowie Zoom 150 % in Mindestgröße; Tastensperre (F5, Strg+R, F12 …) im Release-Build; Titelleiste im Systemdesign; die Befundtabellen aus `produkt-regelwerk`, `break-ui`, Barrierefreiheit und `review-animations`, soweit sie die laufende App brauchen.
+- Beim Projektinhaber: Redirect-URI `http://localhost` unter "Mobile and desktop applications" in der Azure-App eintragen; Mojang-Freigabe der App-ID (bis dahin ist keine echte Anmeldung geprüft); endgültiges Logo statt des Platzhalters `apps/desktop/brand/mark.svg`; Code-Signing (nicht in Phase 4, ungesignierte Builds lösen SmartScreen-Warnungen aus, siehe 12); Entscheidung über Push und Merge der Phase-Branches; Papierkorb-Sonderfälle (Netzlaufwerk, FAT32, Richtlinien) an Testvolumes.
+
 | Phase | Inhalt | Ergebnis |
 |---|---|---|
 | 0 Vorbereitung | Name, Repo, Lizenz, Azure-Antrag, CurseForge-Antrag, CI-Gerüst | Leeres Repo mit Build und Test-Pipeline |
