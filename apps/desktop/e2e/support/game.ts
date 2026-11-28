@@ -11,7 +11,7 @@ export const START = { timeout: 60_000 };
  */
 export const GUARD_WAIT_MS = 800;
 
-export type ViewName ="Play" | "Instances" | "Log" | "Settings";
+export type ViewName = "Play" | "Instances" | "Log" | "Settings";
 
 /** Opens a view from the sidebar (its buttons are named by `aria-label`). */
 export async function openView(name: ViewName | string) {

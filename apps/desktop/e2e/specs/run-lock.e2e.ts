@@ -13,13 +13,7 @@ import {
   setScript,
   touchGameFile,
 } from "../support/app.ts";
-import {
-  GUARD_WAIT_MS,
-  mainButton,
-  openView,
-  waitReady,
-  waitRunning,
-} from "../support/game.ts";
+import { GUARD_WAIT_MS, mainButton, openView, waitReady, waitRunning } from "../support/game.ts";
 
 // One app session after another on the same data folder, in this order. The game runs in a job
 // of its own that outlives the launcher, and holds the instance's run lock. The test ends only
