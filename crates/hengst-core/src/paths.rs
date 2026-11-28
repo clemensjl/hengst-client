@@ -34,7 +34,7 @@ impl Paths {
         self.root.join("meta").join("version_manifest_v2.json")
     }
 
-    pub fn version_json(&self, id: &str) -> PathBuf {
+    pub(crate) fn version_json(&self, id: &str) -> PathBuf {
         self.root
             .join("meta")
             .join("versions")
@@ -56,7 +56,7 @@ impl Paths {
         self.root.join("assets")
     }
 
-    pub fn asset_index(&self, id: &str) -> PathBuf {
+    pub(crate) fn asset_index(&self, id: &str) -> PathBuf {
         self.assets().join("indexes").join(format!("{id}.json"))
     }
 
@@ -64,7 +64,7 @@ impl Paths {
         self.assets().join("objects").join(&hash[..2]).join(hash)
     }
 
-    pub fn log_config(&self, id: &str) -> PathBuf {
+    pub(crate) fn log_config(&self, id: &str) -> PathBuf {
         self.assets().join("log_configs").join(id)
     }
 
@@ -72,7 +72,7 @@ impl Paths {
         self.root.join("java").join(component)
     }
 
-    pub fn loader_dir(&self, loader: &str) -> PathBuf {
+    pub(crate) fn loader_dir(&self, loader: &str) -> PathBuf {
         self.root.join("meta").join("loaders").join(loader)
     }
 
@@ -82,7 +82,7 @@ impl Paths {
 
     /// Where SHA-1 values learned from `<url>.sha1` are remembered, keyed by the full artifact URL.
     /// Deliberately outside `libraries/`: a file next to a library is never read as a hash.
-    pub fn sha1_cache(&self) -> PathBuf {
+    pub(crate) fn sha1_cache(&self) -> PathBuf {
         self.root.join("meta").join("sha1")
     }
 
@@ -100,7 +100,7 @@ impl Paths {
 /// Windows would reinterpret (components ending in `.` or a space, device names such as `CON`).
 /// Empty components (leading, doubled or trailing `/`) and `.` components are refused rather than
 /// silently dropped, so the result is exactly the path that was written.
-pub fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
+pub(crate) fn join_relative(base: &Path, rel: &str) -> Result<PathBuf> {
     let unsafe_path = || Error::UnsafePath(rel.to_string());
     if rel.is_empty() || rel.contains([':', '\\']) {
         return Err(unsafe_path());
@@ -216,7 +216,7 @@ const STALE_TEMP_AGE: std::time::Duration = std::time::Duration::from_secs(10 * 
 /// Removes temp files `unique_temp` left next to `dest` by a crashed run: exactly
 /// `<file name>.<pid>.<n>.part`, from another process, untouched for `STALE_TEMP_AGE`. Only the
 /// parent directory is listed (no recursion). Best effort: failures are ignored.
-pub fn remove_stale_temps(dest: &Path) {
+pub(crate) fn remove_stale_temps(dest: &Path) {
     let (Some(dir), Some(name)) = (dest.parent(), dest.file_name().and_then(|n| n.to_str())) else {
         return;
     };
@@ -305,7 +305,7 @@ pub fn validate_id(id: &str) -> Result<()> {
 }
 
 /// A SHA-1 as 40 hex digits.
-pub fn validate_sha1(hash: &str) -> Result<()> {
+pub(crate) fn validate_sha1(hash: &str) -> Result<()> {
     if hash.len() == 40 && hash.bytes().all(|b| b.is_ascii_hexdigit()) {
         Ok(())
     } else {

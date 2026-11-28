@@ -125,7 +125,7 @@ impl Job {
 
     /// A new, unnamed job object without kill-on-close: dropping it leaves its processes
     /// running. Only for processes that must outlive the launcher (the game).
-    pub fn new_detached() -> Result<Job> {
+    pub(crate) fn new_detached() -> Result<Job> {
         Ok(Self::create_with(false)?)
     }
 
@@ -165,7 +165,8 @@ impl Job {
     /// Puts an already running child into the job. A child started without `Job::spawn` may
     /// already have started processes of its own before this call; those stay outside the job.
     /// Prefer `Job::spawn`, which has no such window.
-    pub fn assign(&self, child: &Child) -> Result<()> {
+    #[cfg(test)]
+    pub(crate) fn assign(&self, child: &Child) -> Result<()> {
         Ok(self.assign_raw(child)?)
     }
 
@@ -180,7 +181,7 @@ impl Job {
     /// `spawn` that calls `before_resume` with the child after it is in the job and before it runs
     /// its first instruction (the game's run lock is handed to it there). If that fails, the child
     /// is killed and the error returned, as for a failed assign.
-    pub fn spawn_with(
+    pub(crate) fn spawn_with(
         &self,
         cmd: &mut Command,
         before_resume: impl FnOnce(&Child) -> io::Result<()>,
@@ -208,13 +209,13 @@ impl Job {
 
     /// `terminate` that reports a failure. Terminating a job whose processes have all ended
     /// succeeds.
-    pub fn try_terminate(&self, code: u32) -> io::Result<()> {
+    pub(crate) fn try_terminate(&self, code: u32) -> io::Result<()> {
         // SAFETY: the handle is valid for the duration of the call (owned by `self`).
         check(unsafe { TerminateJobObject(self.handle.as_raw_handle(), code) })
     }
 
     /// Whether the process behind `process` (a process handle) is in this job.
-    pub fn contains(&self, process: &impl AsRawHandle) -> io::Result<bool> {
+    pub(crate) fn contains(&self, process: &impl AsRawHandle) -> io::Result<bool> {
         let mut result = 0;
         // SAFETY: both handles are valid for the duration of the call; `result` is writable.
         check(unsafe {
@@ -228,7 +229,7 @@ impl Job {
     }
 
     /// The ids of the processes in the job right now (none once they have all ended).
-    pub fn process_ids(&self) -> io::Result<Vec<u32>> {
+    pub(crate) fn process_ids(&self) -> io::Result<Vec<u32>> {
         // The list is a header of two u32 followed by usize ids; a usize buffer keeps it aligned.
         let header = std::mem::offset_of!(JOBOBJECT_BASIC_PROCESS_ID_LIST, ProcessIdList)
             / std::mem::size_of::<usize>();

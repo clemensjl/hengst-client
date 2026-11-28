@@ -854,7 +854,7 @@ impl Accounts {
     async fn microsoft_step(
         self: &Arc<Self>,
         c: &LoginCtx,
-    ) -> std::result::Result<Option<hengst_core::auth::msa::MsaTokens>, ErrorDto> {
+    ) -> std::result::Result<Option<hengst_core::auth::MsaTokens>, ErrorDto> {
         if let Some(reason) = &self.store_error {
             return Err(dto(Error::CredentialStore(reason.clone())));
         }

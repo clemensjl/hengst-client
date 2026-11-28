@@ -3,23 +3,25 @@
 pub mod browser;
 pub mod error;
 pub mod flow;
-pub mod minecraft;
-pub mod msa;
+mod minecraft;
+mod msa;
 pub mod store;
-pub mod xbox;
+mod xbox;
 
 pub use error::AuthError;
+pub use minecraft::Profile;
+pub use msa::{DeviceCode, MsaTokens};
 
 use crate::download::http_client;
 use crate::{Error, Result};
 
 /// Azure application (client) id of Hengst Client. Not a secret.
-pub const CLIENT_ID: Option<&str> = Some("7cad9d53-b0ce-44b1-9ef3-afa798da99c2");
-pub const CLIENT_ID_ENV: &str = "HENGST_MS_CLIENT_ID";
-pub const SCOPE: &str = "XboxLive.signin offline_access";
+pub(crate) const CLIENT_ID: Option<&str> = Some("7cad9d53-b0ce-44b1-9ef3-afa798da99c2");
+pub(crate) const CLIENT_ID_ENV: &str = "HENGST_MS_CLIENT_ID";
+pub(crate) const SCOPE: &str = "XboxLive.signin offline_access";
 
 /// Environment value (trimmed, non-empty) wins over the built-in id.
-pub fn resolve_client_id(env: Option<String>, builtin: Option<&str>) -> Result<String> {
+pub(crate) fn resolve_client_id(env: Option<String>, builtin: Option<&str>) -> Result<String> {
     env.map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty())
         .or_else(|| builtin.map(str::to_string))
@@ -155,6 +157,34 @@ mod tests {
             resolve_client_id(None, CLIENT_ID).unwrap(),
             "7cad9d53-b0ce-44b1-9ef3-afa798da99c2"
         );
+    }
+
+    #[test]
+    fn public_token_types_hide_their_secrets_in_debug() {
+        use crate::secret::Secret;
+        let tokens = MsaTokens {
+            access_token: Secret::new("msa-access-7f3a"),
+            refresh_token: Secret::new("msa-refresh-7f3a"),
+        };
+        let code = DeviceCode {
+            device_code: Secret::new("device-code-7f3a"),
+            user_code: "ABCD-EFGH".into(),
+            verification_uri: "https://www.microsoft.com/link".into(),
+            expires_in: 900,
+            interval: 5,
+        };
+        let session = flow::LoginSession {
+            profile: Profile {
+                id: "a".repeat(32),
+                name: "Steve".into(),
+            },
+            xuid: "1".into(),
+            minecraft_token: Secret::new("mc-token-7f3a"),
+            minecraft_expires_at: 1,
+            refresh_token: Secret::new("refresh-7f3a"),
+        };
+        let shown = format!("{tokens:?} {code:?} {session:?}");
+        assert!(!shown.contains("7f3a"), "{shown}");
     }
 
     #[test]

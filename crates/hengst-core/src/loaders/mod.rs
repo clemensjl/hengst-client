@@ -1,6 +1,6 @@
-pub mod fabric;
+pub(crate) mod fabric;
 pub mod forge;
-pub mod merge;
+pub(crate) mod merge;
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -142,7 +142,7 @@ pub struct ResolvedLoader {
 
 /// Everything `prepare` needs from a resolved loader.
 #[derive(Debug)]
-pub struct LoaderSetup {
+pub(crate) struct LoaderSetup {
     pub resolved: ResolvedLoader,
     /// The loader's launcher profile, to be merged onto the vanilla version.
     pub child: VersionJson,
@@ -197,7 +197,7 @@ fn older_than(game: &str, minor: u64, patch: u64) -> Option<bool> {
 }
 
 /// `NoLoaderVersions` with a reason for the common mistakes, decided without any request.
-pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
+pub(crate) fn no_versions(kind: LoaderKind, game: &str) -> Error {
     let hint = match kind {
         LoaderKind::NeoForge if older_than(game, 20, 1) == Some(true) => {
             Some(LoaderHint::NeoForgeStartsAt1201)
@@ -219,7 +219,7 @@ pub fn no_versions(kind: LoaderKind, game: &str) -> Error {
 
 /// Resolves a loader request for a game version: picks the build and fetches its profile.
 /// Fails before anything is downloaded.
-pub async fn prepare_loader(
+pub(crate) async fn prepare_loader(
     dl: &Downloader,
     paths: &Paths,
     ep: &LoaderEndpoints,
@@ -425,7 +425,7 @@ fn cmp_segments(a: &str, b: &str, missing: &str) -> Ordering {
 }
 
 /// Total ordering for loader version strings. Never panics, whatever the input.
-pub fn compare_versions(a: &str, b: &str) -> Ordering {
+pub(crate) fn compare_versions(a: &str, b: &str) -> Ordering {
     fn split(s: &str) -> (&str, Option<&str>) {
         let s = s.split('+').next().unwrap_or("");
         match s.split_once('-') {
@@ -444,7 +444,7 @@ pub fn compare_versions(a: &str, b: &str) -> Ordering {
     })
 }
 
-pub fn sort_newest_first(v: &mut [LoaderVersion]) {
+pub(crate) fn sort_newest_first(v: &mut [LoaderVersion]) {
     v.sort_by(|a, b| compare_versions(&b.id, &a.id));
 }
 

@@ -7,9 +7,9 @@ use hengst_core::launch::{
 };
 use hengst_core::libraries::maven_path;
 use hengst_core::loaders::forge;
-use hengst_core::loaders::forge::processors::ProcessRunner;
 use hengst_core::loaders::{LoaderEndpoints, LoaderKind, LoaderRequest};
 use hengst_core::paths::Paths;
+use hengst_core::process::ProcessRunner;
 use hengst_core::progress::{Progress, ProgressSink};
 use hengst_core::Error;
 use serde_json::{json, Value};

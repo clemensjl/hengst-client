@@ -10,7 +10,7 @@ use serde_json::json;
 const MINECRAFT_RELYING_PARTY: &str = "rp://api.minecraftservices.com/";
 
 #[derive(Debug, Clone)]
-pub struct XboxToken {
+pub(crate) struct XboxToken {
     pub token: Secret,
     pub uhs: String,
     pub xid: Option<String>,
@@ -67,7 +67,7 @@ fn parse_token(resp: XboxResponse) -> Result<XboxToken> {
 
 impl MicrosoftAuth {
     /// Exchange a Microsoft access token for an Xbox Live user token.
-    pub async fn xbox_user_token(&self, msa_access: &Secret) -> Result<XboxToken> {
+    pub(crate) async fn xbox_user_token(&self, msa_access: &Secret) -> Result<XboxToken> {
         let url = format!("{}/user/authenticate", self.ep.xbox_user);
         let body = json!({
             "Properties": {
@@ -91,7 +91,7 @@ impl MicrosoftAuth {
     }
 
     /// Exchange an Xbox Live user token for an XSTS token for Minecraft.
-    pub async fn xsts_token(&self, user: &XboxToken) -> Result<XboxToken> {
+    pub(crate) async fn xsts_token(&self, user: &XboxToken) -> Result<XboxToken> {
         let url = format!("{}/xsts/authorize", self.ep.xsts);
         let body = json!({
             "Properties": {

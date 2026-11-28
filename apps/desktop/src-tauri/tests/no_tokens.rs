@@ -1,10 +1,8 @@
 //! No token type can be serialized, and nothing the web view receives contains a token.
 
 use hengst_core::auth::flow::LoginSession;
-use hengst_core::auth::minecraft::Profile;
-use hengst_core::auth::msa::MsaTokens;
 use hengst_core::auth::store::{AccountStore, MemorySecretStore};
-use hengst_core::auth::{AuthError, MicrosoftAuth};
+use hengst_core::auth::{AuthError, MicrosoftAuth, MsaTokens, Profile};
 use hengst_core::launch::Endpoints;
 use hengst_core::paths::Paths;
 use hengst_core::secret::Secret;

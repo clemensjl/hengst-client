@@ -27,7 +27,7 @@ pub use self::windows::is_running;
 pub(crate) use self::windows::RunLock;
 
 /// The run lock file of instance `id` (an instance folder name).
-pub fn run_lock_path(paths: &Paths, id: &str) -> Result<PathBuf> {
+pub(crate) fn run_lock_path(paths: &Paths, id: &str) -> Result<PathBuf> {
     validate_id(id)?;
     Ok(paths.tmp().join(format!("run-{id}.lock")))
 }

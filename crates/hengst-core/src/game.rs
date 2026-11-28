@@ -26,11 +26,11 @@ pub use self::windows::{spawn_game, GameProcess};
 pub type LineSink = Arc<dyn Fn(LogLine) + Send + Sync>;
 
 /// Raw output lines longer than this are cut (after redaction) and end with `CUT_MARKER`.
-pub const LINE_LIMIT: usize = 8 * 1024;
+pub(crate) const LINE_LIMIT: usize = 8 * 1024;
 /// Appended to a cut line.
 pub const CUT_MARKER: &str = " [line cut: longer than 8 KiB]";
 /// Launcher log files kept per instance (the newest).
-pub const KEEP_GAME_LOGS: usize = 10;
+pub(crate) const KEEP_GAME_LOGS: usize = 10;
 
 /// Secret values shorter than this are not redacted: no real access token is that short (they
 /// are JWTs of several hundred characters), and replacing, say, `0` everywhere would mangle the
@@ -49,7 +49,7 @@ const MIN_FRAGMENT: usize = 8;
 /// an inner piece of one (each at least 8 bytes, ignoring surrounding whitespace). At most 7 bytes
 /// of a secret can survive on either side of such a break.
 #[derive(Clone)]
-pub struct Redactor {
+pub(crate) struct Redactor {
     /// Every form of every secret, longest first, each at least `MIN_SECRET_LEN` bytes, as a
     /// searcher built once.
     patterns: Vec<Finder<'static>>,
@@ -65,7 +65,7 @@ impl fmt::Debug for Redactor {
 
 impl Redactor {
     /// The redactor for the account the game was prepared for.
-    pub fn for_prepared(p: &Prepared) -> Redactor {
+    pub(crate) fn for_prepared(p: &Prepared) -> Redactor {
         Self::for_account(&p.account)
     }
 
@@ -92,7 +92,7 @@ impl Redactor {
     }
 
     /// `text` with every secret replaced by `<redacted>`, line by line.
-    pub fn redact(&self, text: &str) -> String {
+    pub(crate) fn redact(&self, text: &str) -> String {
         let mut out = Vec::with_capacity(text.len());
         for (i, line) in text.as_bytes().split(|&b| b == b'\n').enumerate() {
             if i > 0 {

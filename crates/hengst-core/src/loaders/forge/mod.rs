@@ -1,7 +1,7 @@
 //! Version lists and installers for Forge and NeoForge.
 
-pub mod installer;
-pub mod processors;
+pub(crate) mod installer;
+pub(crate) mod processors;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -25,7 +25,7 @@ use crate::{Error, Result};
 
 /// Forge has installers from 1.7.10 upward. IDs that are not of the form `1.X[.Y]` (snapshots,
 /// year-based versions) are not refused here.
-pub fn forge_supports(game: &str) -> bool {
+pub(crate) fn forge_supports(game: &str) -> bool {
     let parts: Vec<Option<u64>> = game.split('.').map(|p| p.parse().ok()).collect();
     match parts.as_slice() {
         [Some(1), Some(x)] => (1, *x, 0) >= (1, 7, 10),
@@ -36,7 +36,7 @@ pub fn forge_supports(game: &str) -> bool {
 
 /// The game version a NeoForge build belongs to, or `None` for snapshots and the pre-release
 /// experiments that are not tied to a release.
-pub fn neoforge_game_version(version: &str) -> Option<String> {
+pub(crate) fn neoforge_game_version(version: &str) -> Option<String> {
     if version.contains('+') || version.starts_with("0.") {
         return None;
     }
@@ -82,7 +82,7 @@ struct MavenVersions {
 }
 
 /// Forge builds for a game version, newest first. A build is stable when it is the recommended one.
-pub async fn list_forge(
+pub(crate) async fn list_forge(
     client: &reqwest::Client,
     ep: &LoaderEndpoints,
     game: &str,
@@ -120,7 +120,7 @@ pub async fn list_forge(
 
 /// NeoForge builds for a game version, newest first. A build is stable when its version has no
 /// pre-release marker. Snapshot builds are not listed.
-pub async fn list_neoforge(
+pub(crate) async fn list_neoforge(
     client: &reqwest::Client,
     ep: &LoaderEndpoints,
     game: &str,
@@ -178,7 +178,7 @@ fn installer_coords(kind: LoaderKind, game: &str, maven: &str) -> Result<String>
 
 /// Download URL of the installer for a Forge or NeoForge build (`maven` is the full Maven version).
 /// Any other loader kind is `Error::LoaderUnsupported`.
-pub fn installer_url(
+pub(crate) fn installer_url(
     kind: LoaderKind,
     game: &str,
     maven: &str,
@@ -194,7 +194,7 @@ pub fn installer_url(
 /// Downloads the installer into the shared libraries directory (at its Maven path), verified
 /// against the `.sha1` the Maven repository publishes next to it. A local copy is hashed again
 /// and reused only when it matches. Returns the file and the SHA-1 it was verified against.
-pub async fn fetch_installer(
+pub(crate) async fn fetch_installer(
     dl: &Downloader,
     paths: &Paths,
     kind: LoaderKind,
@@ -256,7 +256,7 @@ fn named_candidates(kind: LoaderKind, game: &str, requested: &str) -> Vec<Loader
 /// without an installer is `Error::UnknownLoaderVersion`. The gates of the version list apply
 /// first: Forge before 1.7.10 is unsupported, and a NeoForge build must belong to `game` (no
 /// snapshot builds).
-pub async fn fetch_named(
+pub(crate) async fn fetch_named(
     dl: &Downloader,
     paths: &Paths,
     ep: &LoaderEndpoints,
@@ -304,7 +304,7 @@ pub async fn fetch_named(
 
 /// A Forge or NeoForge build whose installer was fetched, verified and read.
 #[derive(Clone, Debug)]
-pub struct ForgeInstall {
+pub(crate) struct ForgeInstall {
     pub kind: LoaderKind,
     pub game: String,
     /// Full Maven version of the requested build: picked from the validated version list, or
@@ -403,7 +403,7 @@ pub(crate) fn lock_file(
 
 /// Every path a processor gets lies under the launcher directory, and the planner refuses `;` and
 /// `,` in path arguments. Such a directory is refused here, before anything is fetched.
-pub fn check_home(paths: &Paths, kind: LoaderKind, game: &str) -> Result<()> {
+pub(crate) fn check_home(paths: &Paths, kind: LoaderKind, game: &str) -> Result<()> {
     let root = std::path::absolute(paths.root())?;
     let text = root.to_string_lossy();
     if let Some(c) = text.chars().find(|c| matches!(c, ';' | ',')) {
@@ -436,7 +436,7 @@ fn check_installer(installer: &Path, sha1: &str) -> Result<()> {
 /// extracted right away, because the version info it rewrites decides which libraries are
 /// downloaded. That extraction needs no lock: it replaces the jar only when it differs, through a
 /// temp file and a rename.
-pub fn open_installer(
+pub(crate) fn open_installer(
     paths: &Paths,
     kind: LoaderKind,
     game: &str,
@@ -507,7 +507,7 @@ pub fn install_log(paths: &Paths, kind: LoaderKind, id: &str) -> PathBuf {
 /// `java` is the runtime the game itself uses. Profiles without client processors (legacy,
 /// spec 0) have no processor stage and no marker: the provided-artifact check is all.
 #[allow(clippy::too_many_arguments)] // one call site; the inputs are independent
-pub fn finish_install(
+pub(crate) fn finish_install(
     fi: &ForgeInstall,
     merged: &VersionJson,
     paths: &Paths,

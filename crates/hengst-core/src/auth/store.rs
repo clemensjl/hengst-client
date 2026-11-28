@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Service name of every Credential Manager entry.
-pub const SERVICE: &str = "hengst-client";
+pub(crate) const SERVICE: &str = "hengst-client";
 
 const FILE_VERSION: u32 = 1;
 

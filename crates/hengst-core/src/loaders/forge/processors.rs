@@ -764,6 +764,7 @@ fn processor_command(java: &Path, c: &ProcessorCommand, cwd: &Path) -> Result<Co
 /// processor and the log: a non-zero exit is `Error::Processor`, a cancelled run
 /// (`ErrorKind::Interrupted` from the runner) `Error::Cancelled`, everything else
 /// `Error::InstallFailed`.
+#[cfg(test)]
 pub fn run_processors(
     runner: &dyn ProcessRunner,
     java: &Path,

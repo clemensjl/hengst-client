@@ -80,7 +80,7 @@ pub struct LogLine {
 /// What the parser reads from the output; `game` numbers it and adds the stream to make a
 /// `LogLine`.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Entry {
+pub(crate) struct Entry {
     pub time: Option<LogTime>,
     pub level: Option<Level>,
     pub thread: Option<String>,
@@ -124,7 +124,7 @@ const MAX_EVENT_LINES: usize = 4096;
 /// Turns the lines of one stream into entries. Feed it every line (without the line break) in
 /// order with `push`, and call `finish` when the stream ends.
 #[derive(Debug, Default)]
-pub struct Parser {
+pub(crate) struct Parser {
     /// Lines of a log4j event whose closing tag has not come yet, with their cut flag.
     pending: Vec<(String, bool)>,
     pending_bytes: usize,
@@ -137,6 +137,7 @@ impl Parser {
 
     /// The entries `line` completes: none while a log4j event is still open, one for a plain
     /// line or a closed event, several when an unreadable event degrades to plain lines.
+    #[cfg(test)]
     pub fn push(&mut self, line: &str) -> Vec<Entry> {
         self.push_line(line, false)
     }

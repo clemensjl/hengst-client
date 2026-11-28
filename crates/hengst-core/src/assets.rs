@@ -21,6 +21,10 @@ pub struct AssetIndex {
 #[derive(Deserialize, Debug, Clone)]
 pub struct AssetObject {
     pub hash: String,
+    #[expect(
+        dead_code,
+        reason = "format field: parsing requires it, nothing reads it"
+    )]
     pub size: u64,
 }
 

@@ -4,9 +4,8 @@
 #![cfg(windows)]
 
 use hengst_core::auth::flow::{launch_account, LoginSession};
-use hengst_core::auth::minecraft::Profile;
 use hengst_core::auth::store::{AccountStore, MemorySecretStore};
-use hengst_core::auth::unix_now;
+use hengst_core::auth::{unix_now, Profile};
 use hengst_core::game::{spawn_game, GameProcess, LineSink};
 use hengst_core::gamelog::{Level, LogLine, Stream};
 use hengst_core::instances;

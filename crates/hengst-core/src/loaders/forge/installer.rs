@@ -35,6 +35,10 @@ pub const MAX_ENTRIES: usize = 4096;
 #[derive(Deserialize, Clone, Debug)]
 pub struct SidedData {
     pub client: String,
+    #[expect(
+        dead_code,
+        reason = "format field: parsing requires it, nothing reads it"
+    )]
     pub server: String,
 }
 
@@ -52,6 +56,13 @@ pub struct Processor {
 
 #[derive(Deserialize, Clone, Debug)]
 pub struct ModernProfile {
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "format field: parsing requires it, only tests read it"
+        )
+    )]
     pub spec: u32,
     pub minecraft: String,
     pub json: String,

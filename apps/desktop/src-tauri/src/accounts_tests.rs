@@ -1,6 +1,6 @@
 use super::*;
-use hengst_core::auth::minecraft::Profile;
 use hengst_core::auth::store::{secret_key, MemorySecretStore, SecretKind};
+use hengst_core::auth::Profile;
 use hengst_testkit::{
     auth_endpoints, browser_visit, AuthScenario, MockAccount, Services, PLAYER_A, PLAYER_B,
 };

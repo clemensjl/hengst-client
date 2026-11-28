@@ -2,7 +2,7 @@ use serde::Deserialize;
 use std::fmt;
 
 /// Placeholder printed instead of a secret value.
-pub const REDACTED: &str = "<redacted>";
+pub(crate) const REDACTED: &str = "<redacted>";
 
 /// A confidential string (for example an access token). Never printed by
 /// `Debug`, has no `Display` and cannot be serialized.

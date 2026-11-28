@@ -9,7 +9,7 @@ use crate::secret::Secret;
 use crate::{Error, Result};
 
 /// Refresh when less than this many seconds of the Minecraft token remain.
-pub const REFRESH_MARGIN_SECS: u64 = 3600;
+pub(crate) const REFRESH_MARGIN_SECS: u64 = 3600;
 
 pub fn needs_refresh(account: &StoredAccount, now: u64) -> bool {
     account.minecraft_expires_at <= now.saturating_add(REFRESH_MARGIN_SECS)
