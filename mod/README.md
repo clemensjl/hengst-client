@@ -104,9 +104,9 @@ HUD modules added in M1a, all off at first start (enable them in the settings): 
 
 ## What was verified (M1a)
 
-Checked on 2026-11-22 and 2026-11-23, one machine (AMD Ryzen 9 5900X, 32 GB, Windows 11 Pro).
+Checked on 2026-11-22, 2026-11-23 and 2026-11-28, one machine (AMD Ryzen 9 5900X, 32 GB, Windows 11 Pro).
 
-In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9; both phases green on commit 09348d9 on all three versions, 2026-11-23: 26.3 49 + 5 checks, 1.21.11 49 + 5, 1.8.9 54 + 5; functional runs only, the machine was not idle, so their cost numbers are not used): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, Coordinates, Direction and Speed empty while the game rule for reduced debug info is on and back when it is off, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
+In-game suites on the development classes (`clientGameTests` on 1.21.11 and 26.3, `gameTests` on 1.8.9; both phases green on commit 09348d9 on all three versions, 2026-11-23: 26.3 49 + 5 checks, 1.21.11 49 + 5, 1.8.9 54 + 5; functional runs only, the machine was not idle, so their cost numbers are not used; after the merge of the launcher's Phase 4a (d6a165f, no change under `mod/`) the 1.21.11 suite passed again, 49 + 5, on 2026-11-28): every M0 and M1a module in a real world, checked by the core's text and by framebuffer pixels (for ping and server address only that nothing is drawn in single player), the settings with groups, hint and scrolling, the stopwatch keys, the controls screen with the translated binding names in English and German, a language switch in a running world, Coordinates, Direction and Speed empty while the game rule for reduced debug info is on and back when it is off, the saved layout after a restart, zero allocation in steady-state frames and in the key dispatch (asserted window from 90 s after game start), and the cost per module.
 
 Cost per module per frame (spec 8.8; time the core spends per module, submit time on 1.21.11 and 26.3, including the GL calls on 1.8.9; median of the runs' medians on an otherwise idle machine, in microseconds):
 
@@ -132,7 +132,16 @@ Also not verified yet:
 - The Server address module on Realms: it may show the raw host address of the Realms server (the module is off by default; the address is never logged or stored).
 - The 1.8.9 suite against the shipped jar: on the shipped 1.8.9 jar the stopwatch (bind, start, stop, reset), the language switch, and the settings groups and scroll bar at 320 x 240 were not exercised (only on the development classes).
 - On 26.3 without the test jar: the rewrite of an M0 profile and the seven modules drawn from a pre-seeded profile.
-- The frame-rate comparison without the mod, with the four M0 modules and with all eleven (plan task 19, step 2.7): not yet measured.
+
+Frame-rate comparison (plan task 19, step 2.7; 2026-11-28, commit d6a165f, the `dist/` jars of that commit). Method as in M0 (Task 14 report, section D): the shipped jar in a fresh instance started by the Hengst launcher (`dev-offline` debug build of the CLI), player standing still in the same copied flat world with the same view (1.8.9: the harness world `hengst-test`, Peaceful), window 854 x 480 unfocused, GUI scale 2, render distance 8, VSync off, frame limit unlimited, sound muted. 30 s after joining, vanilla's own once-per-second FPS field was read 36 times over JDWP (no breakpoints); one run's value is the mean of its 36 samples. Conditions: N = no Hengst jar (API mod only), M = Hengst with the four M0 modules (first start), A = Hengst with all eleven modules on (pre-seeded profile). Three rounds of N, M, A per version, alternating, one game at a time.
+
+| Version | N, FPS: median of runs (range) | M: median (range) | A: median (range) | Runs N / M / A | M vs N | A vs N |
+|---|---|---|---|---|---|---|
+| 1.8.9 | 986.1 (963.1 to 1096.4) | 927.4 (921.2 to 954.0) | 924.5 (912.5 to 955.6) | 3 / 3 / 3 | -6.0 % | -6.2 % |
+| 1.21.11 | 1315.1 (1163.4 to 1347.6) | 1205.2 (1122.2 to 1362.1) | 1211.0 (1162.9 to 1259.0) | 3 / 3 / 2 | not resolved | not resolved |
+| 26.3 | 1280.2 (918.8 to 1334.8) | 1109.7 (1022.4 to 1276.8) | 1226.6 (1102.3 to 1261.8) | 3 / 3 / 3 | not resolved | not resolved |
+
+Reading: only on 1.8.9 are all six runs with the mod below all three runs without it; the difference of the medians is about 64 to 68 microseconds per frame at these rates, larger than the 19 to 47 microseconds the in-game cost probe measured for the same module sets. By this method the 2 % limit of spec 8.8 is exceeded on 1.8.9 at about 950 FPS; the same time per frame at 144 FPS would be about 1 %. On 1.21.11 and 26.3 the runs of one condition spread more (up to 45 % on 26.3 N) than the conditions differ, so this method resolves no cost there; the medians are listed but no percentage is claimed. The machine was not fully idle: a development server of another project (node) used about 12 % of the CPU in every run, and the GPU showed about 37 % load before the series without any game running; both were the same across conditions but add noise. Absolute rates are about half of the M0 measurement (2026-11-21) on the same machine and not comparable with it. One 1.21.11 A run was discarded (the rate fell to the 10 FPS of an inactive window after 24 s). Raw data per run (samples, CPU snapshot, log, F2 screenshot): kept locally in the development checkout, not in the repository.
 
 ## What was verified (M0, 2026-11-21)
 
