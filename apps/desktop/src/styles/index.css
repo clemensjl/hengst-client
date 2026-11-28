@@ -318,12 +318,35 @@
 }
 
 /* Nothing animates while the last input was the keyboard (DESIGN.md 8, Appendix A). Sonner keeps
-   its own timing, and the spinner is a progress indicator, not a transition: it keeps turning. */
-html[data-input="keyboard"] *:not([data-sonner-toaster], [data-sonner-toaster] *, .spinner),
+   its own timing, and the spinner and the launch progress fill are progress indicators, not
+   transitions: they keep moving. */
+html[data-input="keyboard"]
+  *:not([data-sonner-toaster], [data-sonner-toaster] *, .spinner, .motion-progress),
 html[data-input="keyboard"] *::before,
 html[data-input="keyboard"] *::after {
   transition: none !important;
   animation: none !important;
+}
+
+/* DESIGN.md 8 and 10.2: the Play button scales to 0.98 while pressed, over --dur-press with the
+   one curve, and back the same way; its fill still switches at once on pointer-down (0 ms for the
+   colors, as every button). Not layered on purpose: it has to win over the button's own
+   transition utilities, which set one duration for all properties. Reduced motion: no scale. */
+.play-press {
+  transition-property: background-color, color, border-color, scale;
+  transition-duration: var(--dur-press);
+  transition-timing-function: var(--ease-out);
+}
+
+.play-press:active {
+  scale: 0.98;
+  transition-duration: 0ms, 0ms, 0ms, var(--dur-press);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .play-press:active {
+    scale: none;
+  }
 }
 
 /* DESIGN.md 10.15: a spinner turns linearly at 800 ms per turn and is hidden under reduced motion
@@ -339,6 +362,21 @@ html[data-input="keyboard"] *::after {
 
   @media (prefers-reduced-motion: reduce) {
     display: none;
+  }
+}
+
+/* DESIGN.md 8: the launch progress fill grows from the left edge as scaleX, linearly over
+   --dur-progress (constant motion, not an ease); under reduced motion it jumps. Like the spinner
+   it shows progress, so the keyboard rule above leaves it alone. Set the fraction with
+   `transform: scaleX(f)` on the element. */
+@utility motion-progress {
+  transform-origin: left;
+  transition-property: transform;
+  transition-duration: var(--dur-progress);
+  transition-timing-function: linear;
+
+  @media (prefers-reduced-motion: reduce) {
+    transition: none;
   }
 }
 

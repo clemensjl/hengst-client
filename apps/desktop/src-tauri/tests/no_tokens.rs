@@ -1,10 +1,8 @@
 //! No token type can be serialized, and nothing the web view receives contains a token.
 
 use hengst_core::auth::flow::LoginSession;
-use hengst_core::auth::minecraft::Profile;
-use hengst_core::auth::msa::MsaTokens;
 use hengst_core::auth::store::{AccountStore, MemorySecretStore};
-use hengst_core::auth::{AuthError, MicrosoftAuth};
+use hengst_core::auth::{AuthError, MicrosoftAuth, MsaTokens, Profile};
 use hengst_core::launch::Endpoints;
 use hengst_core::paths::Paths;
 use hengst_core::secret::Secret;
@@ -12,9 +10,14 @@ use hengst_core::Error;
 use hengst_desktop_lib::accounts::{Accounts, BrowserOpener, Operations};
 use hengst_desktop_lib::commands::app::app_info_impl;
 use hengst_desktop_lib::commands::instances::{instances_list_impl, loader_kinds_impl};
+use hengst_desktop_lib::commands::play::play_impl;
 use hengst_desktop_lib::dto::accounts::{LoginEvent, LoginMethod};
-use hengst_desktop_lib::dto::settings::SettingsDto;
+use hengst_desktop_lib::dto::log::{LogBatch, LogFilter};
+use hengst_desktop_lib::dto::play::{GameStateDto, PlayEvent};
+use hengst_desktop_lib::dto::settings::{JavaChoice, SettingsDto};
 use hengst_desktop_lib::error::error_dto;
+use hengst_desktop_lib::events::AppEvent;
+use hengst_desktop_lib::play::{force_stop, stop};
 use hengst_desktop_lib::settings::{Settings, SettingsHandle};
 use hengst_desktop_lib::state::AppState;
 use hengst_testkit::{auth_endpoints, browser_visit, mount_auth, AuthScenario, MockAccount};
@@ -111,6 +114,203 @@ async fn run_mock_login_with_token(method: LoginMethod) -> Vec<String> {
         .collect()
 }
 
+struct SharedStore(Arc<MemorySecretStore>);
+
+impl hengst_core::auth::store::SecretStore for SharedStore {
+    fn get(&self, key: &str) -> hengst_core::Result<Option<Secret>> {
+        self.0.get(key)
+    }
+    fn set(&self, key: &str, value: &Secret) -> hengst_core::Result<()> {
+        self.0.set(key, value)
+    }
+    fn delete(&self, key: &str) -> hengst_core::Result<()> {
+        self.0.delete(key)
+    }
+}
+
+/// Starts an instance for an account whose token is `FAKE` (mock Mojang, `fake-java` printing its
+/// arguments twice) and returns every play event, game state and stop answer as serialized for the
+/// web view, plus the output lines and what the live log sends: the batches of an attach (its
+/// backfill holds the first printout, its live part the second) and a copy of the whole log.
+async fn run_mock_play_with_token() -> Vec<String> {
+    let server = MockServer::builder().start().await;
+    hengst_testkit::mount_mojang(&server).await;
+    let dir = tempfile::tempdir().unwrap();
+    let paths = Paths::new(dir.path().join("home"));
+    std::fs::create_dir_all(paths.root()).unwrap();
+    let secrets = Arc::new(MemorySecretStore::default());
+    let store = AccountStore::new(paths.accounts_file(), SharedStore(secrets.clone()));
+    store
+        .save_session(&LoginSession {
+            profile: Profile {
+                id: "0123456789abcdef0123456789abcdef".into(),
+                name: "Mira_K".into(),
+            },
+            xuid: "2535".into(),
+            minecraft_token: Secret::new(FAKE),
+            minecraft_expires_at: u64::MAX,
+            refresh_token: Secret::new(format!("{FAKE}-refresh")),
+        })
+        .unwrap();
+    store
+        .set_default("0123456789abcdef0123456789abcdef")
+        .unwrap();
+    let accounts = Accounts::new(
+        &paths,
+        Box::new(SharedStore(secrets)),
+        None,
+        Arc::new(|_| Err(())),
+    );
+    let state = AppState::with_accounts(
+        paths.clone(),
+        hengst_testkit::endpoints(&server.uri()),
+        accounts,
+    );
+    state
+        .settings
+        .update(|s| {
+            s.java_override = Some(hengst_testkit::fake_java_exe());
+            Ok(())
+        })
+        .unwrap();
+    let app_events: Arc<Mutex<Vec<String>>> = Arc::default();
+    let kept = app_events.clone();
+    state.events.subscribe(Arc::new(move |e: AppEvent| {
+        kept.lock()
+            .unwrap()
+            .push(serde_json::to_string(&e).unwrap())
+    }));
+    let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+    let kept = lines.clone();
+    state
+        .game
+        .set_line_handler(Arc::new(move |_, l| kept.lock().unwrap().push(l.message)));
+    let inst = hengst_core::instances::create(
+        &paths,
+        &hengst_core::instances::NewInstance {
+            name: "Mira_K world".into(),
+            game: "9.9".into(),
+            loader: None,
+        },
+        1,
+    )
+    .unwrap();
+    std::fs::write(
+        inst.dir.join("fake-java.txt"),
+        "args\nwait go\nargs\nsleep 60000\n",
+    )
+    .unwrap();
+    let events: Arc<Mutex<Vec<PlayEvent>>> = Arc::default();
+    let sink = events.clone();
+    play_impl(
+        &state,
+        inst.id.clone(),
+        Arc::new(move |e| sink.lock().unwrap().push(e)),
+    )
+    .await
+    .unwrap();
+    let start = Instant::now();
+    let printed = |n: usize| {
+        lines
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|l| *l == "ARG --accessToken")
+            .count()
+            >= n
+    };
+    while !printed(1) {
+        assert!(start.elapsed() < Duration::from_secs(60), "no game output");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let GameStateDto::Running { run_id, .. } = state.game.state() else {
+        panic!("not running: {:?}", state.game.state());
+    };
+    // The live log: backfill of the first printout, then the second one live.
+    let batches: Arc<Mutex<Vec<LogBatch>>> = Arc::default();
+    let (kept, log) = (batches.clone(), Arc::downgrade(&state.log));
+    state
+        .log
+        .attach(
+            run_id,
+            0,
+            Arc::new(move |b: LogBatch| {
+                let ack = b.ack;
+                kept.lock().unwrap().push(b);
+                if let Some(log) = log.upgrade() {
+                    log.ack(ack);
+                }
+                Ok(())
+            }),
+        )
+        .unwrap();
+    let redacted_from = |from: usize| {
+        let batches = batches.lock().unwrap();
+        batches
+            .iter()
+            .skip(from)
+            .flat_map(|b| b.lines.iter())
+            .filter(|l| l.message == "ARG <redacted>")
+            .count()
+    };
+    while redacted_from(0) == 0 {
+        assert!(start.elapsed() < Duration::from_secs(60), "no backfill");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let backfilled = batches.lock().unwrap().len();
+    std::fs::write(inst.dir.join("go"), "").unwrap();
+    while !printed(2) || redacted_from(backfilled) == 0 {
+        assert!(start.elapsed() < Duration::from_secs(60), "no live lines");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let all = LogFilter {
+        error: true,
+        warning: true,
+        info: true,
+        debug: true,
+        other: true,
+        text: String::new(),
+    };
+    let copy = state.log.copy(run_id, all).await.unwrap();
+    assert!(copy.text.contains("ARG <redacted>"), "{}", copy.text);
+    let mut seen = vec![serde_json::to_string(&state.game.state()).unwrap()];
+    seen.push(serde_json::to_string(&copy).unwrap());
+    seen.push(serde_json::to_string(&stop(&state.game).await.unwrap()).unwrap());
+    assert!(force_stop(&state.game).await.unwrap());
+    while !matches!(state.game.state(), GameStateDto::Idle { .. }) {
+        assert!(
+            start.elapsed() < Duration::from_secs(60),
+            "the game did not end"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    seen.push(serde_json::to_string(&state.game.state()).unwrap());
+    seen.extend(
+        events
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|e| serde_json::to_string(e).unwrap()),
+    );
+    seen.extend(app_events.lock().unwrap().iter().cloned());
+    assert!(
+        seen.iter().any(|s| s.contains("lastExit")),
+        "the exit is covered"
+    );
+    seen.extend(
+        batches
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|b| serde_json::to_string(b).unwrap()),
+    );
+    let lines = lines.lock().unwrap().clone();
+    // The game really got the token: the core replaced it in the output.
+    assert!(lines.iter().any(|l| l == "ARG <redacted>"), "{lines:?}");
+    seen.extend(lines);
+    seen
+}
+
 /// Errors whose message can carry a token in a form a log or an HTTP library produces: a URL with
 /// the token in its query, an `Authorization` header or a bearer token in the text, a JSON error
 /// that quotes the offending value. (A token pasted into a free-text field with no such marker,
@@ -192,8 +392,16 @@ async fn no_dto_or_event_contains_a_token() {
     seen.push(serde_json::to_string(&accounts).unwrap());
     seen.push(serde_json::to_string(&app_info_impl(&state)).unwrap());
     seen.push(serde_json::to_string(&SettingsDto::new(state.settings.get(), None)).unwrap());
+    seen.push(
+        serde_json::to_string(&JavaChoice::Chosen {
+            version: "21.0.5".into(),
+            settings: SettingsDto::new(state.settings.get(), None),
+        })
+        .unwrap(),
+    );
     seen.extend(run_mock_login_with_token(LoginMethod::Browser).await);
     seen.extend(run_mock_login_with_token(LoginMethod::DeviceCode).await);
+    seen.extend(run_mock_play_with_token().await);
     for err in every_error_with_message_containing(FAKE) {
         seen.push(serde_json::to_string(&error_dto(&err)).unwrap());
     }

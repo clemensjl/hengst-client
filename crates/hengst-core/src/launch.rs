@@ -1,17 +1,19 @@
 use crate::args::{build_args, Account, AccountKind, LaunchContext};
 use crate::assets::{install_assets, AssetsLayout, RESOURCES_URL};
 use crate::download::{fill_missing_sha1, http_client, sha1_file, Download, Downloader};
+use crate::game::Redactor;
 use crate::java::{component_for, ensure_runtime, RUNTIME_INDEX_URL};
 use crate::libraries;
 use crate::loaders::forge;
 use crate::loaders::forge::processors::{ProcessRunner, SystemRunner};
 use crate::loaders::merge::merge_version;
-use crate::loaders::{prepare_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader};
+use crate::loaders::{
+    prepare_loader, resolve_loader, LoaderEndpoints, LoaderRequest, ResolvedLoader,
+};
 use crate::manifest::{fetch_manifest, MANIFEST_URL};
 use crate::paths::{validate_id, Paths};
 use crate::progress::{self, ProgressSink, Transfer};
 use crate::rules::Env;
-use crate::secret::REDACTED;
 use crate::version::fetch_version;
 use crate::{Error, Result};
 use std::path::{Path, PathBuf};
@@ -58,22 +60,22 @@ pub struct Prepared {
     pub loader: Option<ResolvedLoader>,
     /// The loader build was picked from the saved version list (its service was unreachable).
     pub loader_list_from_cache: bool,
-    account: Account,
+    pub(crate) account: Account,
+    /// The instance folder name, validated: names the game's launcher log files.
+    pub(crate) instance: String,
+    /// `<root>/logs/game` of the data folder the game was prepared in. Private, so nothing outside
+    /// the core decides where game logs are written (or deleted).
+    pub(crate) game_log_dir: PathBuf,
+    /// The instance's run lock (`runlock`), which the game holds while it runs.
+    pub(crate) run_lock: PathBuf,
 }
 
 impl Prepared {
-    /// Arguments safe to print: a Microsoft access token is replaced everywhere.
+    /// Arguments safe to print: the secrets `Redactor` knows (a Microsoft access token, also
+    /// URL- or JSON-encoded) are replaced everywhere.
     pub fn redacted_args(&self) -> Vec<String> {
-        match self.account.kind() {
-            AccountKind::Microsoft => {
-                let token = self.account.access_token().expose();
-                self.args
-                    .iter()
-                    .map(|a| a.replace(token, REDACTED))
-                    .collect()
-            }
-            AccountKind::Offline => self.args.clone(),
-        }
+        let r = Redactor::for_prepared(self);
+        self.args.iter().map(|a| r.redact(a)).collect()
     }
 }
 
@@ -87,6 +89,7 @@ impl std::fmt::Debug for Prepared {
             .field("loader", &self.loader)
             .field("loader_list_from_cache", &self.loader_list_from_cache)
             .field("account", &self.account)
+            .field("instance", &self.instance)
             .finish()
     }
 }
@@ -132,6 +135,20 @@ pub async fn prepare_with_progress(
     if let Some(name) = &opts.instance {
         validate_id(name)?;
     }
+    let default_instance = match &opts.loader {
+        Some(req) => format!("{}-{}", v.id, req.kind.slug()),
+        None => v.id.clone(),
+    };
+    let instance = opts.instance.as_deref().unwrap_or(&default_instance);
+    validate_id(instance)?;
+    // A game of this instance runs (its run lock is held): refused before any loader, library,
+    // jar or asset step. The lock itself is taken when the game starts (`run`, `spawn_game`).
+    #[cfg(windows)]
+    if crate::runlock::is_running(paths, instance)? {
+        return Err(Error::InstanceRunning {
+            id: instance.to_string(),
+        });
+    }
 
     // A loader problem must surface before any library or jar is downloaded.
     let setup = match &opts.loader {
@@ -144,12 +161,6 @@ pub async fn prepare_with_progress(
     };
     validate_id(&merged.id)?;
 
-    let default_instance = match &setup {
-        Some(s) => format!("{}-{}", v.id, s.resolved.kind.slug()),
-        None => v.id.clone(),
-    };
-    let instance = opts.instance.as_deref().unwrap_or(&default_instance);
-    validate_id(instance)?;
     let game_dir = paths.instance(instance);
     tokio::fs::create_dir_all(&game_dir).await?;
 
@@ -261,6 +272,51 @@ pub async fn prepare_with_progress(
         loader_list_from_cache: setup.as_ref().is_some_and(|s| s.list_from_cache),
         loader: setup.map(|s| s.resolved),
         account: opts.account.clone(),
+        instance: instance.to_string(),
+        game_log_dir: paths.logs().join("game"),
+        run_lock: crate::runlock::run_lock_path(paths, instance)?,
+    })
+}
+
+/// What a launch would start, decided from metadata alone.
+#[derive(Clone, Debug)]
+pub struct Resolution {
+    /// The game version id (`latest` and `latest-snapshot` resolved).
+    pub game: String,
+    pub loader: Option<ResolvedLoader>,
+    /// The loader build was picked from the saved version list (its service was unreachable).
+    pub loader_list_from_cache: bool,
+}
+
+/// Resolves the game version and, with `loader`, the loader build, fetching only the version
+/// manifest and the loader's version list (both saved in the data folder like `prepare` does).
+/// Downloads no library, jar, asset or installer, needs no account, no Java and no run lock. A
+/// named loader build must be on the list.
+pub async fn resolve(
+    paths: &Paths,
+    version: &str,
+    loader: Option<&LoaderRequest>,
+    ep: &Endpoints,
+) -> Result<Resolution> {
+    let dl = Downloader::new(http_client());
+    let manifest = fetch_manifest(dl.client(), paths, &ep.manifest).await?;
+    let game = manifest
+        .find(version)
+        .ok_or_else(|| Error::UnknownVersion(version.to_string()))?
+        .id
+        .clone();
+    validate_id(&game)?;
+    let (loader, loader_list_from_cache) = match loader {
+        Some(req) => {
+            let (resolved, cached) = resolve_loader(&dl, paths, &ep.loaders, req, &game).await?;
+            (Some(resolved), cached)
+        }
+        None => (None, false),
+    };
+    Ok(Resolution {
+        game,
+        loader,
+        loader_list_from_cache,
     })
 }
 
@@ -292,14 +348,40 @@ pub fn ensure_launch_allowed(kind: AccountKind, dev_offline: bool) -> Result<()>
     Ok(())
 }
 
-/// Starts the game and waits for it to exit. Output goes to the current console.
+/// Starts the game and waits for it to exit. Output goes to the current console. Like
+/// `spawn_game` it takes the instance's run lock first (`InstanceRunning` while a game of the
+/// instance runs) and gives it to the game: this process holds it from before the start until the
+/// hand-over right after, so there is no moment without it, and afterwards it stays with the game
+/// even if the CLI is killed. A hand-over that fails ends the game again, unless
+/// the game has already exited: then its exit code is returned as before.
 pub async fn run(p: &Prepared) -> Result<i32> {
     ensure_launch_allowed(p.account.kind(), DEV_OFFLINE)?;
-    let status = tokio::process::Command::new(&p.java)
+    #[cfg(windows)]
+    let lock = {
+        let (path, id) = (p.run_lock.clone(), p.instance.clone());
+        tokio::task::spawn_blocking(move || crate::runlock::RunLock::acquire(&path))
+            .await
+            .map_err(|e| std::io::Error::other(format!("run lock task failed: {e}")))??
+            .ok_or(Error::InstanceRunning { id })?
+    };
+    let mut child = tokio::process::Command::new(&p.java)
         .args(&p.args)
         .current_dir(&p.game_dir)
-        .status()
-        .await?;
+        .spawn()?;
+    #[cfg(windows)]
+    if let Some(raw) = child.raw_handle() {
+        // SAFETY: `raw` is the child's process handle, owned by `child`, which outlives this use.
+        let process = unsafe { std::os::windows::io::BorrowedHandle::borrow_raw(raw) };
+        if let Err(e) = lock.hand_to(&process) {
+            // A game that has already ended cannot take the lock and needs none: its exit code
+            // is the answer, not the failed hand-over.
+            if !matches!(child.try_wait(), Ok(Some(_))) {
+                let _ = child.kill().await;
+                return Err(e.into());
+            }
+        }
+    }
+    let status = child.wait().await?;
     Ok(status.code().unwrap_or(-1))
 }
 
@@ -337,6 +419,9 @@ mod tests {
             loader: None,
             loader_list_from_cache: false,
             account,
+            instance: "1.21".into(),
+            game_log_dir: PathBuf::from("logs/game"),
+            run_lock: PathBuf::from("tmp/run-1.21.lock"),
         }
     }
 

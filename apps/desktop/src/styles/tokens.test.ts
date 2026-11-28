@@ -267,6 +267,7 @@ describe("generated components pass the gate of DESIGN.md 2.4", () => {
         "separator.tsx",
         "skeleton.tsx",
         "sonner.tsx",
+        "switch.tsx",
         "tooltip.tsx",
       ].sort(),
     );

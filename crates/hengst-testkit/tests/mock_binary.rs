@@ -71,6 +71,67 @@ fn mock_binary_prints_its_url() {
     assert!(wait_for_exit(&mut child, Duration::from_secs(5)).success());
 }
 
+#[test]
+fn mock_binary_delays_the_mojang_answers_when_asked() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_hengst-mock"));
+    cmd.stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_remove("HENGST_MOCK_SCENARIO")
+        .env("HENGST_MOCK_MOJANG_DELAY_MS", "400");
+    let mut child = cmd.spawn().unwrap();
+    let line = first_line(&mut child);
+    let json: serde_json::Value = serde_json::from_str(line.trim()).unwrap();
+    let addr = json["url"]
+        .as_str()
+        .unwrap()
+        .trim_start_matches("http://")
+        .to_string();
+    for path in ["/mojang/manifest.json", "/mojang/files/client.jar"] {
+        let started = Instant::now();
+        let answer = http_get(&addr, path);
+        assert!(answer.starts_with("HTTP/1.1 200"), "{answer}");
+        assert!(started.elapsed() >= Duration::from_millis(400), "{path}");
+    }
+    drop(child.stdin.take());
+    assert!(wait_for_exit(&mut child, Duration::from_secs(5)).success());
+
+    // Anything but a number of milliseconds is refused at start.
+    let mut bad = Command::new(env!("CARGO_BIN_EXE_hengst-mock"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env("HENGST_MOCK_MOJANG_DELAY_MS", "soon")
+        .spawn()
+        .unwrap();
+    assert_eq!(
+        wait_for_exit(&mut bad, Duration::from_secs(5)).code(),
+        Some(2)
+    );
+}
+
+#[test]
+fn fake_java_bursts_numbered_lines_of_the_given_length() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("fake-java.txt"), "burst 3 40\nout done\n").unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_fake-java"))
+        .current_dir(dir.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 4, "{text}");
+    for (i, line) in lines[..3].iter().enumerate() {
+        assert!(
+            line.starts_with(&format!("burst-line {} ", i + 1)),
+            "{line}"
+        );
+        assert_eq!(line.len(), 40, "{line}");
+    }
+    assert_eq!(lines[3], "done");
+}
+
 fn http_post_json(addr: &str, path: &str, body: &serde_json::Value) -> String {
     let body = body.to_string();
     let mut stream = TcpStream::connect(addr).unwrap();

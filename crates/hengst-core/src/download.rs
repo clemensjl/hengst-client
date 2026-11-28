@@ -1,4 +1,4 @@
-use crate::paths::{remove_stale_temps, unique_temp, validate_sha1, write_atomic};
+use crate::paths::{remove_stale_temps, validate_sha1, write_atomic, write_atomic_owned};
 use crate::progress::{self, Progress, ProgressSink, Transfer};
 use crate::{Error, Result};
 use futures::stream::{self, StreamExt, TryStreamExt};
@@ -7,18 +7,18 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const USER_AGENT: &str = concat!(
+pub(crate) const USER_AGENT: &str = concat!(
     "HengstClient/",
     env!("CARGO_PKG_VERSION"),
     " (github.com/clemensjl/hengst-client)"
 );
 
 /// Largest answer accepted for a `.sha1` sidecar.
-pub const MAX_SIDECAR_BYTES: usize = 1024;
+pub(crate) const MAX_SIDECAR_BYTES: usize = 1024;
 /// Largest answer accepted for JSON metadata (version lists, profiles, promotions, manifests).
-pub const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_JSON_BYTES: usize = 16 * 1024 * 1024;
 /// Largest file accepted from a download that has no size in its metadata.
-pub const MAX_FILE_BYTES: usize = 512 * 1024 * 1024;
+pub(crate) const MAX_FILE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_REDIRECTS: usize = 10;
 
 /// Decides whether a redirect from the last of `previous` to `next` may be followed: at most
@@ -53,7 +53,7 @@ pub fn http_client() -> reqwest::Client {
 
 /// One file to fetch. `sha1 = None` means "existing file is good enough".
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Download {
+pub(crate) struct Download {
     pub url: String,
     pub path: PathBuf,
     pub sha1: Option<String>,
@@ -63,7 +63,7 @@ pub struct Download {
 }
 
 #[derive(Clone)]
-pub struct Downloader {
+pub(crate) struct Downloader {
     client: reqwest::Client,
     concurrency: usize,
     retries: u32,
@@ -99,6 +99,10 @@ impl Downloader {
         self
     }
 
+    #[expect(
+        dead_code,
+        reason = "no caller: every download uses the default concurrency"
+    )]
     pub fn with_concurrency(mut self, n: usize) -> Self {
         self.concurrency = n.max(1);
         self
@@ -232,16 +236,9 @@ impl Downloader {
                 });
             }
         }
-        if let Some(parent) = item.path.parent() {
-            tokio::fs::create_dir_all(parent).await?;
-        }
         remove_stale_temps(&item.path);
-        let tmp = unique_temp(&item.path);
-        tokio::fs::write(&tmp, &bytes).await?;
-        if let Err(e) = tokio::fs::rename(&tmp, &item.path).await {
-            let _ = tokio::fs::remove_file(&tmp).await;
-            return Err(e.into());
-        }
+        // One blocking task from temp file to rename: an aborted download leaves no temp file.
+        write_atomic_owned(item.path.clone(), bytes).await?;
         Ok(())
     }
 }
@@ -250,7 +247,7 @@ impl Downloader {
 /// hash cache under the SHA-1 of the full URL (never next to the library, so a hash learned for
 /// one origin cannot vouch for a file from another). HTTP 404 is `Error::NoChecksum`; a body that
 /// is not a SHA-1 is rejected, and so is a corrupt cache entry (it is fetched again).
-pub async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Result<()> {
+pub(crate) async fn fill_missing_sha1(dl: &Downloader, items: &mut [Download]) -> Result<()> {
     let todo: Vec<(usize, Download)> = items
         .iter()
         .enumerate()
@@ -318,13 +315,13 @@ async fn sidecar_sha1(dl: &Downloader, item: &Download) -> Result<(String, bool)
 }
 
 /// Fetches JSON metadata (at most `MAX_JSON_BYTES`).
-pub async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+pub(crate) async fn get_bytes(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     get_bytes_limited(client, url, MAX_JSON_BYTES).await
 }
 
 /// Fetches a body of at most `limit` bytes. The limit is enforced on the bytes actually read,
 /// so a missing or false Content-Length does not get around it.
-pub async fn get_bytes_limited(
+pub(crate) async fn get_bytes_limited(
     client: &reqwest::Client,
     url: &str,
     limit: usize,
@@ -397,7 +394,7 @@ pub fn sha1_hex(data: &[u8]) -> String {
     hex::encode(Sha1::digest(data))
 }
 
-pub fn sha1_file(path: &Path) -> Result<String> {
+pub(crate) fn sha1_file(path: &Path) -> Result<String> {
     let mut file = std::fs::File::open(path)?;
     let mut hasher = Sha1::new();
     std::io::copy(&mut file, &mut hasher)?;

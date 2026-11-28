@@ -138,6 +138,7 @@ const ALL_CODES = [
   "recycleBinUnknown",
   "recycleBinPending",
   "instanceRunning",
+  "javaInvalid",
   "busy",
 ];
 

@@ -11,6 +11,11 @@ interface Props {
   devBuild: boolean;
   /** The view's primary action, left of the account chip (DESIGN.md 7.2). */
   action?: ReactNode;
+  /**
+   * The view fills the height of the column and scrolls inside itself (the log view, DESIGN.md
+   * 7.2); the column scrolls only when the window is too low for the view's minimum.
+   */
+  fill?: boolean;
   children: ReactNode;
 }
 
@@ -32,7 +37,7 @@ function useScrolled(
 }
 
 /** DESIGN.md 7.2: sidebar, then the content column with its 56 px header and the scrolling view. */
-export function Shell({ view, onSelect, devBuild, action, children }: Props) {
+export function Shell({ view, onSelect, devBuild, action, fill = false, children }: Props) {
   const { t } = useTranslation();
   const scroller = useRef<HTMLDivElement>(null);
   const sentinel = useRef<HTMLDivElement>(null);
@@ -58,12 +63,17 @@ export function Shell({ view, onSelect, devBuild, action, children }: Props) {
         </header>
         <div
           ref={scroller}
-          className="flex-1 overflow-x-hidden overflow-y-auto px-6 pb-6 wide:px-8 wide:pb-8"
+          className={cn(
+            "flex-1 overflow-x-hidden overflow-y-auto px-6 pb-6 wide:px-8 wide:pb-8",
+            fill && "flex flex-col",
+          )}
         >
           {/* 1 px at the very top that takes no space (-mb-px): once it is scrolled out of view the
               header gets its line. The 8 px from header to content are the main's own padding. */}
           <div ref={sentinel} aria-hidden="true" className="-mb-px h-px" />
-          <main className="max-w-[1120px] pt-2">{children}</main>
+          <main className={cn("max-w-[1120px] pt-2", fill && "flex flex-1 flex-col")}>
+            {children}
+          </main>
         </div>
       </div>
     </div>

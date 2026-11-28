@@ -2,7 +2,7 @@
 
 An open-source Minecraft: Java Edition launcher focused on a clean interface and maximum FPS on every game version, with mods and modpacks from Modrinth and CurseForge.
 
-**Status:** pre-alpha. The CLI has Microsoft sign-in (`hengst login`), multiple accounts, vanilla launching and mod loader launching (Fabric, Quilt, Legacy Fabric, Forge, NeoForge) implemented; sign-in is not usable until Mojang approves the app id (see below). A desktop app is in progress: it manages accounts and instances; starting the game from it, mod and modpack management are still to come, see [docs/PLAN.md](docs/PLAN.md) (German). Windows x64 only.
+**Status:** pre-alpha. The CLI has Microsoft sign-in (`hengst login`), multiple accounts, vanilla launching and mod loader launching (Fabric, Quilt, Legacy Fabric, Forge, NeoForge) implemented; sign-in is not usable until Mojang approves the app id (see below). A desktop app is in progress (see Desktop app below); mod and modpack management are still to come, see [docs/PLAN.md](docs/PLAN.md) (German). Windows x64 only.
 
 Microsoft sign-in is implemented, tested against mocked service responses; no real sign-in has been verified yet. It becomes usable once Mojang approves the launcher's Azure app id; until then the Minecraft services answer with HTTP 403 and the CLI reports that the app is not approved. In the meantime, set `HENGST_MS_CLIENT_ID` to your own approved app id.
 
@@ -33,7 +33,19 @@ The desktop app in `apps/desktop` needs Rust 1.90 or newer with the MSVC toolcha
     pnpm -C apps/desktop install
     pnpm -C apps/desktop tauri build
 
-This builds the front end and then `target/release/hengst-desktop.exe`. No installer is produced yet.
+This builds the front end and then `target/release/hengst-desktop.exe` (or the same name below your `target-dir` if a cargo config moves it). No installer is produced yet. Start the exe directly; it keeps its data in `%APPDATA%\HengstClient`, like the CLI.
+
+What the app does today, Windows x64 only:
+
+- **Accounts:** Microsoft sign-in in the browser or with a code, several accounts, switching and signing out. Like the CLI it waits for Mojang's approval of the app id (see Status); until then sign-in ends with an explanation.
+- **Instances:** create one for a game version with or without a mod loader (Fabric, Quilt, Legacy Fabric, Forge, NeoForge), list them, delete one (its folder goes to the Recycle Bin).
+- **Start page:** Play with the progress of the preparation, Cancel, Stop and Force stop, a notice when the game closed unexpectedly. While a game runs the app sits in the notification area; closing the window hides it there, and quitting asks first. Play, Stop, hiding on close and the run lock were checked in a development build with real games (Vanilla 1.21.11, Fabric 1.21.11, Forge 1.20.1, offline development account); the notification area icon and the quit dialog are not yet verified with a real game (the quit dialog and the tray menu's actions are covered by the end-to-end tests with a stand-in game).
+- **Log:** the game's output live, with search, level filter, the last two runs and Copy; the known encodings of the access token are replaced by `<redacted>` before any line reaches the app (limits in `docs/PLAN.md`).
+- **Settings:** language (German, English), theme, memory, your own Java (optional), minimizing on launch, the data folder; About with the third-party licenses.
+
+Builds are not signed: Windows SmartScreen warns when you start a downloaded build ("Windows protected your PC", then "More info" and "Run anyway"). Development builds (`tauri build --debug`) are marked "Development build" in the title bar.
+
+Not an official Minecraft product. Not approved by or associated with Mojang or Microsoft.
 
 ### Microsoft client id
 
@@ -52,6 +64,9 @@ Setting the environment variable `HENGST_MS_CLIENT_ID` before you start the app 
 
     hengst loaders <loader> <game>            # list loader builds for a game version, newest first
     hengst launch <version> --loader <fabric|quilt|legacy-fabric|forge|neoforge> [--loader-version <build>]
+    hengst launch <version> [--loader <loader>] --resolve-only  # print what would start, download nothing
+
+`--resolve-only` prints one JSON line on stdout and exits with 0 (1 and a message on stderr on errors, 2 on invalid arguments), for example `{"game":"1.21.11","loader":{"kind":"fabric","version":"0.17.3","stable":true}}`, or `{"game":"1.21.11","loader":null}` without `--loader`. It fetches only the version manifest and the loader's version list; it downloads no libraries, assets or installers and needs no account and no Java. A named `--loader-version` must be on the loader's list.
 
 `<name>` is an account name or UUID. Without `--account`, `launch` uses the default account. Tokens are stored in the Windows Credential Manager, not in files.
 

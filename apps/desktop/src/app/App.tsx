@@ -4,6 +4,9 @@ import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AccountDialogs } from "@/features/accounts/AccountDialogs";
 import { InstancesHeaderAction, InstancesView } from "@/features/instances/InstancesView";
+import { PlayView } from "@/features/play/PlayView";
+import { QuitDialogHost } from "@/features/play/QuitDialog";
+import { LogRoute, preloadLogView } from "@/features/log/LogRoute";
 import { SettingsView } from "@/features/settings/SettingsView";
 import i18n, { pickLanguage, setLanguage } from "@/i18n";
 import type { SettingsNotice } from "@/ipc/bindings/SettingsNotice";
@@ -27,6 +30,8 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
   const setView = useApp((s) => s.setView);
   const devBuild = useApp((s) => s.info.data?.devBuild ?? false);
   const resolved = useAppearance();
+  // The log view is its own chunk; asked for at once, so it is there before anyone opens it.
+  useEffect(preloadLogView, []);
 
   // Declared after the children's effects run first, so the Toaster is mounted. The id makes a
   // second run (React strict mode) update the same toast instead of adding one.
@@ -41,10 +46,20 @@ export function App({ notice }: { notice?: SettingsNotice | null }) {
         onSelect={setView}
         devBuild={devBuild}
         action={view === "instances" ? <InstancesHeaderAction /> : null}
+        fill={view === "log"}
       >
-        {view === "settings" ? <SettingsView /> : <InstancesView />}
+        {view === "settings" ? (
+          <SettingsView />
+        ) : view === "log" ? (
+          <LogRoute />
+        ) : view === "instances" ? (
+          <InstancesView />
+        ) : (
+          <PlayView />
+        )}
       </Shell>
       <AccountDialogs />
+      <QuitDialogHost />
       <Toaster theme={resolved} />
     </TooltipProvider>
   );

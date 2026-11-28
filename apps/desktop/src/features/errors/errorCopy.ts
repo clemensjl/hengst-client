@@ -58,6 +58,7 @@ export const errorKeys: Record<ErrorCode, { title: string; body: string }> = {
   recycleBinUnknown: keys("recycleBinUnknown"),
   recycleBinPending: keys("recycleBinPending"),
   instanceRunning: keys("instanceRunning"),
+  javaInvalid: keys("javaInvalid"),
   busy: keys("busy"),
 };
 
@@ -116,6 +117,8 @@ function actionLabel(action: ErrorDto["action"], t: TFunction): string | undefin
       return t("errors.action.openSettings");
     case "openUrl":
       return t(`errors.action.openUrl.${action.target}`);
+    case "openLog":
+      return t("errors.action.openLog");
     default:
       return undefined;
   }

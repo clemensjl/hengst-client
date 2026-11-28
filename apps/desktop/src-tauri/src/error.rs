@@ -88,6 +88,10 @@ pub fn error_dto(e: &Error) -> ErrorDto {
             put("id", id.clone());
             (ErrorCode::RecycleBinUnknown, None)
         }
+        Error::InstanceRunning { id } => {
+            put("id", id.clone());
+            (ErrorCode::InstanceRunning, None)
+        }
         Error::InstanceExists { id } => {
             put("id", id.clone());
             (ErrorCode::InstanceExists, None)
@@ -813,6 +817,12 @@ mod mapping_tests {
                 &[("id", "9.9")],
             ),
             row(
+                Error::InstanceRunning { id: "9.9".into() },
+                ErrorCode::InstanceRunning,
+                None,
+                &[("id", "9.9")],
+            ),
+            row(
                 Error::InstanceExists { id: "9.9".into() },
                 ErrorCode::InstanceExists,
                 None,
@@ -1174,11 +1184,12 @@ mod mapping_tests {
             ErrorCode::RecycleBinUnknown => "recycleBinUnknown",
             ErrorCode::RecycleBinPending => "recycleBinPending",
             ErrorCode::InstanceRunning => "instanceRunning",
+            ErrorCode::JavaInvalid => "javaInvalid",
             ErrorCode::Busy => "busy",
         }
     }
 
-    const ALL_CODES: [ErrorCode; 53] = [
+    const ALL_CODES: [ErrorCode; 54] = [
         ErrorCode::Internal,
         ErrorCode::InvalidInput,
         ErrorCode::Network,
@@ -1231,6 +1242,7 @@ mod mapping_tests {
         ErrorCode::RecycleBinUnknown,
         ErrorCode::RecycleBinPending,
         ErrorCode::InstanceRunning,
+        ErrorCode::JavaInvalid,
         ErrorCode::Busy,
     ];
 

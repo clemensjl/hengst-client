@@ -6,16 +6,16 @@ use crate::Result;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-pub const LIBRARIES_URL: &str = "https://libraries.minecraft.net/";
+pub(crate) const LIBRARIES_URL: &str = "https://libraries.minecraft.net/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NativeJar {
+pub(crate) struct NativeJar {
     pub path: PathBuf,
     pub exclude: Vec<String>,
 }
 
 #[derive(Debug, Default)]
-pub struct ResolvedLibraries {
+pub(crate) struct ResolvedLibraries {
     pub classpath: Vec<PathBuf>,
     pub natives: Vec<NativeJar>,
     pub downloads: Vec<Download>,
@@ -77,7 +77,7 @@ fn base_url(lib: &Library) -> String {
     }
 }
 
-pub fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLibraries> {
+pub(crate) fn resolve(libs: &[Library], env: &Env, paths: &Paths) -> Result<ResolvedLibraries> {
     let lib_dir = paths.libraries();
     let mut out = ResolvedLibraries::default();
     let mut queued = HashSet::new();
@@ -192,7 +192,7 @@ fn is_native_file(name: &str) -> bool {
 }
 
 /// Extracts native libraries flat into `dest` (only file names, so no path traversal).
-pub fn extract_natives(natives: &[NativeJar], dest: &Path) -> Result<()> {
+pub(crate) fn extract_natives(natives: &[NativeJar], dest: &Path) -> Result<()> {
     std::fs::create_dir_all(dest)?;
     for jar in natives {
         let mut zip = zip::ZipArchive::new(std::fs::File::open(&jar.path)?)?;

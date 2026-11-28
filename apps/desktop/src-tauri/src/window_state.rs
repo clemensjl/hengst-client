@@ -309,7 +309,7 @@ pub fn save(paths: &Paths, s: &WindowState) -> Result<()> {
     std::fs::create_dir_all(paths.root())?;
     let tmp = unique_temp(&target);
     std::fs::write(&tmp, serde_json::to_vec_pretty(s)?)?;
-    if let Err(e) = std::fs::rename(&tmp, &target) {
+    if let Err(e) = hengst_core::paths::replace_file(&tmp, &target) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e.into());
     }

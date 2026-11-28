@@ -8,4 +8,9 @@ pub struct AppInfo {
     pub data_dir: String,
     pub dev_build: bool,
     pub dev_offline: bool,
+    /// Built with the `e2e` feature (mock services); the e2e harness refuses any other build.
+    pub e2e_build: bool,
+    /// The machine's physical memory in MiB (`GlobalMemoryStatusEx`), for the memory setting's
+    /// help line and its warning; `None` if Windows does not say.
+    pub installed_memory_mb: Option<u32>,
 }

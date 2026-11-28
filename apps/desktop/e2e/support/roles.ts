@@ -9,12 +9,15 @@
  *
  * It runs in the page (`browser.execute`) and in unit tests, so it must stay self-contained: it
  * reads nothing from outside its own body. `layout` false leaves out the visibility check, for a
- * DOM without layout (jsdom).
+ * DOM without layout (jsdom). `within`, a CSS selector, limits the search to the first element it
+ * matches (the start page's "Play" button in `main`, not the sidebar's "Play"); none matching
+ * finds nothing.
  */
 export function singleByRole(
   wantedRole: string,
   wantedName: string,
   layout = true,
+  within?: string | null,
 ): Element | null {
   const implicit: Record<string, string> = {
     heading: "h1,h2,h3,h4,h5,h6",
@@ -23,7 +26,13 @@ export function singleByRole(
     textbox: 'input:not([type]),input[type="text"],textarea',
   };
   const selector = [`[role="${wantedRole}"]`, implicit[wantedRole]].filter(Boolean).join(",");
-  const text = (node: Element | null) => (node?.textContent ?? "").replace(/\s+/g, " ").trim();
+  // Text inside `aria-hidden="true"` is no part of a name.
+  const text = (node: Element | null) => {
+    if (!node) return "";
+    const copy = node.cloneNode(true) as Element;
+    for (const hidden of copy.querySelectorAll('[aria-hidden="true"]')) hidden.remove();
+    return (copy.textContent ?? "").replace(/\s+/g, " ").trim();
+  };
   const nameOf = (el: Element) => {
     const label = el.getAttribute("aria-label");
     if (label) return label;
@@ -46,7 +55,10 @@ export function singleByRole(
     return (!explicit || explicit === wantedRole) && !el.closest('[aria-hidden="true"]');
   };
   const visible = (el: Element) => !layout || el.getClientRects().length > 0;
-  const all = [...document.querySelectorAll(selector)].filter(
+  // WebDriver hands an absent argument over as `null`.
+  const scope = within ? document.querySelector(within) : document;
+  if (!scope) return null;
+  const all = [...scope.querySelectorAll(selector)].filter(
     (el) => exposed(el) && visible(el) && nameOf(el) === wantedName,
   );
   return all.length === 1 ? all[0] : null;

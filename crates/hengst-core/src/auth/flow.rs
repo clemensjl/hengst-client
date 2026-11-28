@@ -9,7 +9,7 @@ use crate::secret::Secret;
 use crate::{Error, Result};
 
 /// Refresh when less than this many seconds of the Minecraft token remain.
-pub const REFRESH_MARGIN_SECS: u64 = 3600;
+pub(crate) const REFRESH_MARGIN_SECS: u64 = 3600;
 
 pub fn needs_refresh(account: &StoredAccount, now: u64) -> bool {
     account.minecraft_expires_at <= now.saturating_add(REFRESH_MARGIN_SECS)
@@ -55,7 +55,29 @@ pub async fn launch_account<S: SecretStore>(
     selector: Option<&str>,
     now: u64,
 ) -> Result<Account> {
+    launch_account_with(store, auth, selector, now, |session| {
+        store.save_session(session).map(|_| ())
+    })
+    .await
+}
+
+/// `launch_account` that hands a renewed session to `save` instead of storing it itself. `save`
+/// runs synchronously after the renewal answered (no await inside it), so the caller can save
+/// under its own lock and refuse a session whose account was removed meanwhile (its error is
+/// returned and nothing is launched).
+pub async fn launch_account_with<S: SecretStore>(
+    store: &AccountStore<S>,
+    auth: Option<&MicrosoftAuth>,
+    selector: Option<&str>,
+    now: u64,
+    save: impl FnOnce(&LoginSession) -> Result<()>,
+) -> Result<Account> {
     let stored = store.find(selector)?;
+    // Flagged (a renewal was refused, or a sign-out failed halfway and may have left the
+    // Minecraft token behind): neither that token nor a renewal is used.
+    if stored.sign_in_required {
+        return Err(Error::Auth(AuthError::LoginExpired { name: stored.name }));
+    }
     let saved = |stored: &StoredAccount| -> Result<Account> {
         Ok(Account::microsoft(
             stored.name.clone(),
@@ -71,7 +93,7 @@ pub async fn launch_account<S: SecretStore>(
     let refresh = store.secret(&stored, SecretKind::Refresh)?;
     match auth.refresh_session(&refresh, now).await {
         Ok(session) => {
-            store.save_session(&session)?;
+            save(&session)?;
             Ok(session.to_account())
         }
         Err(Error::Auth(AuthError::LoginExpired { .. })) => {
@@ -140,6 +162,22 @@ mod tests {
         let a = launch_account(&store, None, None, 0).await.unwrap();
         assert_eq!(a.access_token().expose(), "mc-old");
         assert_eq!(a.xuid(), "2535");
+    }
+
+    /// A sign-out that failed halfway leaves the entry "sign in again" with its Minecraft token
+    /// still stored: neither a token that is not due nor a renewal may start the game with it.
+    #[tokio::test]
+    async fn an_account_marked_sign_in_required_is_refused_before_any_token_or_renewal() {
+        for expires_at in [10_000, 1] {
+            let (_d, store) = store_with_old_token(expires_at);
+            store.mark_sign_in_required("Steve").unwrap();
+            // No auth: a renewal attempt would report `MissingClientId` instead.
+            let e = launch_account(&store, None, None, 0).await.unwrap_err();
+            assert!(
+                matches!(&e, Error::Auth(AuthError::LoginExpired { name }) if name == "Steve"),
+                "{e:?}"
+            );
+        }
     }
 
     #[test]

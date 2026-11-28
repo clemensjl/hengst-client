@@ -71,6 +71,6 @@ pub enum Progress {
 pub type ProgressSink = Arc<dyn Fn(Progress) + Send + Sync>;
 
 /// A sink that drops every event.
-pub fn silent() -> ProgressSink {
+pub(crate) fn silent() -> ProgressSink {
     Arc::new(|_| {})
 }

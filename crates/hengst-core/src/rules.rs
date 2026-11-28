@@ -54,6 +54,7 @@ impl Env {
         }
     }
 
+    #[cfg(test)]
     pub fn windows_x64() -> Self {
         Self {
             os_name: "windows".into(),

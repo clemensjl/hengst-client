@@ -71,7 +71,8 @@ impl Account {
         self.kind
     }
 
-    pub fn xuid(&self) -> &str {
+    #[cfg(test)]
+    pub(crate) fn xuid(&self) -> &str {
         &self.xuid
     }
 
@@ -84,7 +85,7 @@ impl Account {
 }
 
 #[derive(Clone, Debug)]
-pub struct LaunchContext {
+pub(crate) struct LaunchContext {
     pub account: Account,
     pub game_dir: PathBuf,
     pub natives_dir: PathBuf,
@@ -99,7 +100,7 @@ pub struct LaunchContext {
 
 const WINDOWS_HEAPDUMP: &str =
     "-XX:HeapDumpPath=MojangTricksIntelDriversForPerformance_javaw.exe_minecraft.exe.heapdump";
-pub const LEGACY_JVM: &[&str] = &[
+pub(crate) const LEGACY_JVM: &[&str] = &[
     "-Djava.library.path=${natives_directory}",
     "-cp",
     "${classpath}",
@@ -107,7 +108,7 @@ pub const LEGACY_JVM: &[&str] = &[
 
 /// Everything after the java executable: JVM args, main class, game args. A `${key}` placeholder
 /// the launcher does not know, in an argument that applies, is `Error::UnknownPlaceholder`.
-pub fn build_args(v: &VersionJson, ctx: &LaunchContext) -> Result<Vec<String>> {
+pub(crate) fn build_args(v: &VersionJson, ctx: &LaunchContext) -> Result<Vec<String>> {
     let vars = variables(v, ctx);
     let mut out = vec![
         format!("-Xmx{}M", ctx.memory_mb),
@@ -206,7 +207,10 @@ fn variables(v: &VersionJson, ctx: &LaunchContext) -> HashMap<&'static str, Stri
 /// Replaces every `${key}` with its value in one pass (values are not expanded again). An unknown
 /// key is returned as the error, shortened to a printable excerpt; a `${` without a closing brace
 /// stays as it is.
-pub fn substitute(s: &str, vars: &HashMap<&str, String>) -> std::result::Result<String, String> {
+pub(crate) fn substitute(
+    s: &str,
+    vars: &HashMap<&str, String>,
+) -> std::result::Result<String, String> {
     let mut out = String::with_capacity(s.len());
     let mut rest = s;
     while let Some(start) = rest.find("${") {

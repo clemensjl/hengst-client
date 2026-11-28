@@ -312,7 +312,7 @@ describe("CreateInstanceDialog", () => {
     await chooseLoader("Forge");
     fireEvent.click(createButton());
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-    expect(toast).toHaveBeenCalledWith("1.20.1 Forge created");
+    expect(toast).toHaveBeenCalledWith("⁨1.20.1 Forge⁩ created");
     const row = await waitFor(() => {
       const el = document.querySelector<HTMLElement>('[data-instance-row="1.20.1-forge"]');
       expect(el).not.toBeNull();
@@ -321,6 +321,15 @@ describe("CreateInstanceDialog", () => {
     await waitFor(() => expect(document.activeElement).toBe(row));
     expect(row.getAttribute("aria-current")).toBe("true");
     expect(row.scrollIntoView).toHaveBeenCalled();
+  });
+
+  it("the created toast isolates a name with bidi controls", async () => {
+    await setup();
+    await versionsLoaded();
+    fireEvent.change(nameField(), { target: { value: "Al‮pha" } });
+    fireEvent.click(createButton());
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(toast).toHaveBeenCalledWith("⁨Alpha⁩ created");
   });
 
   it("from the empty state the first instance takes the focus of the unmounted button", async () => {

@@ -28,13 +28,19 @@ pub mod accounts;
 mod acl_tests;
 pub mod commands;
 pub mod dto;
+#[cfg(feature = "e2e")]
+mod e2e_hook;
 pub mod error;
 pub mod events;
+pub mod java;
+pub mod log;
 pub mod open;
+pub mod play;
 pub mod recycle;
 pub mod settings;
 pub mod startup;
 pub mod state;
+pub mod tray;
 pub mod window_state;
 
 /// Names of all commands; the capability test and the TypeScript client test compare against it.

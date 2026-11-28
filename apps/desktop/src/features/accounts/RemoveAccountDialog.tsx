@@ -15,6 +15,7 @@ import { ErrorPanel } from "@/features/errors/ErrorPanel";
 import type { AccountDto } from "@/ipc/bindings/AccountDto";
 import type { ErrorDto } from "@/ipc/bindings/ErrorDto";
 import { api, IpcError } from "@/ipc/client";
+import { isolate } from "@/lib/bidi";
 import { useApp } from "@/stores/app";
 import { chipRef } from "./AccountChip";
 
@@ -42,7 +43,7 @@ export function RemoveAccountDialog({
     setError(null);
     try {
       await api.accountRemove(account.id);
-      toast(t("accounts.signedOut", { name: account.name }));
+      toast(t("accounts.signedOut", { name: isolate(account.name) }));
       setOpen(false);
     } catch (e) {
       setError(
@@ -71,7 +72,7 @@ export function RemoveAccountDialog({
     >
       <AlertDialogContent initialFocus={keepRef} finalFocus={chipRef}>
         <AlertDialogTitle className="pr-0">
-          {t("accounts.remove.title", { name: account.name })}
+          {t("accounts.remove.title", { name: isolate(account.name) })}
         </AlertDialogTitle>
         <AlertDialogBody className="flex flex-col gap-4">
           <AlertDialogDescription>{t("accounts.remove.body")}</AlertDialogDescription>

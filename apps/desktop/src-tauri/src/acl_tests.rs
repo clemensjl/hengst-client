@@ -58,9 +58,11 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
     // The opener plugin is registered, so a denied call proves the ACL, not a missing plugin.
     let app = mock_builder()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             crate::commands::app::app_info,
+            // `app_quit` is left out on purpose: the mock runtime cannot exit (see the quit test).
             crate::commands::open::open_url,
             crate::commands::accounts::accounts_list,
             crate::commands::accounts::account_select,
@@ -75,6 +77,16 @@ fn app() -> (tauri::App<tauri::test::MockRuntime>, tempfile::TempDir) {
             crate::commands::instances::instance_select,
             crate::commands::instances::instance_delete,
             crate::commands::open::open_location,
+            crate::commands::play::play,
+            crate::commands::play::play_cancel,
+            crate::commands::play::game_stop,
+            crate::commands::play::game_force_stop,
+            crate::commands::play::game_state,
+            crate::commands::log::log_runs,
+            crate::commands::log::log_attach,
+            crate::commands::log::log_ack,
+            crate::commands::log::log_detach,
+            crate::commands::log::log_copy,
             not_in_the_list
         ])
         .build(tauri::generate_context!())
@@ -110,7 +122,16 @@ fn a_command_that_no_permission_names_is_rejected_for_the_main_window() {
 #[test]
 fn plugin_commands_are_not_granted_to_the_main_window() {
     let (app, _dir) = app();
-    for cmd in ["plugin:opener|open_url", "plugin:window|inner_size"] {
+    for cmd in [
+        "plugin:opener|open_url",
+        "plugin:window|inner_size",
+        // The dialog plugin is registered but used from Rust only (the Java choice).
+        "plugin:dialog|open",
+        "plugin:dialog|save",
+        "plugin:dialog|message",
+        "plugin:dialog|ask",
+        "plugin:dialog|confirm",
+    ] {
         let err = call(&app, "main", cmd).unwrap_err();
         assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }
@@ -234,5 +255,198 @@ fn open_location_refuses_a_path_from_the_web_view() {
             err.get("code").is_none(),
             "an argument error, not a command result: {err}"
         );
+    }
+}
+
+#[test]
+fn open_location_refuses_a_log_path_outside_the_logs_folders() {
+    let (app, dir) = app();
+    std::fs::write(dir.path().join("settings.log"), "x").unwrap();
+    for path in [
+        "settings.log",
+        "logs/../settings.log",
+        "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "\\\\server\\share\\x.log",
+        "logs/x.log:stream",
+        "logs/missing.log",
+    ] {
+        let body = serde_json::json!({ "target": { "kind": "logFile", "path": path } });
+        let err = call_with(&app, "main", "open_location", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "openFailed", "{path}: {err}");
+        assert!(err["action"].is_null(), "{path}: {err}");
+        let detail = err["detail"].as_str().unwrap();
+        assert!(!detail.contains("Windows\\System32"), "{detail}");
+    }
+}
+
+/// Only the main window may quit the app. The command is not in this app's handler (the mock
+/// runtime panics on exit), so the main window's call passes the capability check and then finds
+/// no handler, while the other window's call is stopped by the check itself.
+#[test]
+fn only_the_main_window_may_quit_the_app() {
+    let (app, _dir) = app();
+    let main = call(&app, "main", "app_quit").unwrap_err();
+    assert!(!main.to_string().contains("not allowed"), "{main}");
+    assert!(main.to_string().contains("app_quit"), "{main}");
+    let err = call(&app, "other", "app_quit").unwrap_err();
+    assert!(err.to_string().contains("not allowed"), "{err}");
+    assert!(crate::commands::app::app_quit_allowed(
+        &app.state::<AppState>()
+    ));
+}
+
+#[test]
+fn the_main_window_may_call_the_play_commands_and_others_may_not() {
+    let (app, _dir) = app();
+    assert_eq!(
+        call(&app, "main", "game_state").unwrap(),
+        serde_json::json!({ "state": "idle", "data": { "lastExit": null } })
+    );
+    assert_eq!(
+        call(&app, "main", "game_stop").unwrap(),
+        serde_json::json!("notRunning")
+    );
+    assert_eq!(
+        call(&app, "main", "game_force_stop").unwrap(),
+        serde_json::json!(false)
+    );
+    let cancelled = call_with(
+        &app,
+        "main",
+        "play_cancel",
+        InvokeBody::Json(serde_json::json!({ "op": 5 })),
+    );
+    assert_eq!(cancelled.unwrap(), serde_json::json!(false));
+    for cmd in [
+        "play",
+        "play_cancel",
+        "game_stop",
+        "game_force_stop",
+        "game_state",
+    ] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
+    }
+}
+
+/// `play` takes an instance id and a channel, nothing else: a path is not an instance, and extra
+/// fields (an account, a Java path, arguments) are not read.
+#[test]
+fn play_takes_nothing_from_the_web_view_but_an_instance_id() {
+    let (app, _dir) = app();
+    for body in [
+        serde_json::json!({ "instanceId": "..\\x", "channel": "__CHANNEL__:1" }),
+        serde_json::json!({
+            "instanceId": "nobody",
+            "channel": "__CHANNEL__:1",
+            "java": "C:\\Windows\\System32\\cmd.exe",
+            "args": ["/c", "calc"],
+            "account": "offline-dev"
+        }),
+    ] {
+        let err = call_with(&app, "main", "play", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "instanceNotFound", "{err}");
+    }
+}
+
+fn all_levels(text: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": true, "warning": true, "info": true, "debug": true, "other": true, "text": text
+    })
+}
+
+/// The log commands take run ids, seq numbers, an ack token and a small filter: an unknown run, a
+/// seq beyond the buffer and a long search text are typed errors, a path or a pattern is no
+/// argument, and the launcher log file is found by its run id only.
+#[test]
+fn the_main_window_may_call_the_log_commands_with_small_arguments_only() {
+    let (app, _dir) = app();
+    assert_eq!(
+        call(&app, "main", "log_runs").unwrap(),
+        serde_json::json!([])
+    );
+    assert!(call(&app, "main", "log_detach").is_ok());
+    assert!(call_with(
+        &app,
+        "main",
+        "log_ack",
+        InvokeBody::Json(serde_json::json!({ "ack": 12345 }))
+    )
+    .is_ok());
+    let state = app.state::<AppState>();
+    state
+        .log
+        .start_run(crate::dto::play::RunId(1), "9.9", 1, None, 0);
+    for (cmd, body, field) in [
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 7, "sinceSeq": 0, "channel": "__CHANNEL__:1" }),
+            "runId",
+        ),
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 1, "sinceSeq": 9_007_199_254_740_991u64, "channel": "__CHANNEL__:1" }),
+            "sinceSeq",
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 7, "filter": all_levels("") }),
+            "runId",
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 1, "filter": all_levels(&"x".repeat(100_000)) }),
+            "text",
+        ),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "invalidInput", "{cmd}: {err}");
+        assert_eq!(err["params"]["field"], field, "{cmd}: {err}");
+    }
+    let copied = call_with(
+        &app,
+        "main",
+        "log_copy",
+        InvokeBody::Json(serde_json::json!({ "runId": 1, "filter": all_levels("") })),
+    )
+    .unwrap();
+    assert_eq!(
+        copied,
+        serde_json::json!({ "text": "", "lines": 0, "omitted": 0 })
+    );
+    // Not a filter: a pattern field, a path; not a run: a path.
+    for (cmd, body) in [
+        (
+            "log_copy",
+            serde_json::json!({ "runId": 1, "filter": { "regex": ".*", "text": "" } }),
+        ),
+        (
+            "log_copy",
+            serde_json::json!({ "runId": "C:\\x.log", "filter": all_levels("") }),
+        ),
+        (
+            "log_attach",
+            serde_json::json!({ "runId": 1, "sinceSeq": -1, "channel": "__CHANNEL__:1" }),
+        ),
+    ] {
+        let err = call_with(&app, "main", cmd, InvokeBody::Json(body)).unwrap_err();
+        assert!(!err.to_string().contains("not allowed"), "{cmd}: {err}");
+        assert!(err.get("code").is_none(), "an argument error: {err}");
+    }
+    // The launcher log of a run that is not held, or that has no file: openFailed, no path.
+    for run in [7, 1] {
+        let body = serde_json::json!({ "target": { "kind": "gameLog", "runId": run } });
+        let err = call_with(&app, "main", "open_location", InvokeBody::Json(body)).unwrap_err();
+        assert_eq!(err["code"], "openFailed", "{err}");
+    }
+    for cmd in [
+        "log_runs",
+        "log_attach",
+        "log_ack",
+        "log_detach",
+        "log_copy",
+    ] {
+        let err = call(&app, "other", cmd).unwrap_err();
+        assert!(err.to_string().contains("not allowed"), "{cmd}: {err}");
     }
 }
