@@ -39,7 +39,7 @@ What the app does today, Windows x64 only:
 
 - **Accounts:** Microsoft sign-in in the browser or with a code, several accounts, switching and signing out. Like the CLI it waits for Mojang's approval of the app id (see Status); until then sign-in ends with an explanation.
 - **Instances:** create one for a game version with or without a mod loader (Fabric, Quilt, Legacy Fabric, Forge, NeoForge), list them, delete one (its folder goes to the Recycle Bin).
-- **Start page:** Play with the progress of the preparation, Cancel, Stop and Force stop, a notice when the game closed unexpectedly. While a game runs the app sits in the notification area; closing the window hides it there, and quitting asks first. Play, Stop, the notification area icon, hiding on close and the quit dialog are not yet verified with a real game.
+- **Start page:** Play with the progress of the preparation, Cancel, Stop and Force stop, a notice when the game closed unexpectedly. While a game runs the app sits in the notification area; closing the window hides it there, and quitting asks first. Play, Stop, hiding on close and the run lock were checked in a development build with real games (Vanilla 1.21.11, Fabric 1.21.11, Forge 1.20.1, offline development account); the notification area icon and the quit dialog are not yet verified with a real game.
 - **Log:** the game's output live, with search, level filter, the last two runs and Copy; the known encodings of the access token are replaced by `<redacted>` before any line reaches the app (limits in `docs/PLAN.md`).
 - **Settings:** language (German, English), theme, memory, your own Java (optional), minimizing on launch, the data folder; About with the third-party licenses.
 
