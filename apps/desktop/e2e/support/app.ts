@@ -471,7 +471,10 @@ export async function hasVisibleWindow(pid: number): Promise<boolean> {
   const out = await runPowerShell(
     `Add-Type -TypeDefinition '${VISIBLE_APP_WINDOWS}'; [HengstE2eWindows]::Count(${pid})`,
   );
-  return Number(out.trim()) > 0;
+  const count = Number(out.trim());
+  if (out.trim() === "" || !Number.isInteger(count))
+    throw new Error(`window count unreadable: ${out}`);
+  return count > 0;
 }
 
 /**
