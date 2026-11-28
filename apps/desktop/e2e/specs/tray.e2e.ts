@@ -90,9 +90,11 @@ describe("tray and quit", () => {
 
   it("asks before quitting while a game runs; Keep playing keeps both, a double click never force-stops", async () => {
     await openView("Play");
-    // A game without a window: "Stop game and quit" reaches nothing to ask, so the button turns
-    // into "Force stop and quit" at once. Only then does the second click of a double click meet
-    // the force button (with a window the game exits and the force button never appears).
+    // A game without a window: the dialog opens with "Stop game and quit" (QuitDialog phase
+    // "ask"); the stop reaches nothing to ask, and when it answers "noWindow" the button turns into
+    // "Force stop and quit", whose 600 ms guard starts at that change. Only then can the second
+    // click of a double click meet the force button (with a window the game exits and the force
+    // button never appears).
     setScript(WINDOWLESS);
     await (await mainButton("Play")).click();
     await pageSaysRunning();
