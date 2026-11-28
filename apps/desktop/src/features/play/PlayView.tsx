@@ -338,7 +338,7 @@ export function PlayView() {
           {!busy && (
             <Switcher
               list={list}
-              // The check marks what is selected, also an unreadable selection (row 5 of 10.2),
+              // The check marks what is selected, also an unreadable selection (row 6 of 10.2),
               // so choosing the readable fallback is a change.
               selected={list.find((i) => i.selected)?.id ?? selectedId}
               open={switcherOpen}

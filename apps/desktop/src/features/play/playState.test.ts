@@ -29,13 +29,13 @@ describe("play_button_state_precedence", () => {
   it("row 3: starting until the start has its operation id", () => {
     expect(kind({ launch: { op: null, cancelRefused: false } })).toBe("starting");
   });
-  it("row 3: preparing once the operation id is known", () => {
+  it("row 4: preparing once the operation id is known", () => {
     expect(playButtonState({ ...ready, launch: { op: 4, cancelRefused: false } })).toEqual({
       kind: "preparing",
       op: 4,
     });
   });
-  it("row 4: no instance at all, and only unreadable or newer-format ones", () => {
+  it("row 5: no instance at all, and only unreadable or newer-format ones", () => {
     expect(playButtonState({ ...ready, instances: [] })).toEqual({
       kind: "noInstance",
       unreadable: false,
@@ -45,7 +45,7 @@ describe("play_button_state_precedence", () => {
       unreadable: true,
     });
   });
-  it("row 5: the selected instance is unreadable and a readable one exists", () => {
+  it("row 6: the selected instance is unreadable and a readable one exists", () => {
     const list = [{ ...broken, selected: true }, instance("b")];
     expect(playButtonState({ ...ready, instances: list })).toEqual({
       kind: "chooseInstance",
@@ -54,16 +54,16 @@ describe("play_button_state_precedence", () => {
     const newer = [{ ...tooNew, selected: true }, instance("b")];
     expect(kind({ instances: newer })).toBe("chooseInstance");
   });
-  it("row 6: no account", () => expect(kind({ account: { kind: "none" } })).toBe("signIn"));
-  it("row 6: accounts exist but none is chosen: choose one, as the header chip does", () => {
+  it("row 7: no account", () => expect(kind({ account: { kind: "none" } })).toBe("signIn"));
+  it("row 8: accounts exist but none is chosen: choose one, as the header chip does", () => {
     expect(kind({ account: { kind: "choose" } })).toBe("chooseAccount");
     expect(kind({ account: { kind: "choose" }, instances: [] })).toBe("noInstance");
   });
-  it("row 7: the account has to sign in again", () => {
+  it("row 9: the account has to sign in again", () => {
     const account = { kind: "signInAgain" as const, id: "u", name: "Mira_K" };
     expect(playButtonState({ ...ready, account })).toEqual(account);
   });
-  it("row 8: ready, with the instance to start", () => {
+  it("row 10: ready, with the instance to start", () => {
     expect(playButtonState(ready)).toEqual({ kind: "ready", instance: "a" });
     // No selection: the fallback of Task 11 (first readable in list order).
     const list = [broken, instance("b"), instance("c")];

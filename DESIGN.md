@@ -13,7 +13,7 @@ Five lines of direction (design-unslop, step 4):
 - **Product:** a launcher that gets a chosen game version running in under ten seconds and shows what it is doing while it works.
 - **Character:** a quiet Windows utility. Native fonts and title bar, mouse-first density, no ornament.
 - **World:** the game's data, not its art: version ids, loader builds, file counts, installer steps, log lines. These are shown exactly as they come, in a typography that makes them easy to scan.
-- **Moments:** two. The Play button that turns from Play into Cancel into Stop while the panel under it shows the real phase and the real file count ("3,402 of 4,118 files", "Step 3 of 6: jarsplitter"); and the live log, readable in both themes at 10,000 lines.
+- **Moments:** two. The Play button that turns from Play into Cancel into Stop while the panel under it shows the real phase and the real numbers (the size of a download batch, "4,118 files"; the installer step, "Step 3 of 6: jarsplitter", the only place with a bar, 10.12); and the live log, readable in both themes at 10,000 lines.
 - **Signature:** the petrol accent marks the single next action on a screen and nothing else. A screen has one accent-filled button at most; the only other accent marks are the active navigation icon and the focus ring.
 
 Rules that follow from this:
@@ -330,7 +330,7 @@ Dialogs sit on `--overlay`. Tooltips use inverse colors (background `--text`, te
 - Sizes: 18 px for nav items, icon buttons and the Play button; 16 px everywhere else (inside text buttons, menu items, badges, inline messages, toasts, the checkbox check). No other sizes.
 - Color follows the text it sits next to (`currentColor`). Exceptions: the active nav icon is `--accent`; error icons `--danger`; warning icons `--warning`; the success icon `--success`.
 - Decorative icons next to a text label get `aria-hidden="true"`.
-- Icon names used: `house` (start page), `boxes` (instances), `scroll-text` (log), `settings`, `play`, `square` (stop), `x` (cancel, close), `plus` (create), `ellipsis` (row actions), `folder-open`, `trash-2`, `check`, `chevron-down`, `chevron-up`, `chevron-right` (submenu), `log-in`, `log-out`, `user-plus`, `copy`, `external-link`, `circle-alert` (error), `triangle-alert` (warning), `info`, `search`, `arrow-down-to-line` (jump to end), `loader-circle` (spinner), `refresh-cw` (retry), `wifi-off` (offline caption).
+- Icon names used: `house` (start page), `boxes` (instances), `scroll-text` (log), `settings`, `play`, `square` (stop), `x` (cancel, close), `plus` (create), `ellipsis` (row actions), `folder-open`, `trash-2`, `check`, `chevron-down`, `chevron-up`, `chevron-right` (submenu), `log-in`, `log-out`, `user-plus`, `user-round` (choose account), `copy`, `external-link`, `circle-alert` (error), `triangle-alert` (warning), `info`, `search`, `arrow-down-to-line` (jump to end), `loader-circle` (spinner), `refresh-cw` (retry), `wifi-off` (offline caption).
 
 An icon needs a text label always, except in these places, where the icon-only button has an `aria-label` and a tooltip with the same text:
 1. Nav items in the collapsed 64 px sidebar.
@@ -511,13 +511,13 @@ State precedence, first match wins:
 | 1 | Stopping | "Wird beendet…" / "Stopping…" | secondary, spinner, inert | nothing; after 10 s a second button "Sofort beenden" / "Force stop" (`destructive`, default size) appears to the right and stays while the state lasts. The 10 s count from the moment the page first sees the run stopping, so after a reload they start again |
 | 2 | Running | "Beenden" / "Stop" | secondary, `square` | stop the game gracefully; a status line above the button: 8 px `--success` dot plus "Läuft seit {{time}}" / "Running since {{time}}". If the game has no window yet, nothing is asked to close: the button stays "Beenden", a status line 24 px below it says "Das Spiel hat noch kein Fenster und wurde nicht gebeten, sich zu schließen." / "The game has no window yet and was not asked to close.", and "Sofort beenden" appears at once |
 | 3 | Starting (click until the first progress event) | "Wird gestartet…" / "Starting…" | primary, spinner, inert | nothing |
-| 3 | Preparing | "Abbrechen" / "Cancel" | secondary, `x`; 600 ms click guard after the change | cancel the launch; the progress panel shows below (10.12) |
-| 4 | No readable instance (none at all, or only unreadable or newer-format ones) | "Instanz anlegen" / "Create instance" | primary, `plus` | open the create dialog; if unreadable instances exist, the caption above the button says "Keine Instanz lässt sich starten." / "No instance can be started." |
-| 5 | Selected instance unreadable or newer format, and at least one readable instance exists | "Instanz wählen" / "Choose instance" | primary, `boxes` | open the instance switcher (it is shown, because there are at least two instances); above the button the caption "{{name}} lässt sich nicht starten." / "{{name}} cannot be started." |
-| 6 | No account | "Anmelden" / "Sign in" | primary, `log-in` | open the sign-in dialog; if this build has no client id (`can_sign_in` false), the dialog is not opened and the no-client-id block of 11.6 is shown instead |
-| 6 | Accounts, but none selected | "Konto wählen" / "Choose account" | primary, `user-round` | open the account menu of the header chip, as its own "Konto wählen" does (10.3) |
-| 7 | Account needs sign-in again | "Erneut anmelden" / "Sign in again" | primary, `log-in` | start sign-in for that account |
-| 8 | Ready | "Spielen" / "Play" | primary, `play` | start the selected instance |
+| 4 | Preparing | "Abbrechen" / "Cancel" | secondary, `x`; 600 ms click guard after the change | cancel the launch; the progress panel shows below (10.12) |
+| 5 | No readable instance (none at all, or only unreadable or newer-format ones) | "Instanz anlegen" / "Create instance" | primary, `plus` | open the create dialog; if unreadable instances exist, the caption above the button says "Keine Instanz lässt sich starten." / "No instance can be started." |
+| 6 | Selected instance unreadable or newer format, and at least one readable instance exists | "Instanz wählen" / "Choose instance" | primary, `boxes` | open the instance switcher (it is shown, because there are at least two instances); above the button the caption "{{name}} lässt sich nicht starten." / "{{name}} cannot be started." |
+| 7 | No account | "Anmelden" / "Sign in" | primary, `log-in` | open the sign-in dialog; if this build has no client id (`can_sign_in` false), the dialog is not opened and the no-client-id block of 11.6 is shown instead |
+| 8 | Accounts, but none selected | "Konto wählen" / "Choose account" | primary, `user-round` | open the account menu of the header chip, as its own "Konto wählen" does (10.3) |
+| 9 | Account needs sign-in again | "Erneut anmelden" / "Sign in again" | primary, `log-in` | start sign-in for that account |
+| 10 | Ready | "Spielen" / "Play" | primary, `play` | start the selected instance |
 
 Selection fallback: when no instance is selected (first start, or the selected one was deleted), the most recently played readable instance is selected, else the first readable one in list order.
 
@@ -590,7 +590,7 @@ Loader version: Select with label "Loader-Version" / "Loader version", trigger a
 - Validation on blur; after the first error, live on each keystroke until fixed (FO2). Inputs keep their values after any error (FO13).
 - Commit: settings text fields save on blur and on Enter; Escape restores the saved value.
 - Character counter at the right of the help line from 80 % of the limit ("52/64"), tabular.
-- Required fields: every field is required unless its label ends with "(optional)" (FO10). The only optional field in v0.1 is the Java path (behind "Erweitert").
+- Required fields: every field is required unless its label ends with "(optional)" (FO10). v0.1 has no optional text field: the one optional setting, the Java path ("Java (optional)" behind "Erweitert"), is chosen in the Windows file dialog, not typed (11.7).
 - Name, search and memory fields: `spellcheck="false"`, `autocomplete="off"`. Numeric fields use `inputmode="numeric"`, never `type="number"`.
 
 ### 10.8 Checkbox (shadcn `checkbox`) and switch (shadcn `switch`)
@@ -607,7 +607,8 @@ Switch: 36 × 20 track, pill. Off: `--hover` track, 1 px `--border-control`, thu
 - Widths: create instance 560, sign-in 560, third-party licenses 640, confirmations 440.
 - Closing: Escape closes; it cancels a running operation (sign-in). A pointer-down outside the panel never closes the create and sign-in dialogs (it closes confirmations). Focus returns to the trigger; if the trigger no longer exists, section 13 decides.
 - The create dialog keeps a draft: closing it with entered values and reopening it in the same session restores them (FO13); a successful create clears the draft.
-- Initial focus: first field (create), the primary action (sign-in idle), the safe button (confirmations).
+- Initial focus: first field (create), the primary action (sign-in idle), the safe button (confirmations). The third-party licenses dialog sets none of its own: Base UI's default puts it on the first focusable element of the panel, the first license entry (the footer's "Schließen" while the list is not there yet); not checked in the running app.
+- Tab order: the header close button (X) is rendered after the body and the footer, so Tab reaches it last, after the footer's buttons; visually it sits top right.
 - Confirmations are a simple confirm with named buttons, no typing a name. Titles are the concrete question, the text names the consequence, the buttons name both outcomes (Z5).
 
 ### 10.10 Toast (shadcn `sonner`)
@@ -631,7 +632,7 @@ Inline error: under a field or setting, `circle-alert` 16 plus one sentence in `
 - Line 2 (secondary, tabular): the size of the download batch, "4.118 Dateien" / "4,118 files" (the core reports a batch's size when it starts and its end, no running count), or "Schritt 3 von 6: jarsplitter" / "Step 3 of 6: jarsplitter" (a real sequence). The phase line keeps its phase between two batches, so it does not flip. 8 px below:
 - Bar: 6 px, pill, track `--border-strong` (1.79 / 1.95 against `--surface`, enough to read the remaining length), fill `--text` (9.06 / 7.14 against the track), determinate for installer steps only (value and max exposed); hidden during downloads and every other phase, never looped. 12 px below:
 - When an install log exists: link button "Installationsprotokoll öffnen" / "Open install log" (40 px).
-- Notice events as caption lines at the bottom, at most the last two. If "Installationsprotokoll öffnen" fails, its inline error (`circle-alert` 16, `--danger`) takes the place of the older notice there, so the panel keeps its 160 px.
+- Notice events as caption lines at the bottom, at most the last two. Notices are English text from the core in both UI languages (marked `lang="en"`), an exception to section 12 like the ErrorPanel details; translation keys from the core for them are Phase 5. If "Installationsprotokoll öffnen" fails, its inline error (`circle-alert` 16, `--danger`) takes the place of the older notice there, so the panel keeps its 160 px.
 - The phase line is a polite live region; counts are not announced on every change.
 - Offline: if all files are cached the launch starts normally. Otherwise the panel is replaced by an ErrorPanel "Keine Verbindung" / "No connection", body "Für diese Version fehlen Dateien. Prüfe die Internetverbindung und versuche es erneut." / "Files for this version are missing. Check your internet connection and try again.", with "Erneut versuchen".
 - Failure: the panel is replaced in place by an ErrorPanel with "Erneut versuchen". For `installFailed` and `installStepFailed` it has the second action "Installationsprotokoll öffnen" / "Open install log" when an install log was reported.
@@ -672,7 +673,7 @@ Badges carry text, never a dot or an emoji.
 - **Ghost select** (shadcn `select` with a ghost trigger): trigger without border or fill, text 14/20 `--text`, `chevron-down` 16, hover `--hover`, 40 px high. Used only for the log run switcher.
 - **In-text link**: inside a paragraph, inherits the paragraph's size, `--text`, underline 1 px at 3 px offset, hover 2 px; the 40 px rule does not apply to links in running text (WCAG 2.5.8 exception). A link that opens a browser ends with `external-link` 16 and the accessible name adds "(öffnet im Browser)" / "(opens in browser)".
 - **Spinner**: lucide `loader-circle` 16 (18 in the Play button), `currentColor`, rotating linearly at 800 ms per turn, `aria-hidden` (the label carries the state); hidden under reduced motion.
-- **Path display**: mono 13/20, one line, truncated in the middle (start and the last folder stay visible), full path in a tooltip and in the accessible name; selectable text.
+- **Path display** (`PathText`): mono 13/20 `--text-muted`, wraps anywhere, so the whole path is always visible (no truncation, so no tooltip); left to right in its own isolate with its bidi controls dropped; selectable text.
 - **Separator** (shadcn `separator`): 1 px `--border` (in menus `--border-strong` in dark, `--border` in light), 4 px margin in menus.
 - **ScrollArea** (shadcn `scroll-area`): only inside popovers and dialogs; the content column uses native scrolling, themed through `color-scheme` and `scrollbar-color: var(--border-strong) transparent`; the ScrollArea thumb uses `--border-strong` too.
 - Not used: Card, Sheet, Tabs, Kbd, Avatar (the initial circle is custom and loads no images), the Sidebar block, Accordion, Carousel.
@@ -816,8 +817,8 @@ Sections in order:
 - Loading: skeletons per section (title 120 × 26, control 320 × 40).
 - Empty: About facts without data: "Noch keine Versionsliste geladen" / "No version list loaded yet".
 - Error: saving failed: inline error under that control, which returns to its previous value. About facts failed: inline error with "Erneut versuchen" in that section only. The app's own data (version, data folder) failed to load: in About the inline error "Die Version konnte nicht geladen werden." / "The version could not be loaded." with "Erneut versuchen"; in "Datenordner" an ErrorPanel with "Erneut versuchen".
-- A game start refused because of the Java setting shows on the start page as the ErrorPanel "Java lässt sich nicht verwenden" / "Java could not be used", body "Das in den Einstellungen gewählte Java lässt sich nicht verwenden. Wähle Java dort neu aus oder setze es zurück." / "The Java chosen in the settings cannot be used. Choose Java again there or reset it.", with "Einstellungen öffnen".
-- Long paths: middle truncation with tooltip (10.15).
+- A game start refused because of the Java setting shows on the start page as the ErrorPanel "Java lässt sich nicht verwenden" / "Java could not be used", body "Das in den Einstellungen gewählte Java lässt sich nicht verwenden. Wähle Java dort neu aus oder setze es zurück." / "The Java chosen in the settings cannot be used. Choose Java again there or reset it.", with "Erneut versuchen" (as every launch failure, 10.12) and "Einstellungen öffnen".
+- Long paths: they wrap, the whole path stays visible (10.15).
 - Keyboard: Tab from control to control; segments are one tab stop each with arrows inside; the switch toggles with Space; the collapsible opens with Enter or Space.
 
 ### 11.8 Start page (4b; start view from 4b)
@@ -832,13 +833,13 @@ Spielen                                                          (M Mira_K v)
   [  > Spielen                     ]
 
   Dateien werden geladen
-  3.402 von 4.118 Dateien
-  [=================-------]
-  Installationsprotokoll öffnen
+  4.118 Dateien
 ```
 
+During downloads the panel shows the batch size and no bar; only installer steps ("Schritt 3 von 6: jarsplitter") get the bar and, once an install log exists, "Installationsprotokoll öffnen" (10.12).
+
 - Header: h1 "Spielen" / "Play", chip; no header action (the Play button is the action).
-- Content: one left-aligned block, 48 px from the top, max-width 640: start title (32/40, two lines max), 8 px, meta line (secondary 14/20: version, loader, last played as three spans with 24 px gaps, no separators), 16 px, `ghost` "Instanz wechseln" / "Switch instance" with `chevron-down` (DropdownMenu with the instances as radio items; hidden when the list holds exactly one instance, so it is always shown when state 5 of 10.2 applies), 32 px, the Play button (10.2), 24 px, progress panel (10.12) or ErrorPanel, and in the running state a link button "Log anzeigen" / "Show log".
+- Content: one left-aligned block, 48 px from the top, max-width 640: start title (32/40, two lines max), 8 px, meta line (secondary 14/20: version, loader, last played as three spans with 24 px gaps, no separators), 16 px, `ghost` "Instanz wechseln" / "Switch instance" with `chevron-down` (DropdownMenu with the instances as radio items; hidden when the list holds exactly one instance, so it is always shown when state 6 of 10.2 applies), 32 px, the Play button (10.2), 24 px, progress panel (10.12) or ErrorPanel, and in the running state a link button "Log anzeigen" / "Show log".
 - Loading: skeleton title (320 × 40), meta (240 × 20), button (240 × 56).
 - Empty: no instance: h2-sized title "Noch keine Instanz" / "No instances yet" in place of the start title, the first-run text (11.0), Play button in its "Instanz anlegen" state. Only unreadable or newer-format instances: no start title, the first-run text, the caption "Keine Instanz lässt sich starten." above the button. No account: the instance shows normally, the button says "Anmelden". Accounts but none selected: the button says "Konto wählen" and opens the account menu of the header chip; closing the menu returns focus to the chip, its trigger (11.4).
 - While a game is being started, runs or stops, the block shows that game's instance and "Instanz wechseln" is hidden; its 40 px stay, so the button does not move.
@@ -851,7 +852,7 @@ Spielen                                                          (M Mira_K v)
 - Header: h1 "Log", chip. Then the toolbar (10.13), the run switcher, the log area.
 - Loading: toolbar visible but inert, eight skeleton lines of varying width (40 to 90 %) in the log area; under the toolbar the caption "Das Log wird geladen…" / "Loading the log…", which is the reason (10.0) every toolbar control names. With no run, or with a run that is no longer available, the toolbar is inert the same way and names the block's title.
 - Empty: no run yet: in the log area, top-left with 16 px padding, title "Noch kein Log" / "No log yet", text "Starte eine Instanz, dann erscheint ihre Ausgabe hier." / "Start an instance and its output appears here.", primary "Spielen öffnen" / "Open Play". Run without output yet: caption "Noch keine Ausgabe" / "No output yet". Filters hide everything: "Alle Zeilen sind ausgeblendet." / "All lines are hidden." with `ghost` "Alle Stufen zeigen" / "Show all levels".
-- No longer available (the run left the two the app holds): in the log area, as the empty state, title "Log nicht mehr verfügbar" / "Log no longer available", text "Hengst Client behält die Logs der letzten zwei Läufe. Die Logdatei dieses Laufs liegt weiter im Ordner logs des Datenordners." / "Hengst Client keeps the logs of the last two runs. The log file of this run is still in the logs folder of the data folder."; the lines shown so far go with it. No action: the run switcher is the way on.
+- No longer available (the run left the two the app holds): in the log area, as the empty state, title "Log nicht mehr verfügbar" / "Log no longer available", text "Hengst Client behält die Logs der letzten zwei Läufe. Die Logdatei dieses Laufs liegt weiter im Ordner logs des Datenordners." / "Hengst Client keeps the logs of the last two runs. The log file of this run is still in the logs folder of the data folder."; the lines shown so far go with it. No action: the run switcher is the way on. When the gone run is no longer in the switcher's list, the switcher shows the placeholder "Lauf wählen" / "Choose run".
 - Copied: the copy button reads "Kopiert" / "Copied" for 2 s. If the backend left out the oldest lines at its 4 MiB limit, a caption under the toolbar says "Die ältesten {{count}} Zeilen fehlen, weil höchstens 4 MiB kopiert werden." / "The oldest {{count}} lines are missing because at most 4 MiB are copied." until the next copy, a level change or another run.
 - Error: attaching failed: ErrorPanel in the log area with "Erneut versuchen". Copy failed: inline error under the toolbar.
 - 10,000 lines: virtualized, no layout change.
@@ -873,7 +874,7 @@ Opened from About. Dialog width 640, title "Lizenzen von Drittanbietern" / "Thir
 - When the game starts and "minimize to the notification area" is on, the window hides to the tray. When the game ends, the window is shown again and restored; it is not forced to the foreground (Windows may flash the taskbar button instead).
 - Closing the window while a game runs hides it to the tray (no dialog). Closing the window while no game runs (idle, or preparing, which is canceled first) quits the app; there is no tray icon without a running game.
 - "Hengst Client beenden" while a game runs (also while it stops) opens an alert dialog (440): title "Spiel beenden und Hengst Client schließen?" / "Stop the game and quit Hengst Client?", text "Das Spiel wird beendet. Fortschritt seit dem letzten Speichern im Spiel kann verloren gehen." / "The game is stopped. Progress since the game last saved may be lost.", buttons "Weiterspielen" / "Keep playing" (`secondary`, initial focus) and "Spiel beenden und schließen" / "Stop game and quit" (`destructive`). The window is shown first if it was hidden. A request while the page reloads is kept and shown once the page is back.
-- Loading: the destructive button shows "Wird beendet…" until the game process has exited, then the app quits. Meanwhile both buttons are inert, Escape and a press outside do nothing, and under the text the reason reads "Weiterspielen geht wieder, sobald das Spiel beendet ist oder nicht reagiert." / "Keep playing works again once the game has closed or stops responding." (`aria-describedby` of "Weiterspielen").
+- Loading: the destructive button shows "Wird beendet…" until the game process has exited, then the app quits. Meanwhile both buttons are inert, Escape and a press outside do nothing, and under the text the reason reads "Weiterspielen geht wieder, sobald das Spiel beendet ist oder nicht reagiert." / "Keep playing works again once the game has closed or stops responding." (`aria-describedby` of "Weiterspielen"). Once the game is gone and the app is quitting, the reason reads "Hengst Client wird geschlossen." / "Hengst Client is quitting."
 - Not responding: if the game has not exited 10 s after the stop (or after the force stop), a line with the danger icon under the text says "Das Spiel reagiert nicht" / "The game is not responding" (alert), the buttons work again, and the destructive button becomes "Sofort beenden und schließen" / "Force stop and quit". If the game has no window yet, the dialog says at once, under the text, "Das Spiel hat noch kein Fenster und wurde nicht gebeten, sich zu schließen." / "The game has no window yet and was not asked to close." with the same force button. Each change into the force button takes the 600 ms click guard of 10.0.
 - The game exits by itself while the dialog is open (also before anything was confirmed): the app quits, the user chose "Hengst Client beenden".
 - Error: a failed stop or force stop shows an ErrorPanel in the dialog above the buttons (as in 11.3), the buttons work again. If the app cannot quit after the game is gone, the ErrorPanel offers "Erneut versuchen" / "Try again" and the footer only "Schließen" / "Close". Empty: not applicable.
@@ -884,7 +885,7 @@ There is no instance detail screen in v0.1. Everything about an instance is in i
 
 ## 12. Writing
 
-- Two languages, German and English (US spelling), complete in both; all strings in `src/i18n/{de,en}.json`. German uses informal "du" throughout, never "Sie". No English leftovers in the German UI, except the legal sentence and the diagnostic error details (10.11).
+- Two languages, German and English (US spelling), complete in both; all strings in `src/i18n/{de,en}.json`. German uses informal "du" throughout, never "Sie". No English leftovers in the German UI, except the legal sentence, the diagnostic error details (10.11) and, until Phase 5, the core's notices in the progress panel (10.12).
 - Sentence case in both languages for everything: titles, buttons, menu items, labels ("Instanz anlegen", "Create instance"). This overrides WIG's title case for English buttons (produkt-regelwerk W15) because the plan fixes one style for both languages.
 - Buttons are verbs naming the result ("Instanz anlegen", "In den Papierkorb", "Abmelden"), never "OK", "Ja", "Weiter", "Submit". A flow keeps its verb: "Instanz anlegen" leads to "{{name}} angelegt".
 - Loading labels: verb plus a real ellipsis "…" ("Wird angelegt…", "Creating…").
@@ -904,7 +905,7 @@ There is no instance detail screen in v0.1. Everything about an instance is in i
 - Targets: 40 × 40 px minimum for all controls, list rows 48 px, Play 56 px; 8 px between separate adjacent targets (menu items and list rows are adjacent by design and do not overlap). 40 px is above the WCAG 2.2 AA minimum of 24 × 24 and close to 44 px; for a mouse-first desktop app it is the deliberate density (produkt-regelwerk W7).
 - Names: every icon-only button has a name matching its tooltip. Visible text is part of the accessible name.
 - State is programmatic: `aria-current="page"` (nav), `aria-current="true"` (selected row), expanded state (menus, collapsibles, combobox), checked state via the radio and checkbox primitives, busy state on lists while loading, `aria-disabled` plus `aria-describedby` for explained disabled controls, `aria-invalid` on fields.
-- Announcements: toasts via Sonner's live region, ErrorPanel as alert, the launch phase as a polite live region.
+- Announcements: toasts via Sonner's live region, ErrorPanel as alert, the launch phase as a polite live region. Also: the caption above the Play button (running since, ended, why a start is not possible) as a polite live region; the "Kopiert" / "Copied" of the log's copy button as a status; the help lines under settings controls (saving, saved values, memory and Java help) as a status, with their errors (save failed, memory out of range, the Java alerts of 11.7) in a separate alert region of the same line, so no node changes its role. Every live region is in the page before its text arrives, so the first text is announced too.
 - Contrast: section 2.3. State is never shown by color alone (check icons, weight, text badges, level words).
 - Scaling: at 125 % and 150 % Windows display scaling the layout is identical in logical pixels; every screen is checked at both, plus window placement on a 1366 × 768 screen at 125 % (7.1). Text is in `rem` and nothing around text has a fixed height except controls whose text fits by design, so WebView zoom up to 150 % reflows without clipping: rows grow, button rows wrap, and below 880 CSS px the narrow layout applies (7.3). Windows display scaling never changes the breakpoint; only zoom does.
 - Reduced motion: section 8.
