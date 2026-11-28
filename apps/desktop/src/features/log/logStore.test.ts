@@ -462,6 +462,63 @@ describe("the stream", () => {
     }
   });
 
+  it("late answers resend the newest wish once, not once per late answer", async () => {
+    vi.useFakeTimers();
+    try {
+      const detaches = () => calls.filter((c) => c[0] === "log_detach").length;
+      let first!: () => void;
+      let second!: () => void;
+      attachGate = new Promise((r) => (first = r));
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(10_000);
+      // The retry times out too: the view shows the failure, no stream is wanted right now.
+      attachGate = new Promise((r) => (second = r));
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(useLog.getState().attach).toMatchObject({ status: "failed", runId: 7 });
+      attachGate = null;
+      first();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(detaches()).toBe(1);
+      // A second late answer for the same wish sends nothing more.
+      second();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(detaches()).toBe(1);
+      expect(calls.filter((c) => c[0] === "log_attach")).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a resend for the run that is live keeps it live (no flicker back to attaching)", async () => {
+    vi.useFakeTimers();
+    try {
+      let late!: () => void;
+      attachGate = new Promise((r) => (late = r));
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(10_000);
+      attachGate = null;
+      attachTo(7);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+      const seen: string[] = [];
+      const off = useLog.subscribe((s) => seen.push(s.attach.status));
+      let resent!: () => void;
+      attachGate = new Promise((r) => (resent = r));
+      late();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(calls.filter((c) => c[0] === "log_attach")).toHaveLength(3);
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+      resent();
+      await vi.advanceTimersByTimeAsync(1);
+      off();
+      expect(seen).not.toContain("attaching");
+      expect(useLog.getState().attach).toEqual({ status: "live", runId: 7 });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("a timed-out attach that answers after the retry is followed by the newest call again", async () => {
     vi.useFakeTimers();
     try {

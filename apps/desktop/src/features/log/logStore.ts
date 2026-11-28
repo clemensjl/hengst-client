@@ -478,8 +478,11 @@ let generation = 0;
 // within `CALL_TIMEOUT_MS` counts as failed, so it cannot hold up the calls after it for good.
 // If it settles after all, it may have finished after a newer call in the backend (and an attach
 // then feeds its old channel): `resend` sends the newest wish once more, so it is the last call
-// done again.
+// done again. Once per wish (a wish is an `attachTo` or `detach` of the view): with a backend that
+// stays slow, further late answers for the same wish send nothing.
 let chain: Promise<unknown> = Promise.resolve();
+let wish = 0;
+let resentWish = -1;
 const CALL_TIMEOUT_MS = 10_000;
 function bounded<T>(call: Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -506,9 +509,11 @@ function bounded<T>(call: Promise<T>): Promise<T> {
 }
 /** A stream is wanted: attach to its run again; otherwise detach. */
 function resend() {
+  if (resentWish === wish) return;
+  resentWish = wish;
   const a = useLog.getState().attach;
-  if (a.status === "attaching" || a.status === "live") attachTo(a.runId);
-  else detach();
+  if (a.status === "attaching" || a.status === "live") connect(a.runId, true);
+  else disconnect();
 }
 function enqueue<T>(call: () => Promise<T> | undefined): Promise<T | undefined> {
   const next = chain.then(() => {
@@ -571,16 +576,23 @@ export function flush() {
  * line (a half-built one is thrown away and comes again); another run starts empty.
  */
 export function attachTo(runId: number): void {
+  wish += 1;
+  connect(runId, false);
+}
+
+/** `attachTo` without a new wish; `resent`: a resend, which keeps a live stream of the run live. */
+function connect(runId: number, resent: boolean): void {
   const mine = ++generation;
   queue = [];
   cancelScheduled();
   const s = useLog.getState();
   const same = s.feedRun === runId && s.attach.status !== "gone";
   const feed = same ? { ...s.feed, partial: null } : EMPTY_FEED;
+  const keepLive = resent && s.attach.status === "live" && s.attach.runId === runId;
   useLog.setState({
     feed,
     feedRun: runId,
-    attach: { status: "attaching", runId },
+    attach: keepLive ? s.attach : { status: "attaching", runId },
     // What belonged to the last run's lines goes with them.
     ...(same
       ? {}
@@ -625,6 +637,12 @@ export function attachTo(runId: number): void {
 
 /** Stops the stream: batches still on their way are dropped, the backend stops sending. */
 export function detach(): void {
+  wish += 1;
+  disconnect();
+}
+
+/** `detach` without a new wish. */
+function disconnect(): void {
   const mine = ++generation;
   queue = [];
   cancelScheduled();
@@ -643,6 +661,8 @@ export function resetLog() {
   queue = [];
   cancelScheduled();
   chain = Promise.resolve();
+  wish = 0;
+  resentWish = -1;
   clearTimeout(copyTimer);
   opening = false;
   useLog.setState(INITIAL);
